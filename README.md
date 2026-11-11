@@ -42,7 +42,7 @@ curl -s 127.0.0.1:8787/healthz
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M0 | 配置加载、`/healthz`、WS 握手与 ping/pong | ✅ |
-| M1 | 事件与存储（7 张表、seq、回放） | 未开始 |
+| M1 | 事件与存储（7 张表、seq、回放） | ✅ |
 | M2 | Provider 适配（openai 兼容 + anthropic） | 未开始 |
 | M3 | 只读闭环（loop + read/grep/glob） | 未开始 |
 | M4 | 变更提案与审批（diff + hash CAS） | 未开始 |

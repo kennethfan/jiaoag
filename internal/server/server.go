@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
@@ -31,6 +32,7 @@ type Server struct {
 	token     string
 	startedAt time.Time
 	httpSrv   *http.Server
+	app       *app.App
 
 	mu    sync.Mutex
 	conns map[*clientConn]struct{}
@@ -42,6 +44,40 @@ type clientConn struct {
 	writeMu sync.Mutex
 	remote  string
 	version string
+
+	// subs 记录本连接上每个会话当前有效的推送协程。同一会话重复订阅时必须
+	// 先取消旧的，否则两条协程会各自回放并实时推送，客户端收到重复的 seq。
+	subsMu sync.Mutex
+	subs   map[string]*streamHandle
+}
+
+// streamHandle 是一条推送协程的句柄，用指针身份区分同一会话上的新旧订阅。
+type streamHandle struct{ cancel context.CancelFunc }
+
+// beginStream 登记一条推送协程，并取消同一会话上更早的那条。
+func (c *clientConn) beginStream(sessionKey string, cancel context.CancelFunc) *streamHandle {
+	h := &streamHandle{cancel: cancel}
+	c.subsMu.Lock()
+	if c.subs == nil {
+		c.subs = make(map[string]*streamHandle)
+	}
+	if prev := c.subs[sessionKey]; prev != nil {
+		prev.cancel()
+	}
+	c.subs[sessionKey] = h
+	c.subsMu.Unlock()
+	return h
+}
+
+// endStream 注销推送协程。只有登记的还是自己时才删除，避免迟到的旧协程
+// 把新订阅从表里抹掉。
+func (c *clientConn) endStream(sessionKey string, h *streamHandle) {
+	c.subsMu.Lock()
+	if c.subs[sessionKey] == h {
+		delete(c.subs, sessionKey)
+	}
+	c.subsMu.Unlock()
+	h.cancel()
 }
 
 func (c *clientConn) send(ctx context.Context, env protocol.Envelope) error {
@@ -88,6 +124,13 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 
 // Handler 暴露 HTTP 路由，供测试与嵌入式启动使用。
 func (s *Server) Handler() http.Handler { return s.httpSrv.Handler }
+
+// WithApp 注入应用层。未注入时会话相关消息一律返回 unsupported_type，
+// 这样 M0 的握手测试不需要构造数据库。
+func (s *Server) WithApp(a *app.App) *Server {
+	s.app = a
+	return s
+}
 
 // ListenAndServe 阻塞运行直到 ctx 取消或监听失败。
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -158,7 +201,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		conn.CloseNow()
 	}()
 
-	ctx := r.Context()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 	hello, err := protocol.New(protocol.TypeHello, protocol.HelloPayload{
 		ServerVersion:   s.version,
 		ProtocolVersion: protocol.Version,
@@ -205,6 +249,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			if err := c.send(ctx, pong); err != nil {
 				return
 			}
+
+		case protocol.TypeSessionCreate:
+			s.handleSessionCreate(ctx, c, env)
+
+		case protocol.TypeSessionList:
+			s.handleSessionList(ctx, c)
+
+		case protocol.TypeTaskSubmit:
+			s.handleTaskSubmit(ctx, c, env)
+
+		case protocol.TypeEventSubscribe:
+			s.handleEventSubscribe(ctx, c, env)
 
 		default:
 			c.sendError(ctx, protocol.CodeUnsupported, "不支持的消息类型: "+env.Type)
