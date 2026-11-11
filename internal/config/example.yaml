@@ -24,9 +24,15 @@ providers:
     base_url: https://api.deepseek.com/v1
     model: deepseek-chat
     api_key: $DEEPSEEK_API_KEY
+    # 单次尝试的首块超时（秒），默认 120。流式收到首块后改为空闲超时。
+    timeout_seconds: 120
+    # 只对限流与暂时性失败生效，默认 2；写 0 表示不重试。
+    max_retries: 2
 
   - name: anthropic
     type: anthropic
     base_url: https://api.anthropic.com
     model: claude-sonnet-4-5
     api_key: file:~/.config/jiaoag/anthropic.key
+    timeout_seconds: 180
+    max_retries: 1

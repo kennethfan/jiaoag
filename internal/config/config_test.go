@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const minimalYAML = `server:
@@ -144,5 +145,75 @@ func TestWriteExampleRefusesOverwrite(t *testing.T) {
 	}
 	if _, err := Load(p); err != nil {
 		t.Fatalf("样例配置应当能被 Load 解析: %v", err)
+	}
+}
+
+func TestProviderTimeoutAndRetriesDefaults(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Providers[0]
+	if p.TimeoutSeconds != nil || p.MaxRetries != nil {
+		t.Fatalf("未配置时字段应保持 nil：%+v", p)
+	}
+	if got := p.Timeout(); got != 120*time.Second {
+		t.Errorf("Timeout() = %s，期望 120s", got)
+	}
+	if got := p.Retries(); got != 2 {
+		t.Errorf("Retries() = %d，期望 2", got)
+	}
+}
+
+func TestProviderTimeoutAndRetriesExplicitZero(t *testing.T) {
+	// max_retries 显式 0 与「未配置」语义不同：前者表示不重试。
+	yaml := strings.Replace(minimalYAML, "api_key: k",
+		"api_key: k\n    timeout_seconds: 30\n    max_retries: 0", 1)
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Providers[0]
+	if got := p.Timeout(); got != 30*time.Second {
+		t.Errorf("Timeout() = %s，期望 30s", got)
+	}
+	if got := p.Retries(); got != 0 {
+		t.Errorf("Retries() = %d，期望 0（显式不重试）", got)
+	}
+}
+
+func TestValidateServerRejectsBadProviderLimits(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{"超时为零", "timeout_seconds: 0", "timeout_seconds"},
+		{"超时为负", "timeout_seconds: -5", "timeout_seconds"},
+		{"重试为负", "max_retries: -1", "max_retries"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			yaml := strings.Replace(minimalYAML, "api_key: k", "api_key: k\n    "+tc.extra, 1)
+			cfg, err := Load(writeTemp(t, yaml))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			err = cfg.ValidateServer()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("期望 %q 校验错误，得到 %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateServerAllowsZeroRetries(t *testing.T) {
+	yaml := strings.Replace(minimalYAML, "api_key: k", "api_key: k\n    max_retries: 0", 1)
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("max_retries=0 应合法：%v", err)
 	}
 }

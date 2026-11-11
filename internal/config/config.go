@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -54,6 +55,34 @@ type Provider struct {
 	BaseURL string `yaml:"base_url"`
 	Model   string `yaml:"model"`
 	APIKey  Secret `yaml:"api_key"`
+
+	// TimeoutSeconds 与 MaxRetries 用指针区分「未配置」与「显式 0」：
+	// 未配置走默认值，显式 0 表示不重试（合法），所以不能让零值等价于缺省。
+	TimeoutSeconds *int `yaml:"timeout_seconds"`
+	MaxRetries     *int `yaml:"max_retries"`
+}
+
+// 供应商调用的默认约束。
+const (
+	DefaultProviderTimeoutSeconds = 120
+	DefaultProviderMaxRetries     = 2
+)
+
+// Timeout 返回单次尝试的首块超时，未配置时用默认值。
+func (p Provider) Timeout() time.Duration {
+	seconds := DefaultProviderTimeoutSeconds
+	if p.TimeoutSeconds != nil {
+		seconds = *p.TimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// Retries 返回重试次数（不含第一次），未配置时用默认值。
+func (p Provider) Retries() int {
+	if p.MaxRetries != nil {
+		return *p.MaxRetries
+	}
+	return DefaultProviderMaxRetries
 }
 
 // Secret 是一段延迟解析的敏感值。实现 String 以避免被日志或 %v 打印出明文。
@@ -215,6 +244,12 @@ func (c *Config) ValidateServer() error {
 		}
 		if _, err := p.APIKey.Resolve(); err != nil {
 			return fmt.Errorf("%s.api_key: %w（支持明文 / $ENV_NAME / file:/path）", prefix, err)
+		}
+		if p.TimeoutSeconds != nil && *p.TimeoutSeconds <= 0 {
+			return fmt.Errorf("%s.timeout_seconds 必须大于 0，当前为 %d", prefix, *p.TimeoutSeconds)
+		}
+		if p.MaxRetries != nil && *p.MaxRetries < 0 {
+			return fmt.Errorf("%s.max_retries 不能为负数，当前为 %d", prefix, *p.MaxRetries)
 		}
 	}
 	return nil
