@@ -1,0 +1,32 @@
+# jiaoag 服务端配置样例。
+# 复制到 ~/.config/jiaoag/config.yaml（或运行 jiaoag-server -init）后按需修改。
+
+server:
+  # 首版只监听回环地址；协议按可远程设计，但传输加密留到远程部署时再谈。
+  listen: 127.0.0.1:8787
+  # 单用户 token，支持三种写法：明文 / $ENV_NAME / file:/abs/path
+  token: $JIAOAG_TOKEN
+
+storage:
+  db_path: ~/.local/share/jiaoag/jiaoag.db
+  output_dir: ~/.local/share/jiaoag/outputs
+
+agent:
+  # 单个任务的最大轮次，兜底防止失控循环。
+  max_rounds: 24
+  # 单条命令的超时秒数。
+  command_timeout_seconds: 120
+
+# type 取 openai（OpenAI 兼容协议）或 anthropic（Messages API）。
+providers:
+  - name: deepseek
+    type: openai
+    base_url: https://api.deepseek.com/v1
+    model: deepseek-chat
+    api_key: $DEEPSEEK_API_KEY
+
+  - name: anthropic
+    type: anthropic
+    base_url: https://api.anthropic.com
+    model: claude-sonnet-4-5
+    api_key: file:~/.config/jiaoag/anthropic.key

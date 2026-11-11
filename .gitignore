@@ -31,3 +31,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# jiaoag 构建产物与本地数据
+/bin/
+*.db
+*.db-wal
+*.db-shm
