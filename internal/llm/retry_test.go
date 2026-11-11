@@ -110,8 +110,28 @@ func TestRetryBackoffGrowsAndCaps(t *testing.T) {
 
 func TestRetryCapsAtMaxDelay(t *testing.T) {
 	r, _ := newTestRetry(&fakeProvider{}, 10)
-	if got := r.delay(10, errors.Join(ErrTransient)); got != r.maxDelay {
-		t.Fatalf("延迟 = %s，期望封顶 %s", got, r.maxDelay)
+	// 抖动固定 0.5 → 倍率 1.0，饱和后应停在上限的 2/3，为抖动留出余量。
+	if want := r.maxDelay * 2 / 3; r.delay(10, errors.Join(ErrTransient)) != want {
+		t.Fatalf("延迟 = %s，期望封顶 %s", r.delay(10, errors.Join(ErrTransient)), want)
+	}
+}
+
+// TestRetryDelayJitterSurvivesSaturation：退避到顶后抖动仍要能拉开差距。
+// 若先到上限再抖动、抖完再夹，饱和后会出现大量完全相同的等待。
+func TestRetryDelayJitterSurvivesSaturation(t *testing.T) {
+	r := newRetryProvider(&fakeProvider{}, 10)
+
+	r.jitter = func() float64 { return 0 } // 倍率 0.5
+	low := r.delay(10, ErrTransient)
+	r.jitter = func() float64 { return 0.999 } // 倍率 1.499
+	high := r.delay(10, ErrTransient)
+
+	if low >= high {
+		t.Fatalf("饱和后抖动应仍能拉开差距：低 %s，高 %s", low, high)
+	}
+	// 允许 1ms 误差：上限的三分之一除不尽，整数除法向下取整。
+	if low < r.maxDelay/3-time.Millisecond || high > r.maxDelay {
+		t.Fatalf("等待应落在 [1/3, 1]×上限内：低 %s，高 %s，上限 %s", low, high, r.maxDelay)
 	}
 }
 

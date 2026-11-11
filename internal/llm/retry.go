@@ -79,14 +79,16 @@ func (r *retryProvider) delay(attempt int, err error) time.Duration {
 	if errors.As(err, &limited) && limited.RetryAfter > 0 {
 		return limited.RetryAfter
 	}
+	// 先压到上限的 2/3 再抖：抖动倍率最大 1.5×，乘积正好落在上限内。
+	// 反过来「先到上限、抖完再夹」会在饱和后把一半样本夹成定值，
+	// 抖动等于失效——多客户端同时被限流时又会把重试时刻对齐。
+	base := r.maxDelay * 2 / 3
 	d := r.baseDelay << (attempt - 1)
-	if d > r.maxDelay || d <= 0 {
-		d = r.maxDelay
+	if d > base || d <= 0 {
+		d = base
 	}
-	// 抖动：0.5x ~ 1.5x，避免多客户端同时重试；封顶后再夹一次，
-	// 否则抖动会把等待推到 1.5×maxDelay。
 	d = time.Duration(float64(d) * (0.5 + r.jitter()))
-	if d > r.maxDelay {
+	if d > r.maxDelay { // 仅防浮点误差，按上面的界实际上不会触发
 		d = r.maxDelay
 	}
 	return d
