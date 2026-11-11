@@ -50,6 +50,14 @@ func (s *Store) Apply(ctx context.Context, tr domain.Transition) ([]domain.Event
 			return nil, err
 		}
 	}
+	if tr.Usage != nil {
+		// token 是累加量：一次迁移只携带本轮的增量，不覆盖历史累计。
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET prompt_tokens = prompt_tokens + ?, completion_tokens = completion_tokens + ? WHERE id = ?`,
+			tr.Usage.PromptTokens, tr.Usage.CompletionTokens, string(task.ID)); err != nil {
+			return nil, fmt.Errorf("store: 累加任务 %s 的 token: %w", task.ID, err)
+		}
+	}
 	if tr.Approval != nil {
 		if err := upsertApproval(ctx, tx, *tr.Approval); err != nil {
 			return nil, err

@@ -217,3 +217,22 @@ func TestValidateServerAllowsZeroRetries(t *testing.T) {
 		t.Fatalf("max_retries=0 应合法：%v", err)
 	}
 }
+
+func TestContextBudgetDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.ContextBudgetChars != 60000 {
+		t.Fatalf("默认上下文预算 = %d，期望 60000", cfg.Agent.ContextBudgetChars)
+	}
+
+	tooSmall := strings.Replace(minimalYAML, "providers:", "agent:\n  context_budget_chars: 500\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, tooSmall))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "context_budget_chars") {
+		t.Fatalf("过小的预算应校验失败，得到 %v", err)
+	}
+}

@@ -12,10 +12,14 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/config"
+	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
+	"github.com/kennethfan/jiaoag/internal/llm"
 	"github.com/kennethfan/jiaoag/internal/server"
 	"github.com/kennethfan/jiaoag/internal/store"
+	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/version"
+	"github.com/kennethfan/jiaoag/internal/workspace"
 )
 
 func main() {
@@ -74,6 +78,9 @@ func run(cfgPath, listen string) error {
 	}
 	application := app.New(db, event.NewHub())
 	defer application.Close()
+	if err := application.ConfigureRuntime(runtimeDeps(cfg, log)); err != nil {
+		return err
+	}
 	log.Info("数据已就绪", "db", cfg.Storage.DBPath)
 
 	srv, err := server.New(cfg, log, version.Version)
@@ -83,6 +90,36 @@ func run(cfgPath, listen string) error {
 	srv.WithApp(application)
 
 	return srv.ListenAndServe(ctx)
+}
+
+// runtimeDeps 把配置翻译成执行依赖：app 不认识 config，这里做唯一的接线。
+func runtimeDeps(cfg *config.Config, log *slog.Logger) app.RuntimeDeps {
+	return app.RuntimeDeps{
+		Provider: func(sess domain.Session) (llm.Provider, string, error) {
+			provider, ok := cfg.Provider(sess.Provider)
+			if sess.Provider == "" {
+				provider, ok = cfg.DefaultProvider()
+			}
+			if !ok {
+				return nil, "", fmt.Errorf("配置里没有供应商 %q", sess.Provider)
+			}
+			built, err := llm.New(provider)
+			if err != nil {
+				return nil, "", err
+			}
+			model := sess.Model
+			if model == "" {
+				model = provider.Model
+			}
+			return built, model, nil
+		},
+		Tools: func(ws *workspace.Workspace) (*tools.Registry, error) {
+			return tools.NewRegistry(tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws))
+		},
+		MaxRounds:     cfg.Agent.MaxRounds,
+		ContextBudget: cfg.Agent.ContextBudgetChars,
+		Logger:        log,
+	}
 }
 
 func exit(err error) {

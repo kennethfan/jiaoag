@@ -44,7 +44,7 @@ curl -s 127.0.0.1:8787/healthz
 | M0 | 配置加载、`/healthz`、WS 握手与 ping/pong | ✅ |
 | M1 | 事件与存储（7 张表、seq、回放） | ✅ |
 | M2 | Provider 适配（openai 兼容 + anthropic） | ✅ |
-| M3 | 只读闭环（loop + read/grep/glob） | 未开始 |
+| M3 | 只读闭环（loop + read/grep/glob + 流式渲染） | ✅ |
 | M4 | 变更提案与审批（diff + hash CAS） | 未开始 |
 | M5 | `run_command` + 权限策略 + 审计 | 未开始 |
 | M6 | 多会话并行、断连继续跑、回放 | 未开始 |

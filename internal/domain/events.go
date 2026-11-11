@@ -23,6 +23,7 @@ const (
 	EventRoundStarted EventKind = "round.started"
 
 	// 流式增量（assistant.delta）不落库，只持久化边界事件。
+	EventAssistantDelta    EventKind = "assistant.delta"
 	EventAssistantStart    EventKind = "assistant.start"
 	EventAssistantMessage  EventKind = "assistant.message"
 	EventToolRequested     EventKind = "tool.requested"
@@ -121,14 +122,33 @@ type AssistantStartPayload struct {
 	Model string `json:"model,omitempty"`
 }
 
+// AssistantDeltaPayload 是流式文本增量。它只出现在临时帧里（Seq 为 0），
+// 不写事件日志（ADR-0005）：客户端按到达顺序渲染，重连后以完整消息为准。
+type AssistantDeltaPayload struct {
+	Text string `json:"text"`
+}
+
 type AssistantMessagePayload struct {
 	Round int    `json:"round"`
 	Text  string `json:"text"`
+
+	// ToolCalls 保留模型这一轮请求的工具调用。重建上下文需要 ID/name/args，
+	// 只存 Text 的话，重连后历史里就只剩助手说过的话、丢了它要做什么。
+	ToolCalls  []AssistantToolCallPayload `json:"tool_calls,omitempty"`
+	StopReason string                     `json:"stop_reason,omitempty"`
+}
+
+// AssistantToolCallPayload 是一条完整的工具调用（流式分片已拼好）。
+type AssistantToolCallPayload struct {
+	ID   string          `json:"id"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
 }
 
 type ToolRequestedPayload struct {
-	Tool string          `json:"tool"`
-	Args json.RawMessage `json:"args,omitempty"`
+	Tool       string          `json:"tool"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	Args       json.RawMessage `json:"args,omitempty"`
 }
 
 type ToolPreparedPayload struct {
@@ -170,7 +190,9 @@ type ProposalAppliedPayload struct {
 
 type ToolResultPayload struct {
 	Tool       string `json:"tool"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 	Status     string `json:"status"`
+	IsError    bool   `json:"is_error,omitempty"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	Output     string `json:"output,omitempty"`
 	Truncated  bool   `json:"truncated,omitempty"`

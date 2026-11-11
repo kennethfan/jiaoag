@@ -27,6 +27,8 @@ const (
 	TypeSessionListResult = "session.list.result" // S→C
 	TypeTaskSubmit        = "task.submit"         // C→S
 	TypeTaskQueued        = "task.queued"         // S→C
+	TypeTaskCancel        = "task.cancel"         // C→S：取消排队中或运行中的任务
+	TypeTaskCanceled      = "task.canceled"       // S→C：取消请求已被接受
 	TypeEventSubscribe    = "event.subscribe"     // C→S
 )
 
@@ -36,6 +38,7 @@ const (
 	CodeBadRequest       = "bad_request"
 	CodeProtocolMismatch = "protocol_mismatch"
 	CodeUnsupported      = "unsupported_type"
+	CodeSessionBusy      = "session_busy"
 	CodeInternal         = "internal"
 )
 
@@ -126,6 +129,12 @@ type SessionListResultPayload struct {
 type TaskSubmitPayload struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
+}
+
+// TaskCancelPayload 请求取消一个任务。任务已终止时是幂等的空操作。
+type TaskCancelPayload struct {
+	SessionID string `json:"session_id"`
+	TaskID    string `json:"task_id"`
 }
 
 // TaskPayload 是任务的线上表示。

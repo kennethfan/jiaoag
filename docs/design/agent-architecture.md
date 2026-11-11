@@ -145,7 +145,7 @@ type Decision struct {
 
 纯事件溯源重建成本高、查询难写；只存表则无法回放与审计。取中间态：`events` 追加 + 投影表更新同事务。seq 为**会话内**单调递增，由 `sessions.last_seq` 在同事务自增。
 
-流式增量**不入库**：只持久化 `assistant.start` 与 `assistant.message`，`assistant.delta` 带 seq 但不落盘，因此 seq **允许空洞**。客户端只要求「不重复、不乱序」，不要求连续。
+流式增量**不入库**：只持久化 `assistant.start` 与 `assistant.message`，`assistant.delta` 是 **seq=0 的临时帧**（不占 seq、不进回放、不参与去重）。客户端的判据因此很直接：seq>0 是历史事实，seq=0 是「正在生成」的临时状态，收到 `assistant.message` 后以完整文本替换。
 
 ### 5.2 工具两段式 Prepare / Execute（ADR-0006）
 

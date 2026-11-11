@@ -46,7 +46,12 @@ type Storage struct {
 type Agent struct {
 	MaxRounds             int `yaml:"max_rounds"`
 	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
+	// ContextBudgetChars 是上下文预算（UTF-8 字符数），超出的最旧轮次会被丢弃。
+	ContextBudgetChars int `yaml:"context_budget_chars"`
 }
+
+// DefaultContextBudgetChars 与 agent.DefaultContextBudget 保持一致。
+const DefaultContextBudgetChars = 60000
 
 // Provider 描述一家模型供应商。
 type Provider struct {
@@ -211,6 +216,9 @@ func (c *Config) applyDefaults() {
 	if c.Agent.CommandTimeoutSeconds <= 0 {
 		c.Agent.CommandTimeoutSeconds = 120
 	}
+	if c.Agent.ContextBudgetChars <= 0 {
+		c.Agent.ContextBudgetChars = DefaultContextBudgetChars
+	}
 }
 
 // ValidateServer 校验服务端启动所需的全部字段。
@@ -261,6 +269,9 @@ func (c *Config) ValidateClient() error { return c.validateCommon() }
 func (c *Config) validateCommon() error {
 	if c.Server.Listen == "" {
 		return errors.New("server.listen 不能为空")
+	}
+	if c.Agent.ContextBudgetChars > 0 && c.Agent.ContextBudgetChars <= 1000 {
+		return fmt.Errorf("agent.context_budget_chars 必须大于 1000，当前为 %d", c.Agent.ContextBudgetChars)
 	}
 	if _, err := c.Server.Token.Resolve(); err != nil {
 		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)

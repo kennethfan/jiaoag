@@ -16,6 +16,9 @@ agent:
   max_rounds: 24
   # 单条命令的超时秒数。
   command_timeout_seconds: 120
+  # 上下文预算（UTF-8 字符数）。超出时从最旧一轮开始丢弃，system 与
+  # 最后一条用户消息永不丢。
+  context_budget_chars: 60000
 
 # type 取 openai（OpenAI 兼容协议）或 anthropic（Messages API）。
 providers:

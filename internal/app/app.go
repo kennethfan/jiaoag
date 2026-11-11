@@ -1,7 +1,8 @@
 // Package app 是应用层：唯一的事务边界与唯一的事件发布者。
 //
-// M1 只覆盖「账本」：会话与任务的创建、状态迁移落库、事件回放。
-// agent 循环、工具执行与审批在后续里程碑接入，接口保持不变。
+// M1 覆盖「账本」：会话与任务的创建、状态迁移落库、事件回放。M3 在本层
+// 接上任务执行：app 负责协程生命周期、取消与忙时拒绝，agent 只负责一轮轮
+// 对话。执行依赖通过 ConfigureRuntime 注入，未注入时退回只入队的行为。
 package app
 
 import (
@@ -12,6 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/kennethfan/jiaoag/internal/agent"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
@@ -29,6 +33,16 @@ type App struct {
 	// 跨会话共用一把锁是可接受的：存储层本来就是全局写锁，这里不引入新的
 	// 串行点。所有写入都必须经由 App.commit，不要绕过它直接写库再广播。
 	commitMu sync.Mutex
+
+	// baseCtx 是所有任务的父 context：Close 时统一取消。
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
+
+	// runtimeMu 保护 runtime 与 runs。它只覆盖「查表 + 登记」，不与 commitMu
+	// 嵌套：提交仍在 commitMu 内完成，这里不引入第二个串行点。
+	runtimeMu sync.Mutex
+	runtime   *RuntimeDeps
+	runs      map[domain.SessionID]*taskRun
 }
 
 // commit 在 commitMu 内完成「存储提交 → hub 广播」，是应用层唯一的写入入口。
@@ -50,11 +64,25 @@ func New(store Store, hub *event.Hub) *App {
 	if hub == nil {
 		hub = event.NewHub()
 	}
-	return &App{store: store, hub: hub}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &App{
+		store:      store,
+		hub:        hub,
+		baseCtx:    ctx,
+		baseCancel: cancel,
+		runs:       make(map[domain.SessionID]*taskRun),
+	}
 }
 
-// Close 断开所有订阅并关闭存储。
+// Close 取消运行中的任务、断开订阅并关闭存储。
+//
+// 先取消再等待：任务收到取消会记录 canceled 终态，此时数据库仍然打开；
+// 直接关库会让这些写入失败，任务永远停在 running。
 func (a *App) Close() error {
+	if a.baseCancel != nil {
+		a.baseCancel()
+	}
+	a.waitRuns(5 * time.Second)
 	a.hub.CloseAll()
 	return a.store.Close()
 }
@@ -112,19 +140,47 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	if strings.TrimSpace(prompt) == "" {
 		return domain.Task{}, fmt.Errorf("app: 任务内容为空")
 	}
-	if _, err := a.store.GetSession(ctx, sessionID); err != nil {
+	sess, err := a.store.GetSession(ctx, sessionID)
+	if err != nil {
 		return domain.Task{}, err
 	}
+
+	// 两次加锁：先快检，再复查。
+	//
+	// newAgent 要读工作区、构造供应商（可能读密钥文件）。把这些 I/O 放在
+	// runtimeMu 里会让所有会话的提交与取消一起排队等它；但「忙判断 + 任务
+	// 登记」必须原子，所以锁外只做构造，锁内重新检查一次再落库。
+	deps := a.currentRuntime()
+	if deps != nil {
+		if err := a.checkIdle(sessionID); err != nil {
+			return domain.Task{}, err
+		}
+	}
+
+	var (
+		ag               *agent.Agent
+		systemHash       string
+		extensionsDigest string
+	)
+	if deps != nil {
+		ag, systemHash, extensionsDigest, err = a.newAgent(sess, deps)
+		if err != nil {
+			return domain.Task{}, err
+		}
+	}
+
 	id, err := NewID("tsk")
 	if err != nil {
 		return domain.Task{}, err
 	}
 	task := domain.Task{
-		ID:        domain.TaskID(id),
-		SessionID: sessionID,
-		Status:    domain.TaskQueued,
-		Prompt:    prompt,
-		CreatedAt: domain.Now(),
+		ID:               domain.TaskID(id),
+		SessionID:        sessionID,
+		Status:           domain.TaskQueued,
+		Prompt:           prompt,
+		SystemPromptHash: systemHash,
+		ExtensionsDigest: extensionsDigest,
+		CreatedAt:        domain.Now(),
 	}
 	ev, err := domain.NewEvent(domain.EventTaskQueued, sessionID, task.ID, domain.TaskQueuedPayload{
 		Prompt:           task.Prompt,
@@ -134,10 +190,21 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	if err != nil {
 		return domain.Task{}, err
 	}
+	// 忙时拒绝要在建任务之前：先建后拒会留下一条永远排不上的 queued 记录。
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	if deps != nil {
+		if run, ok := a.runs[sessionID]; ok && run != nil {
+			return domain.Task{}, ErrSessionBusy
+		}
+	}
 	if err := a.commit(func() ([]domain.Event, error) {
 		return a.store.CreateTask(ctx, task, []domain.Event{ev})
 	}); err != nil {
 		return domain.Task{}, err
+	}
+	if ag != nil {
+		a.startLocked(sess, task, ag, deps)
 	}
 	return task, nil
 }

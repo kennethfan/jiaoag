@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
 	"github.com/kennethfan/jiaoag/internal/protocol"
@@ -73,7 +74,12 @@ func (s *Server) handleTaskSubmit(ctx context.Context, c *clientConn, env protoc
 	}
 	task, err := s.app.SubmitTask(ctx, domain.SessionID(p.SessionID), p.Text)
 	if err != nil {
-		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		// 会话忙是可恢复的客户端错误，单独给码，便于界面提示「先取消」。
+		code := protocol.CodeBadRequest
+		if errors.Is(err, app.ErrSessionBusy) {
+			code = protocol.CodeSessionBusy
+		}
+		c.sendError(ctx, code, err.Error())
 		return
 	}
 	reply, err := protocol.New(protocol.TypeTaskQueued, taskPayload(task))
@@ -83,6 +89,47 @@ func (s *Server) handleTaskSubmit(ctx context.Context, c *clientConn, env protoc
 	}
 	reply.SessionID = string(task.SessionID)
 	reply.TS = task.CreatedAt.UnixMilli()
+	_ = c.send(ctx, reply)
+}
+
+// handleTaskCancel 取消排队中或运行中的任务。
+//
+// 运行中的任务不在本调用里写终态：agent 观察 ctx 结束后自己记 canceled，
+// 这样「谁在什么时候把任务停掉的」只有一条写入路径。
+func (s *Server) handleTaskCancel(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.TaskCancelPayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	sessionID := domain.SessionID(p.SessionID)
+	taskID := domain.TaskID(p.TaskID)
+	if !sessionID.Valid() || !taskID.Valid() {
+		c.sendError(ctx, protocol.CodeBadRequest, "task.cancel 需要 session_id 与 task_id")
+		return
+	}
+	if err := s.app.CancelTask(ctx, sessionID, taskID); err != nil {
+		code := protocol.CodeInternal
+		if errors.Is(err, domain.ErrNotFound) {
+			code = protocol.CodeBadRequest
+		}
+		c.sendError(ctx, code, err.Error())
+		return
+	}
+	reply, err := protocol.New(protocol.TypeTaskCanceled, protocol.TaskPayload{
+		ID:        p.TaskID,
+		SessionID: p.SessionID,
+		Status:    string(domain.TaskCanceled),
+	})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = p.SessionID
 	_ = c.send(ctx, reply)
 }
 
@@ -160,13 +207,16 @@ func (s *Server) streamEvents(ctx context.Context, c *clientConn, sub *event.Sub
 				s.reportOverflow(ctx, c, sub)
 				return
 			}
-			if ev.Seq <= sent {
+			// seq==0 是临时帧（流式增量）：不参与去重、不推进 sent。
+			if ev.Seq != 0 && ev.Seq <= sent {
 				continue
 			}
 			if err := sendEvent(ctx, c, ev); err != nil {
 				return
 			}
-			sent = ev.Seq
+			if ev.Seq != 0 {
+				sent = ev.Seq
+			}
 		default:
 			goto live
 		}
@@ -187,13 +237,15 @@ live:
 				s.reportOverflow(ctx, c, sub)
 				return
 			}
-			if ev.Seq <= sent {
+			if ev.Seq != 0 && ev.Seq <= sent {
 				continue
 			}
 			if err := sendEvent(ctx, c, ev); err != nil {
 				return
 			}
-			sent = ev.Seq
+			if ev.Seq != 0 {
+				sent = ev.Seq
+			}
 		}
 	}
 }

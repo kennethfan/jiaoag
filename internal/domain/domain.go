@@ -181,6 +181,13 @@ type AuditRecord struct {
 	Detail     json.RawMessage
 }
 
+// TokenUsage 是一次模型调用的 token 统计。agent 每轮累加，随状态迁移一起
+// 提交，避免为计数单独发一条事件。
+type TokenUsage struct {
+	PromptTokens     int
+	CompletionTokens int
+}
+
 // Transition 是一次原子的状态变更请求：投影与事件同事务提交。
 //
 // To 为空表示不改任务状态；ToolCall / Approval / Proposal 为空表示不触碰。
@@ -192,6 +199,7 @@ type Transition struct {
 	ToolCall *ToolCall
 	Approval *Approval
 	Proposal *Proposal
+	Usage    *TokenUsage
 	Audit    []AuditRecord
 	Events   []Event
 }
