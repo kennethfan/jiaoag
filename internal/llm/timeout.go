@@ -83,9 +83,13 @@ func (t *timeoutProvider) ChatStream(ctx context.Context, req Request, fn func(C
 	defer timer.Stop()
 
 	err := streamer.ChatStream(ctx, req, func(c Chunk) error {
-		// 收到任何增量就重置计时：调用方的超时语义是「没有进展」。
-		limit.Store(int64(t.idle))
-		timer.Reset(t.idle)
+		// 处理增量期间暂停计时：慢消费者（比如 TUI 渲染）不能算作
+		// 「模型没有进展」。读完这条数据后立刻重新起表，上游的等待仍然被覆盖。
+		timer.Stop()
+		defer func() {
+			limit.Store(int64(t.idle))
+			timer.Reset(t.idle)
+		}()
 		return fn(c)
 	})
 	if err != nil {

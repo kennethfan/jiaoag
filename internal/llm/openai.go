@@ -46,8 +46,10 @@ type oaStreamOptions struct {
 }
 
 type oaMessage struct {
-	Role       string       `json:"role"`
-	Content    string       `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content 用指针区分「不发送」与「显式空串」：tool 消息的 content 是
+	// 必填字段，工具结果为空时也必须发出去（见 ptrString）。
+	Content    *string      `json:"content,omitempty"`
 	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 }
@@ -168,7 +170,7 @@ func (a *openaiAdapter) pickModel(model string) string {
 func openAIMessages(req Request) []oaMessage {
 	out := make([]oaMessage, 0, len(req.Messages)+2)
 	if req.System != "" {
-		out = append(out, oaMessage{Role: "system", Content: req.System})
+		out = append(out, oaMessage{Role: "system", Content: ptrString(req.System)})
 	}
 	for _, m := range req.Messages {
 		var (
@@ -192,7 +194,8 @@ func openAIMessages(req Request) []oaMessage {
 				results = append(results, oaMessage{
 					Role:       "tool",
 					ToolCallID: b.ToolCallID,
-					Content:    b.Result,
+					// 空结果也要显式发送 content:""，否则 OpenAI 会判为缺字段。
+					Content: ptrString(b.Result),
 				})
 			}
 		}
@@ -200,7 +203,11 @@ func openAIMessages(req Request) []oaMessage {
 		out = append(out, results...)
 		text := strings.Join(textParts, "\n")
 		if text != "" || len(calls) > 0 {
-			out = append(out, oaMessage{Role: string(m.Role), Content: text, ToolCalls: calls})
+			msg := oaMessage{Role: string(m.Role), ToolCalls: calls}
+			if text != "" {
+				msg.Content = ptrString(text)
+			}
+			out = append(out, msg)
 		}
 	}
 	return out
@@ -280,13 +287,16 @@ func (a *openaiAdapter) ChatStream(ctx context.Context, req Request, fn func(Chu
 	defer resp.Body.Close()
 
 	var (
-		usage    *Usage
-		stop     StopReason
+		usage *Usage
+		// stop 默认 StopEnd：与非流式的 openAIStopReason("") 一致。代价是
+		// 「上游没给 finish_reason 就正常关闭」与「回答讲完了」不可区分，
+		// 需要截断检测时由上层结合工具调用闭环判断。
+		stop     = StopEnd
 		ordinals = make(map[int]int) // 线格式 index → 工具调用序号（保证两家一致）
 		nextOrd  int
 	)
 
-	err = readSSE(resp.Body, func(_ string, data []byte) error {
+	err = readSSE(a.name, resp.Body, func(_ string, data []byte) error {
 		payload := strings.TrimSpace(string(data))
 		if payload == "" || payload == "[DONE]" {
 			return nil

@@ -330,3 +330,56 @@ func TestOpenAIEndpointTrimsTrailingSlash(t *testing.T) {
 		t.Fatalf("endpoint = %q", a.endpoint())
 	}
 }
+
+func TestOpenAIEmptyToolResultStillSendsContent(t *testing.T) {
+	// 工具静默成功时结果是空串：content 仍是必填字段，必须显式发送 ""。
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = readJSONBody(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	a := newOpenAI("test", srv.URL, "k", "m", srv.Client())
+	_, err := a.Chat(context.Background(), Request{Messages: []Message{
+		{Role: RoleAssistant, Blocks: []Block{
+			{Kind: BlockToolUse, ToolCallID: "c1", ToolName: "run", Args: json.RawMessage(`{}`)},
+		}},
+		ToolResultMessage(Block{Kind: BlockToolResult, ToolCallID: "c1", Result: ""}),
+	}})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	messages := got["messages"].([]any)
+	assistant := messages[0].(map[string]any)
+	if _, ok := assistant["content"]; ok {
+		t.Fatalf("无文本的 assistant 消息不应带 content 字段：%v", assistant)
+	}
+	toolMsg := messages[1].(map[string]any)
+	content, ok := toolMsg["content"]
+	if !ok {
+		t.Fatalf("空结果的 tool 消息必须带 content 字段：%v", toolMsg)
+	}
+	if content != "" {
+		t.Fatalf("content = %v，期望空串", content)
+	}
+}
+
+func TestOpenAIStreamDefaultsStopReasonWhenFinishReasonMissing(t *testing.T) {
+	// 网关偶尔不发 finish_reason：归一结果要与非流式（"" → StopEnd）一致。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(t, w, "data: {\"choices\":[{\"delta\":{\"content\":\"完\"}}]}\n\n", "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	a := newOpenAI("test", srv.URL, "k", "m", srv.Client())
+	chunks, err := collectStream(t, a, Request{})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if got := finalChunk(chunks).StopReason; got != StopEnd {
+		t.Fatalf("StopReason = %q，期望 %q", got, StopEnd)
+	}
+}

@@ -82,11 +82,12 @@ func TestTimeoutStreamFirstByte(t *testing.T) {
 }
 
 func TestTimeoutStreamIdleAfterFirstChunk(t *testing.T) {
-	// 每 20ms 推一块，推 2 块后阻塞；空闲超时 60ms 应触发。
+	// 每 10ms 推一块，推 2 块后阻塞；空闲超时 100ms 应触发。
+	// 余量留到 10 倍，避免重载 CI 上被调度抖动打成偶发失败。
 	tp := &timeoutProvider{
-		next:      trickleProvider{count: 2, interval: 20 * time.Millisecond, finish: false},
+		next:      trickleProvider{count: 2, interval: 10 * time.Millisecond, finish: false},
 		firstByte: 500 * time.Millisecond,
-		idle:      60 * time.Millisecond,
+		idle:      100 * time.Millisecond,
 	}
 	var got int
 	err := tp.ChatStream(context.Background(), Request{}, func(c Chunk) error {
@@ -104,11 +105,11 @@ func TestTimeoutStreamIdleAfterFirstChunk(t *testing.T) {
 }
 
 func TestTimeoutStreamActivityResetsIdle(t *testing.T) {
-	// 共 5 块、间隔 20ms，空闲阈值 80ms：持续有数据就不该超时。
+	// 共 5 块、间隔 10ms，空闲阈值 200ms：持续有数据就不该超时。
 	tp := &timeoutProvider{
-		next:      trickleProvider{count: 5, interval: 20 * time.Millisecond, finish: true},
+		next:      trickleProvider{count: 5, interval: 10 * time.Millisecond, finish: true},
 		firstByte: 500 * time.Millisecond,
-		idle:      80 * time.Millisecond,
+		idle:      200 * time.Millisecond,
 	}
 	var got int
 	err := tp.ChatStream(context.Background(), Request{}, func(c Chunk) error {
@@ -164,5 +165,28 @@ func TestTimeoutDefaultsClampIdle(t *testing.T) {
 	tp = newTimeoutProvider(blockingProvider{}, 4*time.Second)
 	if tp.idle != 5*time.Second {
 		t.Fatalf("空闲超时应取下限 5s，实际 %s", tp.idle)
+	}
+}
+
+func TestTimeoutSlowConsumerIsNotReportedAsTimeout(t *testing.T) {
+	// 调用方处理一块花的时间超过空闲阈值：这是消费慢，不是模型卡住。
+	tp := &timeoutProvider{
+		next:      trickleProvider{count: 2, interval: 5 * time.Millisecond, finish: true},
+		firstByte: time.Second,
+		idle:      50 * time.Millisecond,
+	}
+	var got int
+	err := tp.ChatStream(context.Background(), Request{}, func(c Chunk) error {
+		if c.TextDelta != "" {
+			got++
+		}
+		time.Sleep(120 * time.Millisecond)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("慢消费者不应被判为模型超时：%v", err)
+	}
+	if got != 2 {
+		t.Fatalf("收到 %d 块，期望 2", got)
 	}
 }

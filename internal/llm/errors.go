@@ -47,6 +47,10 @@ func classifyError(provider string, status int, retryAfter string, body []byte) 
 		return &RateLimitError{Provider: provider, RetryAfter: after, Message: message}
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return fmt.Errorf("llm: %s 鉴权失败（HTTP %d）：%s: %w", provider, status, message, ErrAuth)
+	case status == http.StatusRequestTimeout || status == http.StatusTooEarly:
+		// 408/425 是「这次没等你」而不是「请求本身错了」，重试有意义。
+		// 必须排在通用 4xx 兜底之前。
+		return fmt.Errorf("llm: %s 请求超时或过早（HTTP %d）：%s: %w", provider, status, message, ErrTransient)
 	case isContextOverflow(body):
 		// 上下文超限通常是 400，必须排在通用 4xx 之前识别。
 		return fmt.Errorf("llm: %s 上下文超限（HTTP %d）：%s: %w", provider, status, message, ErrContextOverflow)
@@ -70,9 +74,7 @@ func extractErrorMessage(body []byte) string {
 		return payload.Error.Message
 	}
 	text := strings.TrimSpace(string(body))
-	if len(text) > 300 {
-		text = text[:300] + "…"
-	}
+	text = truncateUTF8(text, 300)
 	if text == "" {
 		return "（响应体为空）"
 	}

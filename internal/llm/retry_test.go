@@ -238,3 +238,11 @@ func TestRetrySleepCanBeCanceled(t *testing.T) {
 		t.Fatalf("错误 = %v，期望 context.Canceled", err)
 	}
 }
+
+func TestRetryDelayNeverExceedsMaxAfterJitter(t *testing.T) {
+	r := newRetryProvider(&fakeProvider{}, 1)
+	r.jitter = func() float64 { return 0.999 } // 最大抖动
+	if got := r.delay(10, ErrTransient); got > r.maxDelay {
+		t.Fatalf("退避 %s 超过上限 %s", got, r.maxDelay)
+	}
+}

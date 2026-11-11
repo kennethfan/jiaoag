@@ -317,3 +317,130 @@ func TestAnthropicEndpointAvoidsDoubleV1(t *testing.T) {
 		}
 	}
 }
+
+func TestAnthropicEmptyToolResultStillSendsContent(t *testing.T) {
+	// 空结果的 tool_result 也必须带 content 字段（Anthropic 视为必填）。
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = readJSONBody(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
+	}))
+	defer srv.Close()
+
+	a := newAnthropic("test", srv.URL, "k", "m", srv.Client())
+	if _, err := a.Chat(context.Background(), Request{Messages: []Message{
+		ToolResultMessage(Block{Kind: BlockToolResult, ToolCallID: "t1", Result: ""}),
+	}}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	block := got["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	content, ok := block["content"]
+	if !ok {
+		t.Fatalf("tool_result 必须带 content 字段：%v", block)
+	}
+	if content != "" {
+		t.Fatalf("content = %v，期望空串", content)
+	}
+}
+
+func TestAnthropicPutsToolResultBeforeText(t *testing.T) {
+	// 同一条消息里 block 顺序可能被调用方写成 text → tool_result，
+	// 协议要求 tool_result 打头，映射时必须重排。
+	got := anthropicMessages([]Message{{Role: RoleUser, Blocks: []Block{
+		{Kind: BlockText, Text: "结果如下"},
+		{Kind: BlockToolResult, ToolCallID: "t1", Result: "ok"},
+	}}})
+	if len(got) != 1 || len(got[0].Content) != 2 {
+		t.Fatalf("映射结果 = %+v", got)
+	}
+	if got[0].Content[0].Type != "tool_result" || got[0].Content[1].Type != "text" {
+		t.Fatalf("block 顺序应为 tool_result → text：%+v", got[0].Content)
+	}
+}
+
+func TestAnthropicStreamUsesFullInputFromContentBlockStart(t *testing.T) {
+	// 有的代理只在 content_block_start 给完整 input、不发 input_json_delta。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(t, w,
+			"event: content_block_start\n"+
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"read_file\",\"input\":{\"path\":\"a.go\"}}}\n\n",
+			"event: content_block_stop\n"+
+				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: message_stop\n"+
+				"data: {\"type\":\"message_stop\"}\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	a := newAnthropic("test", srv.URL, "k", "m", srv.Client())
+	chunks, err := collectStream(t, a, Request{})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	calls := mergeToolCalls(chunks)
+	if len(calls) != 1 {
+		t.Fatalf("工具调用数 = %d，期望 1", len(calls))
+	}
+	if calls[0].Args != `{"path":"a.go"}` {
+		t.Fatalf("参数 = %q，期望从 content_block_start.input 取得", calls[0].Args)
+	}
+}
+
+func TestAnthropicStreamDefaultsStopReasonWhenMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeSSE(t, w,
+			"event: content_block_delta\n"+
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"完\"}}\n\n",
+			"event: message_stop\n"+
+				"data: {\"type\":\"message_stop\"}\n\n",
+		)
+	}))
+	defer srv.Close()
+
+	a := newAnthropic("test", srv.URL, "k", "m", srv.Client())
+	chunks, err := collectStream(t, a, Request{})
+	if err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if got := finalChunk(chunks).StopReason; got != StopEnd {
+		t.Fatalf("StopReason = %q，期望 %q", got, StopEnd)
+	}
+}
+
+func TestAnthropicMergesConsecutiveToolResultsInOrder(t *testing.T) {
+	// 调用方常为每个工具结果各追加一条 user 消息。合并后顺序必须与工具调用
+	// 一致，不能因为“tool_result 打头”把后到的结果插到前面。
+	got := anthropicMessages([]Message{
+		{Role: RoleAssistant, Blocks: []Block{
+			{Kind: BlockToolUse, ToolCallID: "t1", ToolName: "read"},
+			{Kind: BlockToolUse, ToolCallID: "t2", ToolName: "grep"},
+		}},
+		ToolResultMessage(Block{Kind: BlockToolResult, ToolCallID: "t1", Result: "A"}),
+		ToolResultMessage(Block{Kind: BlockToolResult, ToolCallID: "t2", Result: "B"}),
+	})
+	if len(got) != 2 {
+		t.Fatalf("消息数 = %d，期望 2（user/assistant 交替）：%+v", len(got), got)
+	}
+	user := got[1].Content
+	if len(user) != 2 {
+		t.Fatalf("user 消息 block 数 = %d，期望 2", len(user))
+	}
+	if user[0].ToolUseID != "t1" || user[1].ToolUseID != "t2" {
+		t.Fatalf("tool_result 顺序 = %s, %s，期望 t1, t2", user[0].ToolUseID, user[1].ToolUseID)
+	}
+}
+
+func TestAnthropicStartArgsTreatsWhitespaceEmptyObjectAsEmpty(t *testing.T) {
+	// 部分网关把 {} 序列化成 "{ }"，不能当成“已给完整参数”。
+	for _, raw := range []string{`{}`, `{ }`, "{\n}", `null`, `  `} {
+		if got := anthStartArgs(json.RawMessage(raw)); got != "" {
+			t.Errorf("input=%q 应视为空参数，实际 %q", raw, got)
+		}
+	}
+	got := anthStartArgs(json.RawMessage(`  {"path": "a.go"}  `))
+	if got != `{"path":"a.go"}` {
+		t.Errorf("完整参数应压掉空白，实际 %q", got)
+	}
+}

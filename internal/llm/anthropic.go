@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,8 +68,9 @@ type anthBlock struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	// Content 只用于 tool_result，且是必填：用指针区分「不发送」与「空串」。
+	Content *string `json:"content,omitempty"`
+	IsError bool    `json:"is_error,omitempty"`
 }
 
 type anthTool struct {
@@ -168,35 +170,40 @@ func (a *anthropicAdapter) pickModel(model string) string {
 
 // anthropicMessages 把归一消息摊平成 Anthropic 的 block 数组。
 //
-// 同角色相邻消息会合并：Anthropic 要求 user/assistant 交替，
-// 而「工具结果 + 追加说明」天然会产生两条连续的 user 消息。
+// 两条协议约束：
+//   - 同一消息里 tool_result 必须排在其它 block 之前；
+//   - user/assistant 必须交替，而「工具结果 + 追加说明」天然产生两条连续的
+//     user 消息，所以要合并。
 func anthropicMessages(messages []Message) []anthMessage {
 	out := make([]anthMessage, 0, len(messages))
 	for _, m := range messages {
-		var blocks []anthBlock
+		var (
+			results []anthBlock
+			others  []anthBlock
+		)
 		for _, b := range m.Blocks {
 			switch b.Kind {
 			case BlockText:
 				if b.Text != "" {
-					blocks = append(blocks, anthBlock{Type: "text", Text: b.Text})
+					others = append(others, anthBlock{Type: "text", Text: b.Text})
 				}
 			case BlockToolUse:
-				blocks = append(blocks, anthBlock{
+				others = append(others, anthBlock{
 					Type:  "tool_use",
 					ID:    b.ToolCallID,
 					Name:  b.ToolName,
 					Input: schemaOrEmptyObject(b.Args),
 				})
 			case BlockToolResult:
-				blocks = append(blocks, anthBlock{
+				results = append(results, anthBlock{
 					Type:      "tool_result",
 					ToolUseID: b.ToolCallID,
-					Content:   b.Result,
+					Content:   ptrString(b.Result),
 					IsError:   b.IsError,
 				})
 			}
 		}
-		if len(blocks) == 0 {
+		if len(results)+len(others) == 0 {
 			continue
 		}
 		role := "user"
@@ -204,9 +211,25 @@ func anthropicMessages(messages []Message) []anthMessage {
 			role = "assistant"
 		}
 		if n := len(out); n > 0 && out[n-1].Role == role {
-			out[n-1].Content = append(out[n-1].Content, blocks...)
+			// 合并时 tool_result 仍要打头：否则前面那条消息的文本会把它挤到后面。
+			// 但要插在「已有的 tool_result 之后」，不能整体前置——调用方常常为
+			// 每个工具结果各追加一条消息，整体前置会把它们的顺序颠倒过来。
+			prev := out[n-1].Content
+			at := 0
+			for at < len(prev) && prev[at].Type == "tool_result" {
+				at++
+			}
+			merged := make([]anthBlock, 0, len(prev)+len(results)+len(others))
+			merged = append(merged, prev[:at]...)
+			merged = append(merged, results...)
+			merged = append(merged, prev[at:]...)
+			merged = append(merged, others...)
+			out[n-1].Content = merged
 			continue
 		}
+		blocks := make([]anthBlock, 0, len(results)+len(others))
+		blocks = append(blocks, results...)
+		blocks = append(blocks, others...)
 		out = append(out, anthMessage{Role: role, Content: blocks})
 	}
 	return out
@@ -277,14 +300,17 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, req Request, fn func(
 	defer resp.Body.Close()
 
 	var (
-		usage    Usage
-		stop     StopReason
+		usage Usage
+		// stop 默认 StopEnd：与非流式的 anthropicStopReason("") 一致。代价是
+		// 「上游没给 stop_reason 就正常关闭」与「回答讲完了」不可区分，
+		// 需要截断检测时由上层结合工具调用闭环判断。
+		stop     = StopEnd
 		ordinals = make(map[int]int) // content block index → 工具调用序号
 		nextOrd  int
 		done     bool
 	)
 
-	err = readSSE(resp.Body, func(event string, data []byte) error {
+	err = readSSE(a.name, resp.Body, func(event string, data []byte) error {
 		var ev anthStreamEvent
 		if err := json.Unmarshal(data, &ev); err != nil {
 			return fmt.Errorf("llm: 解析 anthropic 流式数据失败：%w: %w", ErrTransient, err)
@@ -313,6 +339,9 @@ func (a *anthropicAdapter) ChatStream(ctx context.Context, req Request, fn func(
 				ordinals[ev.Index] = ord
 				nextOrd++
 				delta := ToolCallDelta{Index: ord, ID: ev.ContentBlock.ID, Name: ev.ContentBlock.Name}
+				// 官方实现发 input:{} 再靠 input_json_delta 拼；但有的代理只发
+				// 完整 input 不发 delta，这时必须把参数原样带出去。
+				delta.ArgsFragment = anthStartArgs(ev.ContentBlock.Input)
 				return fn(Chunk{ToolCallDelta: &delta})
 			}
 		case "content_block_delta":
@@ -386,4 +415,25 @@ func anthropicStopReason(reason string) StopReason {
 	default:
 		return StopOther
 	}
+}
+
+// anthStartArgs 取出 content_block_start 里可能已经完整给出的工具参数。
+//
+// 空串、null 与空对象都表示「参数还在后续 delta 里」，不能参与拼接——否则会与
+// 后续片段拼出非法 JSON。空对象要先压掉空白再比较：部分网关（如 Jackson 的
+// pretty printer）会把 {} 序列化成 "{ }"，直接比字面量会漏判。
+// 非空值说明代理一次性给了完整参数，压掉空白后作为首个片段。
+func anthStartArgs(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, []byte(text)); err == nil {
+		text = compact.String()
+	}
+	if text == "{}" {
+		return ""
+	}
+	return text
 }

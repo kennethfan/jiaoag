@@ -83,8 +83,13 @@ func (r *retryProvider) delay(attempt int, err error) time.Duration {
 	if d > r.maxDelay || d <= 0 {
 		d = r.maxDelay
 	}
-	// 抖动：0.5x ~ 1.5x，避免多客户端同时重试。
-	return time.Duration(float64(d) * (0.5 + r.jitter()))
+	// 抖动：0.5x ~ 1.5x，避免多客户端同时重试；封顶后再夹一次，
+	// 否则抖动会把等待推到 1.5×maxDelay。
+	d = time.Duration(float64(d) * (0.5 + r.jitter()))
+	if d > r.maxDelay {
+		d = r.maxDelay
+	}
+	return d
 }
 
 func (r *retryProvider) Chat(ctx context.Context, req Request) (Response, error) {
