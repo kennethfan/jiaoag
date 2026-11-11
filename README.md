@@ -3,6 +3,7 @@
 单用户的编码自动化 agent。服务端在本机直接操作真实文件系统与 shell，TUI 客户端只负责渲染与审批；两者通过 WebSocket 长连接通信。
 
 - 术语表：`CONTEXT.md`
+- 架构与分层：`docs/design/agent-architecture.md`
 - 关键取舍：`docs/adr/`
 - 实施计划：`docs/plans/v1.md`
 
