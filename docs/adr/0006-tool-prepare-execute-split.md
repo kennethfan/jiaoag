@@ -4,6 +4,8 @@
 
 因此工具契约拆成两段：`Prepare(ctx, args) (PreparedCall, error)` 只读——解析路径、读出现状、算 sha256、算 unified diff、解析 argv 与超时；`Execute(ctx, PreparedCall) (Result, error)` 才写盘或起进程。审批发生在两段之间，`perm.Evaluate` 的输入就是 `PreparedCall`。
 
+> 落地说明（M4）：类型最终名为 `tools.Prepared`（字段 `Call` / `Spec` / `Args` / `Paths` / `Change`），`perm.Decide` 的输入是其中的 `Spec`，本次写入的提案在 `Prepared.Change` 里；两段式契约本身未变。字段与签名以 `docs/design/agent-architecture.md` §4.2 为准。
+
 ## Considered Options
 
 - **执行器内部回调审批** — 实现直接，但「先写后问」在类型上无法排除，且不同工具的审批时机不可能一致。
