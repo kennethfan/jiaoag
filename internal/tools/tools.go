@@ -58,8 +58,16 @@ type Prepared struct {
 type Result struct {
 	Content string
 	IsError bool
-	Elapsed time.Duration
+	// Truncated 表示输出被 MaxOutputBytes 截过：事件载荷会带上它，
+	// 界面与回放据此知道「这段不是全部」。
+	Truncated bool
+	Elapsed   time.Duration
 }
+
+// MaxOutputBytes 是单次工具输出的硬上限。工具的参数上界（max_results 等）
+// 约束条数，但一条 grep 匹配行本身可达 1 MB，没有字节上限时单个
+// tool.result 事件就能把事件日志和界面撑爆。
+const MaxOutputBytes = 256 << 10
 
 // Tool 是一个可被模型调用的工具。
 type Tool interface {

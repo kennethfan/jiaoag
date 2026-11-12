@@ -304,6 +304,7 @@ func (a *Agent) runTool(ctx context.Context, task domain.Task, block llm.Block) 
 		ToolCallID: call.ID,
 		Status:     status,
 		IsError:    result.IsError,
+		Truncated:  result.Truncated,
 		Output:     result.Content,
 		DurationMS: elapsed.Milliseconds(),
 	}
