@@ -20,6 +20,7 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/prompt"
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/workspace"
@@ -43,6 +44,31 @@ type Recorder interface {
 	Record(ctx context.Context, tr domain.Transition) error
 	Events(ctx context.Context, sessionID domain.SessionID) ([]domain.Event, error)
 	Delta(ctx context.Context, ev domain.Event) error
+	// AwaitApproval 阻塞到审批被裁决。ctx 取消时返回 ctx.Err()：
+	// 审批不设超时，等多久由用户决定，只有取消能把它打断。
+	AwaitApproval(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)
+}
+
+// ApprovalRequest 是一次等待裁决的请求。
+//
+// Tool/Args 用来识别 allow_session：同一会话里同一个 tool+args 只问一次。
+// agent 把参数原文交给 Recorder，而不是让它去查工具调用表，是因为审批
+// 只能由正在执行这次调用的协程发起，参数此刻就在手里。
+type ApprovalRequest struct {
+	SessionID  domain.SessionID
+	ApprovalID domain.ApprovalID
+	Tool       string
+	Args       json.RawMessage
+}
+
+// ApprovalResult 是裁决结果。
+//
+// Source 区分人工与策略放行（allow_session 命中时是 policy），必须入审计。
+type ApprovalResult struct {
+	Decision domain.Decision
+	Source   domain.ApprovalSource
+	// Note 是用户裁决时留的说明，落进 approvals.note。
+	Note string
 }
 
 // Options 是 Agent 的依赖与约束。
@@ -173,7 +199,7 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 
 		results := make([]llm.Block, 0, len(calls))
 		for _, call := range calls {
-			block, err := a.runTool(ctx, task, call)
+			block, err := a.runTool(ctx, task, round, call)
 			if err != nil {
 				if ctx.Err() != nil {
 					return a.finish(ctx, task, domain.TaskCanceled, "canceled", "", usage)
@@ -275,54 +301,77 @@ func (a *Agent) callModel(ctx context.Context, task domain.Task, round int, req 
 	return message, usage, nil
 }
 
-// runTool 执行一次工具调用，记录 tool.requested / tool.result。
-func (a *Agent) runTool(ctx context.Context, task domain.Task, block llm.Block) (llm.Block, error) {
+// runTool 执行一次工具调用：requested → prepared →（写入走审批）→ result。
+//
+// 写入工具在这里被拦住：Prepare 已经算好 diff，但没有用户裁决就不落盘。
+func (a *Agent) runTool(ctx context.Context, task domain.Task, round int, block llm.Block) (llm.Block, error) {
 	call := tools.Call{ID: block.ToolCallID, Name: block.ToolName, Args: block.Args}
+	started := time.Now()
+
+	// toolCall 是这次调用的投影。存储层的 upsert 用 ON CONFLICT 覆盖全部
+	// 字段，所以每一步都要整份写回：只带增量的写法会把 name/args 清空。
+	toolCall := &domain.ToolCall{
+		ID:        domain.ToolCallID(call.ID),
+		TaskID:    task.ID,
+		SessionID: task.SessionID,
+		Round:     round,
+		Name:      call.Name,
+		Args:      call.Args,
+		Status:    domain.ToolRequested,
+		CreatedAt: domain.Now(),
+	}
 
 	requested, err := domain.NewEvent(domain.EventToolRequested, task.SessionID, task.ID,
 		domain.ToolRequestedPayload{Tool: call.Name, ToolCallID: call.ID, Args: call.Args})
 	if err != nil {
 		return llm.Block{}, err
 	}
-	if err := a.record(ctx, task, domain.Transition{Events: []domain.Event{requested}}); err != nil {
+	if err := a.record(ctx, task, domain.Transition{
+		ToolCall: toolCall,
+		Events:   []domain.Event{requested},
+	}); err != nil {
 		return llm.Block{}, err
 	}
 
-	started := time.Now()
-	result, _, err := a.opts.Tools.Run(ctx, call)
-	if err != nil {
-		return llm.Block{}, err
-	}
-	elapsed := time.Since(started)
-
-	status := "ok"
-	if result.IsError {
-		status = "error"
-	}
-	payload := domain.ToolResultPayload{
-		Tool:       call.Name,
-		ToolCallID: call.ID,
-		Status:     status,
-		IsError:    result.IsError,
-		Truncated:  result.Truncated,
-		Output:     result.Content,
-		DurationMS: elapsed.Milliseconds(),
-	}
-	ev, err := domain.NewEvent(domain.EventToolResult, task.SessionID, task.ID, payload)
-	if err != nil {
-		return llm.Block{}, err
-	}
-	if err := a.record(ctx, task, domain.Transition{Events: []domain.Event{ev}}); err != nil {
+	prepared, perr := a.opts.Tools.Prepare(ctx, call)
+	// tool.prepared 在准备之后立刻落库：即使后面被拒绝，事后也能看出它
+	// 想调什么、想改哪些文件。
+	if err := a.recordPrepared(ctx, task, toolCall, prepared); err != nil {
 		return llm.Block{}, err
 	}
 
-	return llm.Block{
-		Kind:       llm.BlockToolResult,
-		ToolCallID: call.ID,
-		ToolName:   call.Name,
-		Result:     result.Content,
-		IsError:    result.IsError,
-	}, nil
+	var result tools.Result
+	switch verdict := perm.Decide(prepared.Spec); {
+	case perr != nil:
+		res, rerr := tools.Failure(ctx, perr)
+		if rerr != nil {
+			return llm.Block{}, rerr
+		}
+		result = res
+	case prepared.Change != nil:
+		// 写入：先落提案与审批请求，等用户裁决。
+		waitStart := time.Now()
+		result, err = a.proposeChange(ctx, task, toolCall, prepared)
+		if err != nil {
+			return llm.Block{}, err
+		}
+		// 人工审阅不是工具耗时：把等待的这段时间从计时里剔除，否则
+		// 用户离开十分钟再批准，tool.result 会写一个 600000 ms。
+		started = started.Add(time.Since(waitStart))
+	case verdict.Verdict == perm.RequireUser:
+		// 判定要求审批，但工具没给出可审的东西（没有 diff）：宁可拒绝执行，
+		// 也不能就这么放它过去。以后接入 run_command 时这里就是兜底。
+		result = tools.Result{
+			Content: fmt.Sprintf("工具 %s 需要审批但没有提供可审的内容，已拒绝执行（%s）", call.Name, verdict.Reason),
+			IsError: true,
+		}
+	default:
+		result, err = a.opts.Tools.Execute(ctx, prepared)
+		if err != nil {
+			return llm.Block{}, err
+		}
+	}
+	return a.finishTool(ctx, task, toolCall, result, started)
 }
 
 // recordError 标记「写事件失败」。存储故障不能和模型错误混为一谈：

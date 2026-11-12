@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/kennethfan/jiaoag/internal/patch"
 )
 
 var (
@@ -260,4 +262,111 @@ func containsNUL(b []byte) bool {
 		}
 	}
 	return false
+}
+
+// Snapshot 读取整个文件，供变更提案计算旧内容与旧摘要。
+//
+// 与 Read 的差别是不分行、不截断：diff 需要完整内容才能算准。文件不存在
+// 时返回 exists=false（新建文件的正常情况），其余错误原样上抛。
+func (w *Workspace) Snapshot(rel string) ([]byte, bool, error) {
+	abs, err := w.Resolve(rel)
+	if err != nil {
+		return nil, false, err
+	}
+	// Lstat 而不是 Stat：目标本身是符号链接时一律按「不是普通文件」拒绝。
+	// 写入用 rename 替换的是链接，而提案的 diff 是按链接指向的内容算的——
+	// 放行一次就成了「批准的和落盘的」两件事。
+	info, err := os.Lstat(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("workspace: 读取 %s: %w", rel, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("%w: %s", ErrNotRegular, rel)
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return nil, false, fmt.Errorf("workspace: 读取 %s: %w", rel, err)
+	}
+	if containsNUL(data) {
+		return nil, false, fmt.Errorf("%w: %s", ErrBinary, rel)
+	}
+	return data, true, nil
+}
+
+// Hash 返回文件的 sha256 摘要；文件不存在时返回 exists=false。
+//
+// 落盘前的 CAS 检查用的就是它：摘要不等于提案里的 base_hash，说明文件在
+// 用户审阅期间被改过，此时覆盖会静默丢掉别人的改动。
+func (w *Workspace) Hash(rel string) (string, bool, error) {
+	data, exists, err := w.Snapshot(rel)
+	if err != nil {
+		return "", false, err
+	}
+	if !exists {
+		return "", false, nil
+	}
+	return patch.Hash(data), true, nil
+}
+
+// Write 原子地写入工作区内的文件：先写同目录临时文件，再 rename 覆盖。
+//
+// 直接 os.WriteFile 在写到一半时崩溃会留下半个文件；rename 在同一文件系统内
+// 是原子的，读者看到的要么是旧内容、要么是新内容。父目录必须已存在——
+// 隐式建目录会让「路径写错」变成「在奇怪的地方建了一堆文件」。
+func (w *Workspace) Write(rel string, content []byte) error {
+	abs, err := w.Resolve(rel)
+	if err != nil {
+		return err
+	}
+	if containsNUL(content) {
+		return fmt.Errorf("%w: %s", ErrBinary, rel)
+	}
+
+	mode := os.FileMode(0o644)
+	// Lstat 而不是 Stat：目标本身是符号链接时写不进去。rename 替换的是链接
+	// 自身，目标文件一个字节都不会动，和用户刚批准的那份 diff 不是同一件事。
+	info, err := os.Lstat(abs)
+	switch {
+	case err == nil:
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: %s", ErrNotRegular, rel)
+		}
+		// 保留原权限：改写一个 0600 的密钥文件不该顺手把它变成 0644。
+		mode = info.Mode().Perm()
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("workspace: 读取 %s: %w", rel, err)
+	}
+
+	dir := filepath.Dir(abs)
+	tmp, err := os.CreateTemp(dir, ".jiaoag-*.tmp")
+	if err != nil {
+		return fmt.Errorf("workspace: 在 %s 创建临时文件失败: %w", rel, err)
+	}
+	tmpName := tmp.Name()
+	// rename 成功后临时文件已经不存在，这里只是失败路径上的清理。
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("workspace: 写入 %s: %w", rel, err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return fmt.Errorf("workspace: 设置 %s 权限: %w", rel, err)
+	}
+	// Sync 之后再 rename：否则断电可能留下一个「已改名但内容为空」的文件。
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("workspace: 落盘 %s: %w", rel, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("workspace: 关闭 %s 的临时文件: %w", rel, err)
+	}
+	if err := os.Rename(tmpName, abs); err != nil {
+		return fmt.Errorf("workspace: 覆盖 %s: %w", rel, err)
+	}
+	return nil
 }

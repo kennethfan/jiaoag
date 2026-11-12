@@ -58,6 +58,11 @@ type fakeRecorder struct {
 	deltas      []domain.Event
 	transitions []domain.Transition
 	seq         int64
+
+	// approvals 记录 agent 提出的待审批请求；decide 决定怎么裁决。
+	// 未设置 decide 时一律 allow_once，让只读用例不受影响。
+	approvals []agent.ApprovalRequest
+	decide    func(agent.ApprovalRequest) (agent.ApprovalResult, error)
 }
 
 func (r *fakeRecorder) Record(_ context.Context, tr domain.Transition) error {
@@ -78,6 +83,14 @@ func (r *fakeRecorder) Events(context.Context, domain.SessionID) ([]domain.Event
 func (r *fakeRecorder) Delta(_ context.Context, ev domain.Event) error {
 	r.deltas = append(r.deltas, ev)
 	return nil
+}
+
+func (r *fakeRecorder) AwaitApproval(_ context.Context, req agent.ApprovalRequest) (agent.ApprovalResult, error) {
+	r.approvals = append(r.approvals, req)
+	if r.decide != nil {
+		return r.decide(req)
+	}
+	return agent.ApprovalResult{Decision: domain.DecisionAllowOnce, Source: domain.SourceUser}, nil
 }
 
 func (r *fakeRecorder) kinds() []string {
@@ -118,7 +131,8 @@ func newTestAgent(t *testing.T, provider llm.Provider, rec *fakeRecorder, maxRou
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := tools.NewRegistry(tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws))
+	reg, err := tools.NewRegistry(tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws),
+		tools.NewWriteFile(ws), tools.NewEditFile(ws))
 	if err != nil {
 		t.Fatal(err)
 	}

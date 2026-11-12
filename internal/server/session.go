@@ -133,6 +133,43 @@ func (s *Server) handleTaskCancel(ctx context.Context, c *clientConn, env protoc
 	_ = c.send(ctx, reply)
 }
 
+// handleApprovalResolve 把用户的裁决交给正在等待的 agent。
+//
+// 不回执帧：裁决的结果由 agent 写成 approval.resolved 事件，客户端从事件流
+// 里看到它。重复裁决是幂等的空操作，已过期的审批也直接成功返回——用户点两下
+// 不该收到一个「错误」。
+func (s *Server) handleApprovalResolve(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.ApprovalResolvePayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	if p.SessionID == "" || p.ApprovalID == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "approval.resolve 需要 session_id 与 approval_id")
+		return
+	}
+	// 这里按线协议校验一次：未知裁决是客户端错误，不该报成服务端内部故障。
+	switch domain.Decision(p.Decision) {
+	case domain.DecisionAllowOnce, domain.DecisionAllowSession, domain.DecisionDeny:
+	default:
+		c.sendError(ctx, protocol.CodeBadRequest,
+			"approval.resolve 的 decision 必须是 allow_once | allow_session | deny")
+		return
+	}
+	if err := s.app.ResolveApproval(ctx, domain.SessionID(p.SessionID),
+		domain.ApprovalID(p.ApprovalID), domain.Decision(p.Decision), p.Note); err != nil {
+		code := protocol.CodeInternal
+		if errors.Is(err, domain.ErrNotFound) {
+			code = protocol.CodeBadRequest
+		}
+		c.sendError(ctx, code, err.Error())
+	}
+}
+
 // handleEventSubscribe 启动一条独立的写协程：订阅 → 回放 → 刷缓冲去重 → 实时推送。
 //
 // 顺序不能反：先订阅才能保证回放期间产生的事件不会漏；回放之后必须清空

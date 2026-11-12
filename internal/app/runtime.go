@@ -54,6 +54,11 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	a.runtime = &deps
+	// 上一次进程留下的待审批永远等不到裁决（v1 不自动续跑），启动时先清掉。
+	// 放在这里而不是 New：清理要写库，而 New 返回不了错误。
+	if err := a.ExpirePendingApprovals(context.Background()); err != nil {
+		return fmt.Errorf("app: 清理遗留审批: %w", err)
+	}
 	return nil
 }
 

@@ -7,8 +7,6 @@ package app
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -43,6 +41,10 @@ type App struct {
 	runtimeMu sync.Mutex
 	runtime   *RuntimeDeps
 	runs      map[domain.SessionID]*taskRun
+
+	// approvals 保存审批等待者与会话级白名单，见 approval.go。它有自己的锁：
+	// 等待裁决是长时间阻塞的，不能占用 runtimeMu（否则取消与提交都会被卡住）。
+	approvals approvalState
 }
 
 // commit 在 commitMu 内完成「存储提交 → hub 广播」，是应用层唯一的写入入口。
@@ -91,13 +93,7 @@ func (a *App) Close() error {
 func (a *App) Hub() *event.Hub { return a.hub }
 
 // NewID 生成带前缀的随机标识，例如 ses_1f3c…。
-func NewID(prefix string) (string, error) {
-	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("app: 生成标识: %w", err)
-	}
-	return prefix + "_" + hex.EncodeToString(buf[:]), nil
-}
+func NewID(prefix string) (string, error) { return domain.NewID(prefix) }
 
 // CreateSession 创建工作区会话，并写入 session.created。
 func (a *App) CreateSession(ctx context.Context, workspace, provider, model, title string) (domain.Session, error) {
@@ -228,6 +224,10 @@ func (a *App) GetSession(ctx context.Context, id domain.SessionID) (domain.Sessi
 
 func (a *App) GetTask(ctx context.Context, id domain.TaskID) (domain.Task, error) {
 	return a.store.GetTask(ctx, id)
+}
+
+func (a *App) GetToolCall(ctx context.Context, id domain.ToolCallID) (domain.ToolCall, error) {
+	return a.store.GetToolCall(ctx, id)
 }
 
 func (a *App) ListTasks(ctx context.Context, sessionID domain.SessionID) ([]domain.Task, error) {

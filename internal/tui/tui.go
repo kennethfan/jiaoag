@@ -7,6 +7,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
+	"github.com/kennethfan/jiaoag/internal/patch"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 	"github.com/kennethfan/jiaoag/internal/version"
 )
@@ -58,7 +60,30 @@ type Model struct {
 	stream   string
 	input    string
 	maxLines int
+
+	// approval 非空表示有一个等裁决的变更提案：此时输入行让位给 diff 面板，
+	// 除翻页与 y/a/n 之外的按键一律忽略，避免用户一边审 diff 一边打字。
+	approval *approvalView
 }
+
+// approvalView 是审批面板的本地状态。
+type approvalView struct {
+	id        string
+	path      string
+	diff      string
+	truncated bool
+	// added/removed 是 diff 的规模，来自 patch.Stats：面板头上一行就能
+	// 让人知道这次改动有多大，不必先翻到底。
+	added   int
+	removed int
+	offset  int
+}
+
+// 审批面板一次显示多少行 diff。
+const (
+	diffPanelHeight = 18
+	diffPageStep    = diffPanelHeight - 2
+)
 
 // New 构造客户端模型。
 func New(opts Options) *Model {
@@ -142,6 +167,11 @@ func sendCmd(conn *websocket.Conn, typ string, payload any) tea.Cmd {
 		if err != nil {
 			return connectErrMsg{err}
 		}
+		// 断线后 Model.conn 会被清空：这里必须挡住 nil，
+		// 否则 wsjson.Write 的空指针会把整个客户端崩掉。
+		if conn == nil {
+			return closedMsg{err: errors.New("未连接到服务端")}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := wsjson.Write(ctx, conn, env); err != nil {
@@ -162,6 +192,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("已连接 %s · 服务端 %s", m.opts.URL, msg.hello.ServerVersion)
 		m.dialog = nil
 		m.sessionID, m.taskID, m.taskStatus, m.stream = "", "", "", ""
+		m.approval = nil
 		return m, tea.Batch(
 			waitForEnvelope(m.conn),
 			sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
@@ -176,6 +207,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(next, waitForEnvelope(m.conn))
 
 	case closedMsg:
+		// 连接已死，留着指针只会让后续 sendCmd 往一条废连接上写。
+		m.conn = nil
 		m.status = "连接已断开（ctrl+r 重连 / ctrl+c 退出）"
 		m.appendLine("连接断开：" + errText(msg.err))
 		return m, nil
@@ -190,10 +223,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.Keystroke()
-	switch key {
-	case "ctrl+c":
+	// ctrl+c 永远退出：审批面板也不能把用户困在界面里。
+	if key == "ctrl+c" {
 		m.close()
 		return m, tea.Quit
+	}
+	if m.approval != nil {
+		return m.handleApprovalKey(key)
+	}
+	switch key {
 	case "esc":
 		// 有任务在跑时 esc 是取消，否则退出：避免误按把界面关掉。
 		if m.cancelable() {
@@ -340,6 +378,39 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 			}
 			m.appendLine(fmt.Sprintf("  ↳ %s %s（%d ms）", t.Tool, status, t.DurationMS))
 		}
+	case string(domain.EventApprovalRequested):
+		var a domain.ApprovalRequestedPayload
+		if err := json.Unmarshal(p.Payload, &a); err == nil {
+			added, removed := patch.Stats(a.Diff)
+			m.approval = &approvalView{
+				id:        string(a.ApprovalID),
+				path:      a.Path,
+				diff:      a.Diff,
+				truncated: a.Truncated,
+				added:     added,
+				removed:   removed,
+			}
+			// 面板占屏，提示行要短：详情在下面几行。
+			m.appendLine("⚠ 待审批：" + a.Path)
+		}
+	case string(domain.EventApprovalResolved):
+		var a domain.ApprovalResolvedPayload
+		if err := json.Unmarshal(p.Payload, &a); err == nil {
+			if m.approval != nil && m.approval.id == string(a.ApprovalID) {
+				m.approval = nil
+			}
+			m.appendLine("— 审批 " + decisionLabel(a.Decision))
+		}
+	case string(domain.EventProposalApplied):
+		var p2 domain.ProposalAppliedPayload
+		if err := json.Unmarshal(p.Payload, &p2); err == nil {
+			m.appendLine("✔ 已写入 " + p2.Path)
+		}
+	case string(domain.EventProposalRejected):
+		var p2 domain.ProposalRejectedPayload
+		if err := json.Unmarshal(p.Payload, &p2); err == nil {
+			m.appendLine(fmt.Sprintf("✖ 未写入 %s（%s）", p2.Path, p2.Status))
+		}
 	case string(domain.EventError):
 		var e domain.ErrorPayload
 		if err := json.Unmarshal(p.Payload, &e); err == nil {
@@ -363,17 +434,149 @@ func (m *Model) View() tea.View {
 		b.WriteString(m.stream)
 		b.WriteByte('\n')
 	}
-	if m.sessionID != "" {
+	switch {
+	case m.approval != nil:
+		b.WriteByte('\n')
+		b.WriteString(m.renderApprovalPanel())
+	case m.sessionID != "":
 		b.WriteString("\n› ")
 		b.WriteString(m.input)
 		b.WriteString("▏\n")
 	}
-	b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+r] 重连  [ctrl+c] 退出\n")
+	if m.approval == nil {
+		b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+r] 重连  [ctrl+c] 退出\n")
+	}
 	return tea.NewView(b.String())
 }
 
 func (m *Model) cancelable() bool {
 	return m.taskStatus == string(domain.TaskQueued) || m.taskStatus == string(domain.TaskRunning)
+}
+
+// handleApprovalKey 处理审批面板上的按键。
+//
+// 面板打开时刻意不给输入行留任何按键：用户此刻要判断「这份改动对不对」，
+// 误把 y/n 打进对话框会很危险。esc 也不退出——按错一次就丢掉整个会话
+// 太贵了，要退出请用 ctrl+c。
+func (m *Model) handleApprovalKey(key string) (tea.Model, tea.Cmd) {
+	v := m.approval
+	total := len(strings.Split(strings.TrimRight(v.diff, "\n"), "\n"))
+	switch key {
+	case "y":
+		return m.resolveApproval(domain.DecisionAllowOnce)
+	case "a":
+		return m.resolveApproval(domain.DecisionAllowSession)
+	case "n":
+		return m.resolveApproval(domain.DecisionDeny)
+	case "ctrl+r":
+		// 断线时面板会一直挂着；不在这儿接住 ctrl+r，用户只剩 ctrl+c 一条路。
+		// 重连会建一个新会话，connectedMsg 里会把面板清掉。
+		m.approval = nil
+		m.close()
+		m.status = "重连中…"
+		return m, m.connectCmd()
+	case "up":
+		if v.offset > 0 {
+			v.offset--
+		}
+	case "down":
+		if v.offset < total-1 {
+			v.offset++
+		}
+	case "pgup":
+		v.offset -= diffPageStep
+		if v.offset < 0 {
+			v.offset = 0
+		}
+	case "pgdown":
+		v.offset += diffPageStep
+		if v.offset > total-1 {
+			v.offset = total - 1
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) resolveApproval(d domain.Decision) (tea.Model, tea.Cmd) {
+	v := m.approval
+	if v == nil || m.conn == nil {
+		return m, nil
+	}
+	// 先清面板：裁决请求晚到或失败时，界面不该继续显示「待审批」。
+	m.approval = nil
+	m.appendLine("→ " + decisionLabel(d) + "（等待服务端确认）")
+	return m, sendCmd(m.conn, protocol.TypeApprovalResolve, protocol.ApprovalResolvePayload{
+		SessionID:  m.sessionID,
+		ApprovalID: v.id,
+		Decision:   string(d),
+	})
+}
+
+// renderDiff 取出 diff 的 [offset, offset+height) 行，并报告后面还有没有内容。
+//
+// 纯函数：审批面板的翻页边界可以在没有终端的测试里断言。
+func renderDiff(diff string, offset, height int) (lines []string, hasMore bool) {
+	all := strings.Split(strings.TrimRight(diff, "\n"), "\n")
+	if height <= 0 {
+		height = diffPanelHeight
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(all) {
+		offset = len(all)
+	}
+	end := offset + height
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], end < len(all)
+}
+
+// renderApprovalPanel 渲染 diff 面板。
+func (m *Model) renderApprovalPanel() string {
+	v := m.approval
+	var b strings.Builder
+	// 截断时 +N −M 只是前 256 KB 的统计，必须写在脸上。
+	suffix := ""
+	if v.truncated {
+		suffix = "，已截断"
+	}
+	fmt.Fprintf(&b, "✎ 待审批 %s（+%d −%d%s）\n", v.path, v.added, v.removed, suffix)
+	b.WriteString(strings.Repeat("─", 72))
+	b.WriteByte('\n')
+
+	lines, hasMore := renderDiff(v.diff, v.offset, diffPanelHeight)
+	for _, line := range lines {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	if hasMore {
+		b.WriteString("… 还有更多（↓ / pgdn）\n")
+	}
+	if v.truncated {
+		b.WriteString("[diff 过长已截断，批准前请先用编辑器核对]\n")
+	}
+	b.WriteString(strings.Repeat("─", 72))
+	b.WriteByte('\n')
+	b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝  [↑↓] 翻行  [pgup/pgdn] 翻页\n")
+	b.WriteString("[ctrl+r] 重连  [ctrl+c] 退出\n")
+	return b.String()
+}
+
+func decisionLabel(d domain.Decision) string {
+	switch d {
+	case domain.DecisionAllowOnce:
+		return "已批准（一次）"
+	case domain.DecisionAllowSession:
+		return "已批准（本会话内同类请求）"
+	case domain.DecisionDeny:
+		return "已拒绝"
+	case domain.DecisionExpired:
+		return "已过期"
+	default:
+		return string(d)
+	}
 }
 
 func (m *Model) close() {

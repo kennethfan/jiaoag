@@ -32,8 +32,12 @@ const (
 	EventApprovalResolved  EventKind = "approval.resolved"
 	EventProposalCreated   EventKind = "proposal.created"
 	EventProposalApplied   EventKind = "proposal.applied"
-	EventToolResult        EventKind = "tool.result"
-	EventError             EventKind = "error"
+	// EventProposalRejected 覆盖「提案没落盘」的全部结局：被拒、失效、写失败。
+	// 结局写在载荷的 status 里而不是拆成三种事件类型：它们对回放消费者的
+	// 含义是同一个——这次写入没有发生。
+	EventProposalRejected EventKind = "proposal.rejected"
+	EventToolResult       EventKind = "tool.result"
+	EventError            EventKind = "error"
 )
 
 // Event 是事件日志里的一个不可变事实。
@@ -165,7 +169,10 @@ type ApprovalRequestedPayload struct {
 	Risk       Risk         `json:"risk,omitempty"`
 	Path       string       `json:"path,omitempty"`
 	Diff       string       `json:"diff,omitempty"`
-	Command    []string     `json:"command,omitempty"`
+	// Truncated 表示 Diff 已被 patch.MaxDiffBytes 截断。客户端必须据此
+	// 提示「你看到的不是全部」，否则就是在让人盲批一份没看全的改动。
+	Truncated bool     `json:"truncated,omitempty"`
+	Command   []string `json:"command,omitempty"`
 }
 
 type ApprovalResolvedPayload struct {
@@ -186,6 +193,14 @@ type ProposalAppliedPayload struct {
 	ProposalID ProposalID `json:"proposal_id"`
 	Path       string     `json:"path"`
 	NewHash    string     `json:"new_hash"`
+}
+
+// ProposalRejectedPayload 记录「这次写入没有发生」以及原因。
+type ProposalRejectedPayload struct {
+	ProposalID ProposalID     `json:"proposal_id"`
+	Path       string         `json:"path"`
+	Status     ProposalStatus `json:"status"`
+	Reason     string         `json:"reason,omitempty"`
 }
 
 type ToolResultPayload struct {

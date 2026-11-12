@@ -29,6 +29,7 @@ const (
 	TypeTaskQueued        = "task.queued"         // S→C
 	TypeTaskCancel        = "task.cancel"         // C→S：取消排队中或运行中的任务
 	TypeTaskCanceled      = "task.canceled"       // S→C：取消请求已被接受
+	TypeApprovalResolve   = "approval.resolve"    // C→S：对一次待审批给出裁决
 	TypeEventSubscribe    = "event.subscribe"     // C→S
 )
 
@@ -159,4 +160,16 @@ type StreamEventPayload struct {
 	Kind    string          `json:"kind"`
 	TaskID  string          `json:"task_id,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// ApprovalResolvePayload 是用户对一次待审批的裁决。
+//
+// 服务端只回一条 approval.resolved 事件（不是回执帧）：裁决的结果是事件日志
+// 的一部分，多一条回执帧就等于给同一件事开两条投递路径，迟早不一致。
+type ApprovalResolvePayload struct {
+	SessionID  string `json:"session_id"`
+	ApprovalID string `json:"approval_id"`
+	// Decision 取 allow_once | allow_session | deny。
+	Decision string `json:"decision"`
+	Note     string `json:"note,omitempty"`
 }

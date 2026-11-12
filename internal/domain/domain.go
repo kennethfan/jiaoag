@@ -5,6 +5,8 @@
 package domain
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -38,6 +40,17 @@ func (id ProposalID) Valid() bool { return id != "" }
 
 // Now 返回 UTC 时间。库里的时间一律由服务端生成，避免多客户端时钟漂移。
 func Now() time.Time { return time.Now().UTC() }
+
+// NewID 生成带前缀的随机标识，例如 ses_1f3c…。
+//
+// 放在 domain 而不是 app：agent 要自己的审批/提案标识，但它不依赖应用层。
+func NewID(prefix string) (string, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("domain: 生成标识: %w", err)
+	}
+	return prefix + "_" + hex.EncodeToString(buf[:]), nil
+}
 
 // Session 是用户与某个工作区之间的一段连续工作。
 type Session struct {
@@ -125,6 +138,9 @@ type ApprovalSource string
 const (
 	SourceUser   ApprovalSource = "user"
 	SourcePolicy ApprovalSource = "policy"
+	// SourceSystem 表示不是人也不是策略的决定，例如进程重启后清理遗留的
+	// 待审批项（标成 expired）。审计里必须能和人工裁决区分开。
+	SourceSystem ApprovalSource = "system"
 )
 
 type Risk string
@@ -156,6 +172,10 @@ const (
 	ProposalApplied  ProposalStatus = "applied"
 	ProposalRejected ProposalStatus = "rejected"
 	ProposalStale    ProposalStatus = "stale"
+	// ProposalFailed 表示批准了但没能落盘（磁盘满、权限不足等）。
+	// 它与 stale 分开：stale 是「文件被别人改了」，failed 是「写不进去」，
+	// 用户看到这两句时的下一步动作完全不同。
+	ProposalFailed ProposalStatus = "failed"
 )
 
 // Proposal 是一次变更提案：批准前落库，批准后 CAS 落盘。

@@ -26,6 +26,15 @@ type Store interface {
 	// Apply 原子地应用一次状态迁移：校验迁移、更新投影、写审计、追加事件。
 	Apply(ctx context.Context, tr domain.Transition) ([]domain.Event, error)
 
+	// GetApproval 读取审批；不存在时返回 domain.ErrNotFound。
+	GetApproval(ctx context.Context, id domain.ApprovalID) (domain.Approval, error)
+	// GetToolCall 读取工具调用：审批裁决要用它取回参数，算 allow_session 的键。
+	GetToolCall(ctx context.Context, id domain.ToolCallID) (domain.ToolCall, error)
+	// PendingApprovals 返回所有未裁决的审批，供启动时清理遗留状态。
+	PendingApprovals(ctx context.Context) ([]domain.Approval, error)
+	// ProposalByToolCall 按工具调用查变更提案；不存在时返回 domain.ErrNotFound。
+	ProposalByToolCall(ctx context.Context, id domain.ToolCallID) (domain.Proposal, error)
+
 	// Replay 返回 Seq 严格大于 from 的事件，按 Seq 升序。
 	// limit <= 0 时使用默认批量（200），上限 1000。
 	Replay(ctx context.Context, sessionID domain.SessionID, from domain.Seq, limit int) ([]domain.Event, error)

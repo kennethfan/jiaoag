@@ -114,7 +114,10 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger) app.RuntimeDeps {
 			return built, model, nil
 		},
 		Tools: func(ws *workspace.Workspace) (*tools.Registry, error) {
-			return tools.NewRegistry(tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws))
+			return tools.NewRegistry(
+				tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws),
+				tools.NewWriteFile(ws), tools.NewEditFile(ws),
+			)
 		},
 		MaxRounds:     cfg.Agent.MaxRounds,
 		ContextBudget: cfg.Agent.ContextBudgetChars,

@@ -45,12 +45,33 @@ type Call struct {
 // Prepared 是 Prepare 的产物：参数已校验、路径已解析。
 //
 // Args 存放工具自己的参数结构体，Execute 里做类型断言；Paths 用于日志与
-// 后续权限判定，M3 不判定，只记录。
+// 权限判定，是绝对路径。Change 只有写入工具会填，表示「一次还没发生的写入」。
 type Prepared struct {
 	Call  Call
 	Spec  Spec
 	Args  any
 	Paths []string
+	// Change 非空时，这次调用必须先经过用户审批才能落盘；此时顶层不会调用
+	// Execute，而是由 agent 走「提案 → 审批 → CAS 落盘」。
+	Change *Change
+}
+
+// Change 是一次「将要发生的写入」。
+//
+// 它在 Prepare 阶段就算好（旧内容、旧摘要、新内容、diff），审批通过后才由
+// agent 调 workspace.Write 落盘。写入工具的 Execute 不碰磁盘，因此「谁写的」
+// 只有一条路径，CAS 也只需要在一处实现。
+type Change struct {
+	Path     string // 工作区相对路径
+	Exists   bool   // 原文件是否存在（决定 diff 头是 /dev/null 还是 a/<path>）
+	BaseHash string // 原文件 sha256；新建文件为空串
+	NewHash  string // 新内容 sha256
+	// NewContent 是最终要写进磁盘的字节（换行风格已按原文件还原）。
+	NewContent []byte
+	Diff       string
+	// Truncated 表示 diff 超过 patch.MaxDiffBytes 被截断：审批面板要提示用户
+	// 「你看到的不是全部」，不能让人盲批一份没看全的改动。
+	Truncated bool
 }
 
 // Result 是工具执行结果。IsError 表示「这次调用失败」，不是「任务失败」：

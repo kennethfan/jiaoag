@@ -6,8 +6,8 @@ M0 的 WS 连接是长连接。最省事的做法是把任务跑在连接的处�
 
 ```go
 select {
-case d := <-respCh:   // app.RespondApproval 投递
-case <-ctx.Done():   // 取消 / 服务端关闭
+case d := <-wait.ch:    // app.ResolveApproval 投递
+case <-ctx.Done():      // 取消 / 服务端关闭
 }
 ```
 
@@ -21,7 +21,7 @@ case <-ctx.Done():   // 取消 / 服务端关闭
 
 ## Consequences
 
-- 内存 channel 不持久：进程重启后 `waiting_approval` 一律标 `expired`、`running` 标 `interrupted`，v1 不自动续跑。恢复策略变更需新 ADR。
+- 内存 channel 不持久：进程重启后遗留的 `waiting_approval` 一律标 `expired`（`source=system`）、提案标 `stale`，没有协程的任务标 `canceled`（`app.ExpirePendingApprovals`），v1 不自动续跑。恢复策略变更需新 ADR。
 - 审批**不设超时**：只能由用户响应或取消任务。避免「人离开几分钟任务就自动失败」这种意外；代价是无人值守时任务会一直挂着。
 - 同一任务必须单飞：`Runtime` 保证同一 task 不会被两个 goroutine 同时推进，否则投影与 seq 都会乱。
 - 每个任务 goroutine 必须 `recover`，失败落 `failed{internal}` 事件，不能让一个任务的 panic 带崩进程。

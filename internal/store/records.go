@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -267,4 +268,160 @@ func (s *Store) LastSeq(ctx context.Context, sessionID domain.SessionID) (domain
 		return 0, fmt.Errorf("store: 读取会话 %s 最后序号: %w", sessionID, err)
 	}
 	return domain.Seq(last), nil
+}
+
+// GetApproval 按标识读取审批。不存在时返回 domain.ErrNotFound。
+func (s *Store) GetApproval(ctx context.Context, id domain.ApprovalID) (domain.Approval, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, task_id, tool_call_id, kind, risk, decision, source, requested_at, resolved_at, note
+		 FROM approvals WHERE id = ?`, string(id))
+	var (
+		a                   domain.Approval
+		rawID, task, call   string
+		kind, risk          string
+		decision, source    string
+		note                string
+		requested, resolved string
+	)
+	if err := row.Scan(&rawID, &task, &call, &kind, &risk, &decision, &source,
+		&requested, &resolved, &note); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Approval{}, fmt.Errorf("store: 审批 %s: %w", id, domain.ErrNotFound)
+		}
+		return domain.Approval{}, fmt.Errorf("store: 读取审批 %s: %w", id, err)
+	}
+	a.ID = domain.ApprovalID(rawID)
+	a.TaskID = domain.TaskID(task)
+	a.ToolCallID = domain.ToolCallID(call)
+	a.Kind = domain.ApprovalKind(kind)
+	a.Risk = domain.Risk(risk)
+	a.Decision = domain.Decision(decision)
+	a.Source = domain.ApprovalSource(source)
+	a.Note = note
+	var err error
+	if a.RequestedAt, err = parseTS(requested); err != nil {
+		return domain.Approval{}, err
+	}
+	if a.ResolvedAt, err = parseTS(resolved); err != nil {
+		return domain.Approval{}, err
+	}
+	return a, nil
+}
+
+// GetToolCall 按标识读取工具调用。
+//
+// 审批裁决要用它取回参数原文：allow_session 的白名单键是 tool+args 的摘要，
+// 而 approval 表只存了 tool_call_id。
+func (s *Store) GetToolCall(ctx context.Context, id domain.ToolCallID) (domain.ToolCall, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, task_id, session_id, round, name, args, status, approval_id,
+		 output_path, exit_code, error, created_at, ended_at
+		 FROM tool_calls WHERE id = ?`, string(id))
+	var (
+		tc                         domain.ToolCall
+		rawID, task, session, name string
+		args, status, approval     string
+		outputPath, errText        string
+		created, ended             string
+		exitCode                   sql.NullInt64
+	)
+	if err := row.Scan(&rawID, &task, &session, &tc.Round, &name, &args, &status, &approval,
+		&outputPath, &exitCode, &errText, &created, &ended); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ToolCall{}, fmt.Errorf("store: 工具调用 %s: %w", id, domain.ErrNotFound)
+		}
+		return domain.ToolCall{}, fmt.Errorf("store: 读取工具调用 %s: %w", id, err)
+	}
+	tc.ID = domain.ToolCallID(rawID)
+	tc.TaskID = domain.TaskID(task)
+	tc.SessionID = domain.SessionID(session)
+	tc.Name = name
+	tc.Args = json.RawMessage(args)
+	tc.Status = domain.ToolCallStatus(status)
+	tc.ApprovalID = domain.ApprovalID(approval)
+	tc.OutputPath = outputPath
+	tc.Error = errText
+	if exitCode.Valid {
+		code := int(exitCode.Int64)
+		tc.ExitCode = &code
+	}
+	var err error
+	if tc.CreatedAt, err = parseTS(created); err != nil {
+		return domain.ToolCall{}, err
+	}
+	if tc.EndedAt, err = parseTS(ended); err != nil {
+		return domain.ToolCall{}, err
+	}
+	return tc, nil
+}
+
+// PendingApprovals 返回所有尚未裁决的审批，按请求时间升序。
+//
+// 只给启动清理用：进程退出时还没来得及裁决的审批，重启后永远不会有人来
+// 裁决（v1 不自动续跑），必须显式标成 expired。
+func (s *Store) PendingApprovals(ctx context.Context) ([]domain.Approval, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM approvals WHERE decision = '' ORDER BY requested_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取待审批: %w", err)
+	}
+	var ids []domain.ApprovalID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: 扫描待审批: %w", err)
+		}
+		ids = append(ids, domain.ApprovalID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: 遍历待审批: %w", err)
+	}
+	rows.Close()
+
+	out := make([]domain.Approval, 0, len(ids))
+	for _, id := range ids {
+		a, err := s.GetApproval(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// ProposalByToolCall 按工具调用查变更提案。
+//
+// 一次工具调用最多产生一个提案（写入工具只能提出一次改动），因此按
+// tool_call_id 取是安全的。
+func (s *Store) ProposalByToolCall(ctx context.Context, id domain.ToolCallID) (domain.Proposal, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, task_id, tool_call_id, path, diff, base_hash, new_hash, status, applied_at
+		 FROM proposals WHERE tool_call_id = ? ORDER BY id ASC LIMIT 1`, string(id))
+	var (
+		p                       domain.Proposal
+		rawID, task, call, path string
+		diff, baseHash, newHash string
+		status, applied         string
+	)
+	if err := row.Scan(&rawID, &task, &call, &path, &diff, &baseHash, &newHash, &status, &applied); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Proposal{}, fmt.Errorf("store: 工具调用 %s 的提案: %w", id, domain.ErrNotFound)
+		}
+		return domain.Proposal{}, fmt.Errorf("store: 读取工具调用 %s 的提案: %w", id, err)
+	}
+	p.ID = domain.ProposalID(rawID)
+	p.TaskID = domain.TaskID(task)
+	p.ToolCallID = domain.ToolCallID(call)
+	p.Path = path
+	p.Diff = diff
+	p.BaseHash = baseHash
+	p.NewHash = newHash
+	p.Status = domain.ProposalStatus(status)
+	var err error
+	if p.AppliedAt, err = parseTS(applied); err != nil {
+		return domain.Proposal{}, err
+	}
+	return p, nil
 }

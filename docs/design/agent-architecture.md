@@ -149,20 +149,28 @@ type Decision struct {
 
 ### 5.2 工具两段式 Prepare / Execute（ADR-0006）
 
-`Prepare` 纯只读（读现状、算 hash、算 diff、解析 argv），`Execute` 才动磁盘 / 起进程。审批插在两段之间。`Execute` 前还会重算一次目标文件 hash（CAS），不一致返回 `stale_proposal` 作为工具结果交回模型，让它重新读、重新提案——并发写同一文件因此不需要互斥锁。
+`Prepare` 纯只读（读现状、算 hash、算 diff、解析 argv），`Execute` 才动磁盘 / 起进程。审批插在两段之间：准备产物 `Prepared.Change` 非空时，顶层不调 `Execute`，而是走「提案 → 审批 → CAS 落盘」。写入工具的 `Execute` 因此**失败关闭**——绕过审批直接调用只会得到「必须经过审批」的错误，落盘只有 `agent → workspace.Write` 一条路径（临时文件 + `rename`，保留原权限）。
+
+审批协议只有一条投递路径：C→S 的 `approval.resolve`，裁决结果由 `approval.resolved` 事件回传；提案没落盘的三种结局（拒绝 / 失效 / 写失败）统一记 `proposal.rejected{status}`（ADR-0013）。
+
+CAS 发生在批准之后、落盘之前：重算目标文件 sha256 与提案 `base_hash` 比对，不一致返回 `stale_proposal` 作为工具结果交回模型，让它重新读、重新提案——并发写同一文件因此不需要互斥锁。
+
+写入目标必须是**普通文件**：目标本身是符号链接时 `Snapshot`/`Write` 一律拒绝。`rename` 替换的是链接自身，而 diff 是按链接指向的内容算的，放行一次就是「批准的和落盘的」两件事。同理，行级 diff 表达不了的改动（新建空文件、只差结尾换行）在 `Prepare` 阶段就拒绝——空 diff 进审批等于让用户盲批。
 
 ### 5.3 任务运行时与连接解耦（ADR-0007）
 
-`agent.Run(ctx, taskID)` 在独立 goroutine；需要审批时落库 `waiting_approval` 并阻塞在
+`agent.Run(ctx, task)` 在独立 goroutine；需要审批时落库 `waiting_approval` + 提案并阻塞在 `Recorder` 上：
 
 ```go
 select {
-case d := <-respCh:      // app.RespondApproval 投递
-case <-ctx.Done():      // 取消 / 服务端关闭
+case d := <-wait.ch:     // app.ResolveApproval 投递
+case <-ctx.Done():       // 取消 / 服务端关闭
 }
 ```
 
-启动恢复：`running` → `interrupted`，`waiting_approval` → `expired`，v1 不自动续跑。审批**不设超时**，只能人工取消。
+审批**不设超时**，只能人工取消。取消时 agent 用 `context.WithoutCancel` 把审批收尾成 `expired`（`source=system`）、提案转 `stale` 并补一条 `proposal.rejected`、工具调用标 `canceled`——不能留下永远等不到裁决的 `pending`，也不能让回放看到一条永远 pending 的提案或停在 `waiting_approval` 的调用。
+
+`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`（v1 不自动续跑）。
 
 ### 5.4 权限是纯函数（ADR-0004）
 
@@ -207,16 +215,17 @@ sequenceDiagram
   A->>R: Run(ctx) 独立 goroutine
   R->>R: Build 上下文 → llm 流式
   R->>T: Prepare(write_file)
-  T-->>R: PreparedCall{diff, beforeHash}
-  R->>A: Record(waiting_approval + proposal + events)
-  A-->>C: approval.requested（含 diff）
-  Note over R: 挂起在 respCh，连接断开也继续等
-  C->>S: approval.respond{allow_once}
-  S->>A: RespondApproval
-  A->>R: respCh <- allow
-  R->>T: Execute → Commit(CAS)
-  T-->>R: 结果 / stale_proposal
-  R->>A: Record(running + tool.result)
+  T-->>R: Prepared{Change{diff, baseHash, newContent}}
+  R->>A: Record(waiting_approval + proposal + proposal.created + approval.requested)
+  A-->>C: event{approval.requested}（含 diff）
+  Note over R: 挂起在 AwaitApproval，连接断开也继续等
+  C->>S: approval.resolve{allow_once}
+  S->>A: ResolveApproval
+  A->>R: 裁决（allow_once / deny）
+  R->>T: Workspace.Hash → 比对 base_hash（CAS）
+  R->>T: Workspace.Write(newContent)
+  T-->>R: 已写入 / stale_proposal
+  R->>A: Record(approval.resolved + proposal.applied | proposal.rejected + tool.result)
   A-->>C: tool.result
 ```
 

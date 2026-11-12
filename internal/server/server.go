@@ -262,6 +262,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		case protocol.TypeTaskCancel:
 			s.handleTaskCancel(ctx, c, env)
 
+		case protocol.TypeApprovalResolve:
+			s.handleApprovalResolve(ctx, c, env)
+
 		case protocol.TypeEventSubscribe:
 			s.handleEventSubscribe(ctx, c, env)
 
