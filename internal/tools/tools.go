@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kennethfan/jiaoag/internal/limits"
 )
 
 // Effect 是工具可能产生的副作用类别。只读工具只有 read。
@@ -88,7 +90,9 @@ type Result struct {
 // MaxOutputBytes 是单次工具输出的硬上限。工具的参数上界（max_results 等）
 // 约束条数，但一条 grep 匹配行本身可达 1 MB，没有字节上限时单个
 // tool.result 事件就能把事件日志和界面撑爆。
-const MaxOutputBytes = 256 << 10
+//
+// 与 patch.MaxDiffBytes 同源：都是 limits.MaxPayloadBytes，改一处即可。
+const MaxOutputBytes = limits.MaxPayloadBytes
 
 // Tool 是一个可被模型调用的工具。
 type Tool interface {

@@ -83,6 +83,23 @@ func TestSendCmdWithoutConnectionDoesNotPanic(t *testing.T) {
 	}
 }
 
+// 面板打开时 esc 不退出：审阅 diff 时按错一次不该丢掉整个会话。
+//
+// 这里走 handleKey 而不是 handleApprovalKey：退出与否由前者的分发顺序决定，
+// 只测叶子函数的话，分发改一处就测不出来了。
+func TestApprovalPanelIgnoresEsc(t *testing.T) {
+	m := newModel(t)
+	m.approval = &approvalView{id: "apr_1", path: "a.txt", diff: "+x\n"}
+
+	_, cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil {
+		t.Fatal("面板打开时 esc 不该触发任何命令（退出或取消任务都不行）")
+	}
+	if m.approval == nil {
+		t.Fatal("面板不该被 esc 关掉")
+	}
+}
+
 // 面板打开时 ctrl+r 必须能重连：否则断线后用户只剩 ctrl+c 一条路。
 func TestApprovalPanelCtrlRReconnects(t *testing.T) {
 	m := newModel(t)

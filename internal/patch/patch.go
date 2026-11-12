@@ -13,13 +13,16 @@ import (
 	"unicode/utf8"
 
 	"github.com/pmezard/go-difflib/difflib"
+
+	"github.com/kennethfan/jiaoag/internal/limits"
 )
 
 // MaxDiffBytes 是单条 diff 的硬上限。
 //
-// 与 tools.MaxOutputBytes 同值：一条提案的事件里除了 diff 还有别的字段，
-// 两个上限都在 256 KB，才能保证一个事件不会把日志和界面撑爆。
-const MaxDiffBytes = 256 << 10
+// 与 tools.MaxOutputBytes 同源（limits.MaxPayloadBytes）：一条提案的
+// 事件里除了 diff 还有别的字段，两个上限都在 256 KB，才能保证一个事件
+// 不会把日志和界面撑爆。
+const MaxDiffBytes = limits.MaxPayloadBytes
 
 // Hash 返回内容的 sha256 十六进制摘要。空内容也有确定的摘要（不是空串）。
 func Hash(b []byte) string {

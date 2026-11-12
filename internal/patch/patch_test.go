@@ -76,6 +76,23 @@ func TestUnifiedEmptyContentHasNoPhantomLine(t *testing.T) {
 	}
 }
 
+// 清空文件：有内容 → 空，每一行都必须显示成删除，不能凭空冒出新增行。
+func TestUnifiedClearsFile(t *testing.T) {
+	diff, _, err := patch.Unified("x.txt", []byte("a\nb\n"), nil, true)
+	if err != nil {
+		t.Fatalf("Unified: %v", err)
+	}
+	added, removed := patch.Stats(diff)
+	if added != 0 || removed != 2 {
+		t.Fatalf("统计 = +%d -%d，期望 +0 -2\n%s", added, removed, diff)
+	}
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") {
+			t.Fatalf("清空文件不该出现新增行：%q\n%s", line, diff)
+		}
+	}
+}
+
 func TestUnifiedIdenticalIsEmpty(t *testing.T) {
 	diff, truncated, err := patch.Unified("x.txt", []byte("same\n"), []byte("same\n"), true)
 	if err != nil {

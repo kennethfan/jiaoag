@@ -65,8 +65,8 @@ graph TD
 | `agent` 不得 import `store` / `server` / `tui` | 运行时与持久化、传输解耦；落库经 `Recorder` 接口 |
 | `server` 不得 import `store` / `agent` | 传输层只经 `app`，否则用例逻辑会渗进 handler |
 | `tools` 不 import `perm` | 工具只声明副作用类别，不决定是否需要审批 |
-| `perm` 不 import `tools` / `agent` | 策略是纯函数，输入 `domain.PreparedCall` 即可穷举测试 |
-| `tui` 只 import `protocol` / `config` | 客户端看不到服务端内部类型 |
+| `perm` 只 import `tools` | 策略是纯函数：读工具声明的 `Spec` / `Effect` 分级，不 import `agent` / `app`，可穷举测试 |
+| `tui` 只 import `domain` / `protocol` / `patch` / `version` | 客户端只解线上载荷与 diff 统计，看不到服务端内部类型（`store` / `agent` / `app`） |
 | 接口声明在消费方 | `agent` 声明 `Recorder`（`app` 实现）；`event` 声明 `Journal`（`store` 实现） |
 
 ---
@@ -75,14 +75,16 @@ graph TD
 
 | 包 | 职责 |
 |---|---|
-| `internal/domain` | Task / ToolCall / Approval / Proposal 的类型与合法迁移表；`PreparedCall`、`Decision`、`Transition` |
+| `internal/domain` | Task / ToolCall / Approval / Proposal 的类型与合法迁移表；`Transition`、`Decision`、`ApprovalSource` |
+| `internal/limits` | 跨层硬上限的唯一出处：`MaxPayloadBytes`（256 KB），由 `patch` 与 `tools` 各自引用 |
+| `internal/patch` | 纯计算：sha256 摘要、换行风格归一、unified diff（超 `MaxDiffBytes` 截断并按 UTF-8 边界回退） |
 | `internal/protocol` | 信封与全部 C→S / S→C 载荷，**含事件载荷**（TUI 要解，属于线上契约） |
 | `internal/event` | `Journal`（追加 / 回放）、`Hub`（按会话订阅与扇出）、seq 分配契约 |
 | `internal/store` | SQLite 单一深模块：7 张表、事务助手、投影更新、审计写入；实现 `Journal` |
 | `internal/llm` | `Provider` 端口 + openai / anthropic 适配器 + 重试 / 超时 / 限流装饰器 |
-| `internal/workspace` | 工作区根、路径解析与越界防护、读、`Propose`（hash + diff）、`Commit`（CAS）、git 只读 |
-| `internal/tools` | `Prepare` / `Execute` 契约、注册表、6 个工具实现 |
-| `internal/perm` | 路径边界 → 工具分级 → argv 白名单 → 执行约束，逐层 fail-closed |
+| `internal/workspace` | 工作区根、路径解析与越界防护、读、`Snapshot` / `Hash`、`Write`（同目录临时文件 + rename，保留权限；拒绝二进制 / `.git` / 符号链接） |
+| `internal/tools` | `Prepare` / `Execute` 两段式契约、注册表与 256 KB 输出收敛、5 个工具（read_file / grep / glob / write_file / edit_file） |
+| `internal/perm` | 按工具副作用分级、默认拒绝；M5 再叠加 argv 白名单与执行约束（ADR-0004） |
 | `internal/agent` | 上下文装配、轮次循环、审批挂起 / 恢复、取消 |
 | `internal/prompt` | 提示词分层装配（纯函数）、`{{var}}` 白名单替换、项目级确认与 hash（ADR-0012） |
 | `internal/app` | 建会话、提交任务、响应审批、取消、订阅；唯一的事务与广播位置 |
@@ -99,43 +101,88 @@ graph TD
 // agent 侧声明；app 实现。agent 因此不认识 SQL。
 type Recorder interface {
 	Record(ctx context.Context, tr domain.Transition) error
+	// 读回会话历史，用来重建模型上下文。
+	Events(ctx context.Context, sessionID domain.SessionID) ([]domain.Event, error)
+	// 流式增量：seq=0 的临时帧，不落库、不进回放。
+	Delta(ctx context.Context, ev domain.Event) error
+	// 阻塞到审批被裁决；ctx 取消返回 ctx.Err()，审批不设超时。
+	AwaitApproval(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)
 }
 
 type Transition struct {
-	TaskID   string
-	Status   domain.TaskStatus      // 迁移后的状态
-	Tool     *domain.ToolCallUpdate // 可空
-	Proposal *domain.Proposal       // 可空
-	Events   []protocol.Envelope    // 不含 seq，由 app 在事务内分配
+	TaskID   domain.TaskID
+	To       domain.TaskStatus  // 非空时才做任务迁移
+	Reason   string             // 失败 / 取消原因
+	ToolCall *domain.ToolCall   // 可空：这次调用的整份投影（每次覆盖写回）
+	Approval *domain.Approval   // 可空
+	Proposal *domain.Proposal   // 可空
+	Usage    *domain.TokenUsage // 可空：本轮增量，累加写回
+	Audit    []domain.AuditRecord
+	Events   []domain.Event // 不含 seq 与时间，由 store 在事务内分配
 }
 ```
 
-`app.Record` 的职责：开事务 → 更新投影 → 追加事件（分配 seq）→ 提交 → 向 `Hub` 广播。任一失败整体回滚，杜绝「事件有、记录无」。
+`app.Record` 的职责：开事务 → 校验迁移 → 更新投影 → 追加事件（分配 seq）→ 提交 → 向 `Hub` 广播。任一失败整体回滚，杜绝「事件有、记录无」。
 
-### 4.2 PreparedCall（tools → perm → agent）
+审批的载荷单独定义，`agent` 只交参数原文，不去查工具调用表：
 
 ```go
-type PreparedCall struct {
-	ToolCallID string
+type ApprovalRequest struct {
+	SessionID  domain.SessionID
+	ApprovalID domain.ApprovalID
 	Tool       string
-	Args       json.RawMessage // 归一化后的参数
-	SideEffect SideEffect      // none | fs_write | process | network
-	Risk       RiskLevel
-	Paths      []string        // 解析后的绝对路径（路径边界检查用）
-	Proposal   *Proposal       // 写类工具：before/after hash + diff
-	Command    *CommandPlan    // 命令：argv、cwd、超时、env 白名单
+	Args       json.RawMessage // 参数原文：allow_session 的摘要键
+}
+
+type ApprovalResult struct {
+	Decision domain.Decision       // allow_once | allow_session | deny
+	Source   domain.ApprovalSource // user | policy（system 只出现在收尾事件）
+	Note     string
 }
 ```
+
+### 4.2 Prepared（tools → perm → agent）
+
+```go
+type Prepared struct {
+	Call  Call     // 原始调用：id / name / args
+	Spec  Spec     // 工具声明的副作用与 JSON Schema
+	Args  any      // 已校验的参数结构体，Execute 里断言
+	Paths []string // 解析后的绝对路径（日志与权限判定用）
+	Change *Change // 仅写入工具：一次「还没发生的写入」
+}
+
+// 写入工具的提案载荷。Prepare 阶段算好，审批通过后才落盘。
+type Change struct {
+	Path       string // 工作区相对路径
+	Exists     bool   // 决定 diff 头是 /dev/null 还是 a/<path>
+	BaseHash   string // 原文件 sha256；新建文件为空串
+	NewHash    string
+	NewContent []byte // 已按原文件换行风格还原
+	Diff       string // unified diff，超 MaxDiffBytes 截断
+	Truncated  bool
+}
+```
+
+`Prepare` 不产生任何副作用：未知工具、参数错、越界路径、二进制/符号链接目标都在这一步降级成工具错误，回给模型自己纠正。
 
 ### 4.3 Decision（perm 输出）
 
 ```go
+type Verdict string
+
+const (
+	Allow       Verdict = "allow"        // 只读工具：自动放行，仍入审计
+	RequireUser Verdict = "require_user" // 写入 / 未知副作用：必须人工裁决
+)
+
 type Decision struct {
-	Verdict  Verdict // Auto | NeedsApproval | Denied
-	Reason   string
-	PolicyID string  // 写入审计，可回溯是哪条规则放行/拦截
+	Verdict Verdict
+	Reason  string // 写进 tool.prepared 与界面：为什么放行 / 为什么要问
 }
 ```
+
+判定顺序短路：声明 `propose_write` → 必审批；只有 `read` → 放行；其余（`process` / `network` / 未声明）→ 必审批。`PolicyID` 随 M5 的命令白名单一起引入，届时再进审计。
 
 ---
 
@@ -170,11 +217,11 @@ case <-ctx.Done():       // 取消 / 服务端关闭
 
 审批**不设超时**，只能人工取消。取消时 agent 用 `context.WithoutCancel` 把审批收尾成 `expired`（`source=system`）、提案转 `stale` 并补一条 `proposal.rejected`、工具调用标 `canceled`——不能留下永远等不到裁决的 `pending`，也不能让回放看到一条永远 pending 的提案或停在 `waiting_approval` 的调用。
 
-`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`（v1 不自动续跑）。
+`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。v1 没有「会话结束」事件，因此白名单的实际生命周期是**进程内**：退出即清空，不落盘、不跨连接继承（ADR-0007 的运行时与连接解耦不改变这一点）。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`（v1 不自动续跑）。
 
 ### 5.4 权限是纯函数（ADR-0004）
 
-四层顺序固定、任一失败短路、禁止「先清洗再匹配」。决策结果连同 `PolicyID` 原样写入审计。
+层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了两层：`workspace.Resolve` 的路径边界与 `perm.Decide` 的工具分级（默认拒绝）；argv 白名单与执行约束随 `run_command` 进 M5，届时 `Decision` 补 `PolicyID` 并写入审计。
 
 ### 5.5 LLM 端口 + 装饰器（ADR-0008）
 
@@ -192,10 +239,11 @@ type Streamer interface {
 ### 5.6 上下文装配是纯函数
 
 ```go
-func Build(system string, history []domain.Message, budget int) []domain.Message
+// agent.Build：把完整历史压进预算，返回可直接发给供应商的消息。
+func Build(history []llm.Message, budget int) []llm.Message
 ```
 
-v1 只做确定性截断：单个工具结果超 8 KB 换成「已截断，全文见 outputs/…」+ 首尾片段；保留最近 N 轮；总字符超预算从最旧轮开始丢，system 与最近一条 user 消息永不丢。预算单位是 **UTF-8 字符数**（无依赖、可测），token 精算留到 v2。
+v1 只做确定性截断：单条工具结果超 8 KB 折成「首 4 KB + 尾 2 KB」（中间换成省略提示，正文不另存）；裁剪按**轮**进行——从最旧的一条 user 消息丢到下一个 user 消息之前，避免留下孤立的 tool_result；system 单独装配进请求，不参与这次预算；最后一条 user 消息永不丢（预算不够时宁可超一点）。预算单位是 **UTF-8 字符数**（无依赖、可测），token 精算留到 v2。
 
 ---
 
