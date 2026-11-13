@@ -40,3 +40,6 @@ go.work.sum
 
 # 本地脚本：只属于当前 checkout，不入库
 /oc.sh
+
+# codegraph 索引：本地工具产物，随机器重建
+/.codegraph/
