@@ -42,7 +42,7 @@ func configureRuntime(t *testing.T, a *app.App, provider llm.Provider) {
 		Provider: func(domain.Session) (llm.Provider, string, error) {
 			return provider, "test-model", nil
 		},
-		Tools: func(ws *workspace.Workspace) (*tools.Registry, error) {
+		Tools: func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error) {
 			return tools.NewRegistry(tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws))
 		},
 		MaxRounds:     3,
@@ -53,9 +53,20 @@ func configureRuntime(t *testing.T, a *app.App, provider llm.Provider) {
 	}
 }
 
+// waitTerminal 等待任务进入终态。默认窗口按纯内存测试定：它们不该慢。
 func waitTerminal(t *testing.T, a *app.App, id domain.TaskID) domain.Task {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	return waitTerminalIn(t, a, id, 5*time.Second)
+}
+
+// waitTerminalIn 允许真实执行子进程的用例放宽窗口。
+//
+// `go test ./...` 要编译并运行一个子进程，全量并行跑套件时会因为构建缓存与 CPU
+// 争用从 1 秒涨到数秒：5 秒窗口失败的是等待窗口，不是产品行为（单独跑该用例
+// 一直很快）。窗口应该长于执行的超时预算，否则命令超时会被误报成「任务没结束」。
+func waitTerminalIn(t *testing.T, a *app.App, id domain.TaskID, timeout time.Duration) domain.Task {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		task, err := a.GetTask(context.Background(), id)
 		if err != nil {
@@ -67,7 +78,7 @@ func waitTerminal(t *testing.T, a *app.App, id domain.TaskID) domain.Task {
 		time.Sleep(10 * time.Millisecond)
 	}
 	task, _ := a.GetTask(context.Background(), id)
-	t.Fatalf("任务未在期限内结束，当前状态 %s", task.Status)
+	t.Fatalf("任务未在 %s 内结束，当前状态 %s", timeout, task.Status)
 	return domain.Task{}
 }
 

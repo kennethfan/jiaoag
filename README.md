@@ -14,6 +14,14 @@ go build -o bin/jiaoag-server ./cmd/jiaoag-server
 go build -o bin/jiaoag-tui    ./cmd/jiaoag-tui
 ```
 
+## 静态检查
+
+```bash
+make check    # gofmt + go vet + staticcheck + go mod tidy -diff + go test ./...
+```
+
+CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时执行同一个目标。
+
 ## 配置
 
 ```bash
@@ -46,9 +54,9 @@ curl -s 127.0.0.1:8787/healthz
 | M2 | Provider 适配（openai 兼容 + anthropic） | ✅ |
 | M3 | 只读闭环（loop + read/grep/glob + 流式渲染） | ✅ |
 | M4 | 变更提案与审批（diff + hash CAS） | ✅ |
-| M5 | `run_command` + 权限策略 + 审计 | 未开始 |
+| M5 | `run_command` + 参数级权限策略 + 输出落文件 + git 只读 + 审计 | ✅ |
 | M6 | 多会话并行、断连继续跑、回放 | 未开始 |
 
 ## 安全边界
 
-首版不使用容器，agent 直接作用于真实文件系统。安全边界只有一层：权限策略（工作区路径约束、工具分级、命令默认需审批 + argv 白名单）加客户端审批，且全部工具调用写入审计。详见 `docs/adr/0001` 与 `docs/adr/0004`。
+首版不使用容器，agent 直接作用于真实文件系统。安全边界只有一层：权限策略（工作区路径约束、工具分级、命令默认需审批 + 参数级 argv 白名单）加客户端审批；命令执行与拒绝决定写入 `audit` 表。详见 `docs/adr/0001`、`docs/adr/0004` 与 `docs/adr/0011`。

@@ -93,6 +93,25 @@ func TestTaskStatusUpdatesStateAndTokens(t *testing.T) {
 	}
 }
 
+// 被拒绝的调用不是「出错」：用户看见的必须是决定，而不是一次失败。
+func TestToolResultRendersDeniedAsDecision(t *testing.T) {
+	m := newModel(t)
+	m.handleEvent(eventEnvelope(t, 10, domain.EventToolResult, domain.ToolResultPayload{
+		Tool:       "run_command",
+		ToolCallID: "call_1",
+		Status:     string(domain.ToolDenied),
+		IsError:    true,
+	}))
+
+	joined := strings.Join(m.dialog, "\n")
+	if !strings.Contains(joined, "↳ run_command 已拒绝") {
+		t.Fatalf("拒绝应显示为决定：%v", m.dialog)
+	}
+	if strings.Contains(joined, "出错") {
+		t.Fatalf("拒绝不应显示为错误：%v", m.dialog)
+	}
+}
+
 func TestToolResultRendersStatusLine(t *testing.T) {
 	m := newModel(t)
 	m.handleEvent(eventEnvelope(t, 8, domain.EventToolResult, domain.ToolResultPayload{

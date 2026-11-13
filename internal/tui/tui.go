@@ -66,12 +66,19 @@ type Model struct {
 	approval *approvalView
 }
 
-// approvalView 是审批面板的本地状态。
+// approvalView 是审批面板的本地状态。kind=command 时展示 argv/cwd/后端，
+// 不展示 diff。
 type approvalView struct {
 	id        string
+	kind      string
 	path      string
 	diff      string
 	truncated bool
+	command   []string
+	cwd       string
+	backend   string
+	timeoutMS int64
+	reason    string
 	// added/removed 是 diff 的规模，来自 patch.Stats：面板头上一行就能
 	// 让人知道这次改动有多大，不必先翻到底。
 	added   int
@@ -84,6 +91,14 @@ const (
 	diffPanelHeight = 18
 	diffPageStep    = diffPanelHeight - 2
 )
+
+// panelWidth 是对话区与面板的宽度（与分隔线一致）：超出的行必须折行，
+// 否则一条 4 KB 的 argv token 会把整个终端布局冲垮。
+const panelWidth = 72
+
+// maxOutputPreviewLines 是命令输出在界面上最多占多少行。全文在日志里，
+// 界面只负责让人看懂这次调用发生了什么（失败诊断、超时文案）。
+const maxOutputPreviewLines = 12
 
 // New 构造客户端模型。
 func New(opts Options) *Model {
@@ -372,15 +387,48 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 	case string(domain.EventToolResult):
 		var t domain.ToolResultPayload
 		if err := json.Unmarshal(p.Payload, &t); err == nil {
+			// status 取自工具调用的终态：拒绝、取消、失败是三种结局，
+			// 拒绝不是「出错」。旧日志只有 ok/error，仍以 IsError 兜底。
 			status := "完成"
-			if t.IsError {
+			switch {
+			case t.Status == string(domain.ToolDenied):
+				status = "已拒绝"
+			case t.Status == string(domain.ToolCanceled):
+				status = "已取消"
+			case t.IsError:
 				status = "出错"
 			}
-			m.appendLine(fmt.Sprintf("  ↳ %s %s（%d ms）", t.Tool, status, t.DurationMS))
+			line := fmt.Sprintf("  ↳ %s %s（%d ms）", t.Tool, status, t.DurationMS)
+			if t.ExitCode != nil {
+				line += fmt.Sprintf(" · 退出码 %d", *t.ExitCode)
+			}
+			if t.Truncated {
+				line += " · 输出已截断"
+			}
+			if t.OutputPath != "" {
+				line += " · 全文已落盘"
+			}
+			m.appendLine(line)
+			for _, extra := range outputPreview(t) {
+				m.appendLine(extra)
+			}
 		}
 	case string(domain.EventApprovalRequested):
 		var a domain.ApprovalRequestedPayload
 		if err := json.Unmarshal(p.Payload, &a); err == nil {
+			if a.Kind == domain.ApprovalCommand {
+				m.approval = &approvalView{
+					id:        string(a.ApprovalID),
+					kind:      string(a.Kind),
+					command:   a.Command,
+					cwd:       a.Cwd,
+					backend:   a.Backend,
+					timeoutMS: a.TimeoutMS,
+					reason:    a.Reason,
+				}
+				m.appendLine("⚠ 待审批命令：" + compact(strings.Join(a.Command, " ")))
+				return nil
+			}
 			added, removed := patch.Stats(a.Diff)
 			m.approval = &approvalView{
 				id:        string(a.ApprovalID),
@@ -533,9 +581,12 @@ func renderDiff(diff string, offset, height int) (lines []string, hasMore bool) 
 	return all[offset:end], end < len(all)
 }
 
-// renderApprovalPanel 渲染 diff 面板。
+// renderApprovalPanel 按审批类型渲染 diff 面板或命令面板。
 func (m *Model) renderApprovalPanel() string {
 	v := m.approval
+	if v.kind == string(domain.ApprovalCommand) {
+		return m.renderCommandPanel()
+	}
 	var b strings.Builder
 	// 截断时 +N −M 只是前 256 KB 的统计，必须写在脸上。
 	suffix := ""
@@ -564,6 +615,44 @@ func (m *Model) renderApprovalPanel() string {
 	return b.String()
 }
 
+// renderCommandPanel 逐 token 展示 argv，并写明 cwd / 后端 / 超时：用户批的
+// 必须是「实际要跑的东西」，而不是一句「要不要执行命令」。
+func (m *Model) renderCommandPanel() string {
+	v := m.approval
+	var b strings.Builder
+	b.WriteString("⌘ 待审批命令\n")
+	b.WriteString(strings.Repeat("─", panelWidth))
+	b.WriteByte('\n')
+	// 长 token（上限 4 KB）必须折行：审批面板是用户判断「这串到底是什么」的
+	// 唯一依据，一行冲出去看不见的部分等于没展示。
+	for i, token := range v.command {
+		prefix := fmt.Sprintf("  argv[%d]  ", i)
+		width := panelWidth - len(prefix)
+		if width < 8 {
+			width = 8
+		}
+		chunks := wrapText(token, width)
+		b.WriteString(prefix + chunks[0] + "\n")
+		indent := strings.Repeat(" ", len(prefix))
+		for _, chunk := range chunks[1:] {
+			b.WriteString(indent + chunk + "\n")
+		}
+	}
+	fmt.Fprintf(&b, "  cwd       %s\n", wrapOne(orDash(v.cwd), panelWidth-12))
+	fmt.Fprintf(&b, "  backend   %s\n", orDash(v.backend))
+	if v.timeoutMS > 0 {
+		fmt.Fprintf(&b, "  timeout   %s\n", (time.Duration(v.timeoutMS) * time.Millisecond).String())
+	}
+	if v.reason != "" {
+		fmt.Fprintf(&b, "  判定      %s\n", v.reason)
+	}
+	b.WriteString(strings.Repeat("─", 72))
+	b.WriteByte('\n')
+	b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝\n")
+	b.WriteString("[ctrl+r] 重连  [ctrl+c] 退出\n")
+	return b.String()
+}
+
 func decisionLabel(d domain.Decision) string {
 	switch d {
 	case domain.DecisionAllowOnce:
@@ -577,6 +666,68 @@ func decisionLabel(d domain.Decision) string {
 	default:
 		return string(d)
 	}
+}
+
+// wrapText 按显示宽度（rune 数）折行，不切断多字节字符。
+func wrapText(s string, width int) []string {
+	if s == "" {
+		return []string{""}
+	}
+	if width <= 0 {
+		return []string{s}
+	}
+	runes := []rune(s)
+	out := make([]string, 0, len(runes)/width+1)
+	for len(runes) > width {
+		out = append(out, string(runes[:width]))
+		runes = runes[width:]
+	}
+	return append(out, string(runes))
+}
+
+// wrapOne 把单行字段的首行折出来：面板其余部分靠 wrapText，这里只用于
+// cwd 这类可能很长的单值字段。
+func wrapOne(s string, width int) string {
+	chunks := wrapText(s, width)
+	if len(chunks) == 1 {
+		return chunks[0]
+	}
+	return chunks[0] + "…"
+}
+
+// outputPreview 把命令输出折成界面上的几行。
+//
+// 摘要行只有退出码与耗时；「超时被终止」和编译/测试的失败诊断都只写在正文里。
+// 不预览正文时，用户看到的就是一句「出错 · 退出码 1」，等于什么都没说。
+func outputPreview(t domain.ToolResultPayload) []string {
+	// 只有命令类工具会带退出码：读、搜类工具的输出不值得占对话区。
+	if t.ExitCode == nil || strings.TrimSpace(t.Output) == "" {
+		return nil
+	}
+	raw := strings.Split(strings.TrimRight(t.Output, "\n"), "\n")
+	const indent = "  │ "
+	width := panelWidth - len([]rune(indent))
+
+	var out []string
+	for i, line := range raw {
+		chunks := wrapText(line, width)
+		if len(out)+len(chunks) > maxOutputPreviewLines {
+			rest := len(raw) - i
+			out = append(out, fmt.Sprintf("  │ …（还有 %d 行%s）", rest, outputTailHint(t)))
+			return out
+		}
+		for _, chunk := range chunks {
+			out = append(out, indent+chunk)
+		}
+	}
+	return out
+}
+
+func outputTailHint(t domain.ToolResultPayload) string {
+	if t.OutputPath != "" {
+		return "，全文见输出日志"
+	}
+	return ""
 }
 
 func (m *Model) close() {

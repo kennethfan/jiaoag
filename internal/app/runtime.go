@@ -11,7 +11,9 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/agent"
 	"github.com/kennethfan/jiaoag/internal/domain"
+	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
@@ -26,7 +28,12 @@ var ErrSessionBusy = errors.New("app: 会话已有运行中的任务，请等它
 type RuntimeDeps struct {
 	Provider func(sess domain.Session) (llm.Provider, string, error)
 	// Tools 按会话工作区构造工具集：工具绑定具体根目录，不能全局复用。
-	Tools         func(ws *workspace.Workspace) (*tools.Registry, error)
+	// env 携带执行后端、输出目录与 tool_call_id 反查，由 app 统一注入。
+	Tools         func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error)
+	Backend       execpkg.Backend
+	Ruleset       *perm.Ruleset
+	OutputDir     string
+	ExecTimeout   time.Duration
 	MaxRounds     int
 	ContextBudget int
 	Logger        *slog.Logger
@@ -51,6 +58,11 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.DiscardHandler)
 	}
+	if deps.Ruleset == nil {
+		// agent 会退到内置规则集；这里显式补上，保证 extensions_digest 里
+		// 始终有规则版本，而不是一种「看起来没规则」的指纹。
+		deps.Ruleset = perm.DefaultRuleset()
+	}
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	a.runtime = &deps
@@ -58,6 +70,24 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	// 放在这里而不是 New：清理要写库，而 New 返回不了错误。
 	if err := a.ExpirePendingApprovals(context.Background()); err != nil {
 		return fmt.Errorf("app: 清理遗留审批: %w", err)
+	}
+	// 没有审批行的遗留状态（崩溃时正在跑的只读工具、刚 prepared 就断掉的调用、
+	// 等模型输出的任务）上一步清理不到，必须单独收尾。
+	if err := a.ReapUnfinished(context.Background(), deps.Logger); err != nil {
+		return fmt.Errorf("app: 收尾遗留状态: %w", err)
+	}
+	// 清理之后再查一致性：ReapUnfinished 已把「已裁决但缺结果」的调用补成
+	// canceled（结果未知），此时还剩下的缺口说明补写本身没成功。
+	// 只报告不修复：那次调用到底跑没跑已经无从判断，再补一个猜的 status
+	// 只会把问题藏起来，而这是审计最不能接受的。
+	gaps, err := a.CheckApprovalConsistency(context.Background())
+	if err != nil {
+		return fmt.Errorf("app: 检查审批一致性: %w", err)
+	}
+	for _, ap := range gaps {
+		deps.Logger.Warn("审批已裁决但缺少工具结果",
+			"approval", ap.ID, "task", ap.TaskID, "tool_call", ap.ToolCallID,
+			"decision", ap.Decision, "source", ap.Source)
 	}
 	return nil
 }
@@ -90,7 +120,13 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 	if err != nil {
 		return nil, "", "", err
 	}
-	registry, err := deps.Tools(ws)
+	registry, err := deps.Tools(ws, tools.RuntimeEnv{
+		Backend:    deps.Backend,
+		OutputDir:  deps.OutputDir,
+		SessionID:  string(sess.ID),
+		Timeout:    deps.ExecTimeout,
+		OutputPath: a.outputPath,
+	})
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -107,6 +143,8 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 		MaxRounds:     deps.MaxRounds,
 		ContextBudget: deps.ContextBudget,
 		Logger:        deps.Logger,
+		Ruleset:       deps.Ruleset,
+		OutputDir:     deps.OutputDir,
 	})
 	if err != nil {
 		return nil, "", "", err
@@ -115,7 +153,15 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 	if err != nil {
 		return nil, "", "", err
 	}
-	sum := sha256.Sum256([]byte(registry.Digest() + "|" + system.Hash))
+	// digest 纳入规则集与后端：这一轮由哪套规则、哪个后端跑出来的，必须能事后回答。
+	rulesetHash, backendName := "", ""
+	if deps.Ruleset != nil {
+		rulesetHash = deps.Ruleset.Hash
+	}
+	if deps.Backend != nil {
+		backendName = deps.Backend.Name()
+	}
+	sum := sha256.Sum256([]byte(registry.Digest() + "|" + rulesetHash + "|" + backendName + "|" + system.Hash))
 	return ag, system.Hash, hex.EncodeToString(sum[:]), nil
 }
 
@@ -204,6 +250,12 @@ func (a *App) markRunning(ctx context.Context, task domain.Task) error {
 // CancelTask 取消排队中或运行中的任务。已终止的任务是幂等的空操作。
 func (a *App) CancelTask(ctx context.Context, sessionID domain.SessionID, taskID domain.TaskID) error {
 	a.runtimeMu.Lock()
+	// 关闭已经在进行：没有可取消的东西了，也不应该再往后写库（store 紧随
+	// 着就要关）。与 Close 置位 closed 共用这把锁，所以判定是准确的。
+	if a.closed {
+		a.runtimeMu.Unlock()
+		return ErrAppClosed
+	}
 	run := a.runs[sessionID]
 	if run != nil && run.taskID == taskID {
 		a.runtimeMu.Unlock()
@@ -309,21 +361,95 @@ func (a *App) Delta(ctx context.Context, ev domain.Event) error {
 	return nil
 }
 
-// waitRuns 等待所有运行中的任务收尾。
-func (a *App) waitRuns(timeout time.Duration) {
+// leftoverRun 是关闭窗口用完仍然活着的任务。
+type leftoverRun struct {
+	taskID domain.TaskID
+	done   chan struct{}
+}
+
+// waitRuns 等待所有运行中的任务收尾，返回窗口用完仍未结束的那些任务。
+func (a *App) waitRuns(timeout time.Duration) []leftoverRun {
 	a.runtimeMu.Lock()
-	chans := make([]chan struct{}, 0, len(a.runs))
+	runs := make([]leftoverRun, 0, len(a.runs))
 	for _, run := range a.runs {
-		chans = append(chans, run.done)
+		runs = append(runs, leftoverRun{taskID: run.taskID, done: run.done})
 	}
 	a.runtimeMu.Unlock()
 
 	deadline := time.After(timeout)
-	for _, done := range chans {
+	for i, run := range runs {
 		select {
-		case <-done:
+		case <-run.done:
 		case <-deadline:
-			return
+			// 一旦超时，剩下的任务同样等不到了：全部交回调用方处置。
+			return runs[i:]
 		}
 	}
+	return nil
+}
+
+// errAbandonSettled 表示任务在补写之前已经自己写了终态。
+var errAbandonSettled = errors.New("app: 任务已有终态")
+
+// abandonRuns 为没能在窗口内收尾的任务补写 canceled 终态。
+//
+// 这些任务的协程还在（baseCancel 已经发出，通常马上就会退出），但 store 紧接
+// 着要关：等它们自己写终态就晚了，库会永远停在 running。
+//
+// 「读当前状态 + 迁移」整段放在 commit 里，靠 commitMu 与协程的写入互斥：读到的
+// From 必然与真正迁移时的状态一致，也不会出现「补写先落库、协程随后写 completed
+// 失败」的抢跑。窗口边界上刚好收尾的任务靠 done 提前排除。
+func (a *App) abandonRuns(left []leftoverRun) {
+	logger := a.logger()
+	for _, run := range left {
+		// 超时判定到这里之间可能已经收尾：done 已关说明终态由协程自己写了。
+		select {
+		case <-run.done:
+			continue
+		default:
+		}
+
+		err := a.commit(func() ([]domain.Event, error) {
+			ctx := context.Background()
+			task, err := a.store.GetTask(ctx, run.taskID)
+			if err != nil {
+				return nil, err
+			}
+			if task.Status.Terminal() {
+				return nil, errAbandonSettled
+			}
+			ev, err := domain.NewEvent(domain.EventTaskStatus, task.SessionID, task.ID, domain.TaskStatusPayload{
+				From:   task.Status,
+				To:     domain.TaskCanceled,
+				Reason: "shutdown",
+			})
+			if err != nil {
+				return nil, err
+			}
+			return a.store.Apply(ctx, domain.Transition{
+				TaskID: task.ID,
+				To:     domain.TaskCanceled,
+				Reason: "shutdown",
+				Events: []domain.Event{ev},
+			})
+		})
+
+		var te *domain.TransitionError
+		switch {
+		case err == nil:
+			logger.Warn("任务未在关闭窗口内收尾，已补写 canceled", "task", run.taskID)
+		case errors.Is(err, errAbandonSettled), errors.As(err, &te):
+			// 协程在窗口边界上刚好收尾：库里已是终态，不必也不该再写一条。
+		default:
+			logger.Error("关闭时补写任务终态失败", "task", run.taskID, "err", err)
+		}
+	}
+}
+
+// logger 返回运行依赖里的 logger；未配置执行时退回默认 logger。
+func (a *App) logger() *slog.Logger {
+	if deps := a.currentRuntime(); deps != nil && deps.Logger != nil {
+		return deps.Logger
+	}
+	return slog.Default()
 }

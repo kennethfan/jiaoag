@@ -82,6 +82,11 @@ type Options struct {
 	ContextBudget int
 	SystemLayers  []prompt.Layer
 	Logger        *slog.Logger
+
+	// Ruleset 是命令白名单与收紧规则的不可变快照。
+	Ruleset *perm.Ruleset
+	// OutputDir 是命令全文日志的根目录；空表示不落全文。
+	OutputDir string
 }
 
 // Agent 执行单个任务。多个任务可以并发使用同一个 Agent（无可变状态）。
@@ -112,6 +117,9 @@ func New(opts Options) (*Agent, error) {
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if opts.Ruleset == nil {
+		opts.Ruleset = perm.DefaultRuleset()
 	}
 	return &Agent{opts: opts}, nil
 }
@@ -340,38 +348,61 @@ func (a *Agent) runTool(ctx context.Context, task domain.Task, round int, block 
 		return llm.Block{}, err
 	}
 
-	var result tools.Result
-	switch verdict := perm.Decide(prepared.Spec); {
+	decision := a.opts.Ruleset.Evaluate(ctx, prepared)
+
+	var (
+		result tools.Result
+		audits []domain.AuditRecord
+	)
+	switch {
 	case perr != nil:
-		res, rerr := tools.Failure(ctx, perr)
-		if rerr != nil {
-			return llm.Block{}, rerr
-		}
-		result = res
+		result, err = tools.Failure(ctx, perr)
 	case prepared.Change != nil:
 		// 写入：先落提案与审批请求，等用户裁决。
 		waitStart := time.Now()
 		result, err = a.proposeChange(ctx, task, toolCall, prepared)
-		if err != nil {
-			return llm.Block{}, err
-		}
 		// 人工审阅不是工具耗时：把等待的这段时间从计时里剔除，否则
 		// 用户离开十分钟再批准，tool.result 会写一个 600000 ms。
 		started = started.Add(time.Since(waitStart))
-	case verdict.Verdict == perm.RequireUser:
-		// 判定要求审批，但工具没给出可审的东西（没有 diff）：宁可拒绝执行，
-		// 也不能就这么放它过去。以后接入 run_command 时这里就是兜底。
-		result = tools.Result{
-			Content: fmt.Sprintf("工具 %s 需要审批但没有提供可审的内容，已拒绝执行（%s）", call.Name, verdict.Reason),
-			IsError: true,
+	case decision.Verdict == perm.Allow:
+		if prepared.Command != nil {
+			prepared.LogPath = a.logPath(task, toolCall.ID)
+			// 免审批的命令同样要显式进入 running：执行可能跑很久，投影不能
+			// 停在 prepared（那会被读成「还没人要它跑」）。
+			if rerr := a.markCommandRunning(ctx, task, toolCall); rerr != nil {
+				err = rerr
+				break
+			}
 		}
-	default:
 		result, err = a.opts.Tools.Execute(ctx, prepared)
-		if err != nil {
-			return llm.Block{}, err
+		if err == nil && prepared.Command != nil {
+			audits = append(audits, execAudit(auditExecAllow, "policy", prepared, result, decision))
 		}
+	case prepared.Command != nil:
+		// 命令：先落审批请求，等用户看到真实 argv 与 cwd 再决定。
+		waitStart := time.Now()
+		result, audits, err = a.proposeCommand(ctx, task, toolCall, prepared, decision)
+		started = started.Add(time.Since(waitStart))
+	default:
+		// 判定要求审批，但工具没给出可审的东西（没有 diff、没有命令）：
+		// 这是策略拒绝，不是工具失败。记成 denied 并留下审计，让「谁拒绝的、
+		// 为什么拒绝」在日志里可回答。
+		note := fmt.Sprintf("工具 %s 需要审批但没有提供可审的内容，已拒绝执行（%s）", call.Name, decision.Reason)
+		toolCall.Status = domain.ToolDenied
+		result = tools.Result{Content: note, IsError: true}
+		audits = append(audits, domain.AuditRecord{
+			Actor:      string(domain.SourcePolicy),
+			Action:     auditToolDenied,
+			ToolCallID: toolCall.ID,
+			Detail:     rejectedDetail("", note),
+		})
 	}
-	return a.finishTool(ctx, task, toolCall, result, started)
+	// 任何一步返回错误（最常见的是执行中被取消）都不能让调用就此消失：
+	// abortTool 会补上终态与 tool.result。
+	if err != nil {
+		return a.abortTool(ctx, task, toolCall, prepared, decision, started, err)
+	}
+	return a.finishTool(ctx, task, toolCall, result, started, audits)
 }
 
 // recordError 标记「写事件失败」。存储故障不能和模型错误混为一谈：

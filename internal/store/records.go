@@ -242,6 +242,35 @@ func (s *Store) ListTasks(ctx context.Context, sessionID domain.SessionID) ([]do
 	return out, nil
 }
 
+// UnfinishedTasks 返回所有还没走到终态的任务。
+//
+// 进程重启后这些任务不再有协程推进（v1 不自动续跑），留着它们只会让会话
+// 看起来永远在忙，也让 ListTasks 永远报一个 never-ending 的 running。
+func (s *Store) UnfinishedTasks(ctx context.Context) ([]domain.Task, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+taskColumns+` FROM tasks ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出未完成任务: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Task
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 扫描任务: %w", err)
+		}
+		if task.Status.Terminal() {
+			continue
+		}
+		out = append(out, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历未完成任务: %w", err)
+	}
+	return out, nil
+}
+
 // Replay 返回 Seq 严格大于 from 的事件，按 Seq 升序。
 func (s *Store) Replay(ctx context.Context, sessionID domain.SessionID, from domain.Seq, limit int) ([]domain.Event, error) {
 	if limit <= 0 {
@@ -355,6 +384,55 @@ func (s *Store) GetToolCall(ctx context.Context, id domain.ToolCallID) (domain.T
 	return tc, nil
 }
 
+// UnfinishedToolCalls 返回停在非终态、且没有 tool.result 事件的工具调用。
+//
+// 审批之外的工具（read_file、命令执行）崩溃后没有任何审批行可查：只清理
+// pending 审批会让它们永远停在 prepared/running，回放出的历史也永久带着一个
+// 没有回填的 tool_use。
+func (s *Store) UnfinishedToolCalls(ctx context.Context) ([]domain.ToolCall, error) {
+	withResult, err := s.toolResultCallIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, status FROM tool_calls ORDER BY created_at ASC, id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取工具调用: %w", err)
+	}
+	var ids []domain.ToolCallID
+	for rows.Next() {
+		var id, status string
+		if err := rows.Scan(&id, &status); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: 扫描工具调用: %w", err)
+		}
+		if domain.ToolCallStatus(status).Terminal() {
+			continue
+		}
+		ids = append(ids, domain.ToolCallID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: 遍历工具调用: %w", err)
+	}
+	rows.Close()
+
+	out := make([]domain.ToolCall, 0, len(ids))
+	for _, id := range ids {
+		// 已经有结果的事件是唯一可信的收尾依据：状态可能落后，结果不会。
+		if withResult[id] {
+			continue
+		}
+		call, err := s.GetToolCall(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, call)
+	}
+	return out, nil
+}
+
 // PendingApprovals 返回所有尚未裁决的审批，按请求时间升序。
 //
 // 只给启动清理用：进程退出时还没来得及裁决的审批，重启后永远不会有人来
@@ -387,6 +465,81 @@ func (s *Store) PendingApprovals(ctx context.Context) ([]domain.Approval, error)
 			return nil, err
 		}
 		out = append(out, a)
+	}
+	return out, nil
+}
+
+// ResolvedApprovalsWithoutToolResult 返回「已经裁决、但对应工具调用没有
+// tool.result 事件」的审批。
+//
+// 裁决与工具结局通常同事务落库；这条查询把历史里漏掉的那批找出来给启动
+// 检查用。只报告不修复：补写要替当时选一个 status，而那次调用到底跑没跑
+// 已经无从判断，猜一个只会把问题藏起来。
+func (s *Store) ResolvedApprovalsWithoutToolResult(ctx context.Context) ([]domain.Approval, error) {
+	withResult, err := s.toolResultCallIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM approvals WHERE decision <> '' ORDER BY resolved_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取已裁决审批: %w", err)
+	}
+	var ids []domain.ApprovalID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: 扫描已裁决审批: %w", err)
+		}
+		ids = append(ids, domain.ApprovalID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: 遍历已裁决审批: %w", err)
+	}
+	rows.Close()
+
+	out := make([]domain.Approval, 0, len(ids))
+	for _, id := range ids {
+		a, err := s.GetApproval(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		// 没有工具调用的审批不参与检查：检查的对象是「调用有没有收尾」。
+		if a.ToolCallID == "" || withResult[a.ToolCallID] {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// toolResultCallIDs 收集所有已经有 tool.result 事件的工具调用 id。
+func (s *Store) toolResultCallIDs(ctx context.Context) (map[domain.ToolCallID]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT payload FROM events WHERE type = ?`, string(domain.EventToolResult))
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取工具结果事件: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[domain.ToolCallID]bool)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("store: 扫描工具结果事件: %w", err)
+		}
+		var p domain.ToolResultPayload
+		if err := json.Unmarshal([]byte(payload), &p); err != nil || p.ToolCallID == "" {
+			// 坏载荷无从归属：跳过，不让一条脏记录挡住整次检查。
+			continue
+		}
+		out[domain.ToolCallID(p.ToolCallID)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历工具结果事件: %w", err)
 	}
 	return out, nil
 }

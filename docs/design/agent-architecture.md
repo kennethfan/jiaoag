@@ -1,7 +1,7 @@
 # jiaoag agent 架构
 
-状态：v1 设计基线。M0（配置 / 协议 / 握手）已落地，M1 起按本文实施。
-关联：`CONTEXT.md`、`docs/adr/0001`–`0008`。
+状态：v1 设计基线。M0–M5 已落地；M6（并发与容错）按本文实施。
+关联：`CONTEXT.md`、`docs/adr/0001`–`0013`。
 
 ---
 
@@ -83,8 +83,9 @@ graph TD
 | `internal/store` | SQLite 单一深模块：7 张表、事务助手、投影更新、审计写入；实现 `Journal` |
 | `internal/llm` | `Provider` 端口 + openai / anthropic 适配器 + 重试 / 超时 / 限流装饰器 |
 | `internal/workspace` | 工作区根、路径解析与越界防护、读、`Snapshot` / `Hash`、`Write`（同目录临时文件 + rename，保留权限；拒绝二进制 / `.git` / 符号链接） |
-| `internal/tools` | `Prepare` / `Execute` 两段式契约、注册表与 256 KB 输出收敛、5 个工具（read_file / grep / glob / write_file / edit_file） |
-| `internal/perm` | 按工具副作用分级、默认拒绝；M5 再叠加 argv 白名单与执行约束（ADR-0004） |
+| `internal/tools` | `Prepare` / `Execute` 两段式契约、注册表与 256 KB 输出收敛；11 个工具（read_file / grep / glob / write_file / edit_file、run_command / check_command、read_output、git_status / git_diff / git_log） |
+| `internal/exec` | 执行后端（ADR-0011）：`Plan` 校验、进程组与超时 / 取消杀组、头尾截断与全文日志（`Spec` 三档预算） |
+| `internal/perm` | 按工具副作用分级、默认拒绝；M5 已叠加参数级 argv 白名单与执行约束（ADR-0004） |
 | `internal/agent` | 上下文装配、轮次循环、审批挂起 / 恢复、取消 |
 | `internal/prompt` | 提示词分层装配（纯函数）、`{{var}}` 白名单替换、项目级确认与 hash（ADR-0012） |
 | `internal/app` | 建会话、提交任务、响应审批、取消、订阅；唯一的事务与广播位置 |
@@ -182,7 +183,7 @@ type Decision struct {
 }
 ```
 
-判定顺序短路：声明 `propose_write` → 必审批；只有 `read` → 放行；其余（`process` / `network` / 未声明）→ 必审批。`PolicyID` 随 M5 的命令白名单一起引入，届时再进审计。
+判定顺序短路：声明 `propose_write` → 必审批；本地收紧规则 → 必审批（先于只读短路）；只有 `read` → 放行；其余（`process` / `network` / 未声明）→ 必审批。`PolicyVersion` / `RuleID` 已随 M5 的命令白名单进入审计。
 
 ---
 
@@ -215,13 +216,13 @@ case <-ctx.Done():       // 取消 / 服务端关闭
 }
 ```
 
-审批**不设超时**，只能人工取消。取消时 agent 用 `context.WithoutCancel` 把审批收尾成 `expired`（`source=system`）、提案转 `stale` 并补一条 `proposal.rejected`、工具调用标 `canceled`——不能留下永远等不到裁决的 `pending`，也不能让回放看到一条永远 pending 的提案或停在 `waiting_approval` 的调用。
+审批**不设超时**，只能人工取消。取消时 agent 用 `context.WithoutCancel` 把审批收尾成 `expired`（`source=system`）、提案转 `stale` 并补一条 `proposal.rejected`、工具调用标 `canceled` 并补一条 `status=canceled` 的 `tool.result`——不能留下永远等不到裁决的 `pending`，也不能让回放看到一条永远 pending 的提案、停在 `waiting_approval` 的调用，或没有回填的 `tool_use`（那会让下一次请求被供应商拒绝）。
 
-`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。v1 没有「会话结束」事件，因此白名单的实际生命周期是**进程内**：退出即清空，不落盘、不跨连接继承（ADR-0007 的运行时与连接解耦不改变这一点）。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`（v1 不自动续跑）。
+`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。v1 没有「会话结束」事件，因此白名单的实际生命周期是**进程内**：退出即清空，不落盘、不跨连接继承（ADR-0007 的运行时与连接解耦不改变这一点）。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`（v1 不自动续跑）。紧接着 `ReapUnfinished` 兜住其余没有 `tool.result` 的调用：停在 `requested|prepared|waiting_approval|running` 的一律标 `canceled` 并补一条结果；**已经裁决过审批的那批也补**，文案写成「执行中进程重启，结果未知」——它们大概率已经开始执行，但结果无从判断。不补的话回放出的历史带着孤立的 `tool_use`，下一次请求会被供应商拒绝，会话直接不可用。`CheckApprovalConsistency` 只留作补写失败时的安全网。
 
 ### 5.4 权限是纯函数（ADR-0004）
 
-层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了两层：`workspace.Resolve` 的路径边界与 `perm.Decide` 的工具分级（默认拒绝）；argv 白名单与执行约束随 `run_command` 进 M5，届时 `Decision` 补 `PolicyID` 并写入审计。
+层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。`go build` 与 git 子命令不在命令白名单里：前者会写工作区产物，后者会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。
 
 ### 5.5 LLM 端口 + 装饰器（ADR-0008）
 
@@ -305,7 +306,7 @@ sequenceDiagram
 ## 8. 错误与可观测性
 
 - 各层返回类型化错误（`perm.DeniedError`、`workspace.ErrStale`、`llm.ErrRateLimited`），只在 `app` 边界映射成 `protocol` 错误码。
-- 每次工具调用写一行 `audit`：tool、原始参数 / argv、cwd、策略 ID 与判定、审批来源、耗时、退出码、输出 hash。
+- 命令类工具每次执行恰写一行 `audit`（与 `tool.result` 同事务）：`argv`、`cwd`、`backend` / `backend_version`、`policy_version` / `rule_id`、`exit_code`、`output_path`、`duration_ms`、`log_error`；写入审批只在拒绝 / 策略拒绝时写 `tool.denied`。`actor` 取 `policy` / `user` / `system`。
 - 事件流本身即 trace：一轮 = `message.start → tool.requested → approval.* → tool.result → message.completed`。
 
 ---
@@ -324,7 +325,7 @@ sequenceDiagram
 | M2 | `llm` 端口 + 两个适配器 + 流式归一化 + 装饰器 |
 | M3 | `tools`(read/grep/glob) + `agent` 循环（只读，无审批） |
 | M4 | `workspace` 提案 / diff / CAS + 审批挂起恢复（最易低估的纵向切片） |
-| M5 | `run_command` + `perm` 全量 + `audit` |
+| ✅ M5 | `run_command` + `perm` 全量 + `audit` |
 | M6 | 多会话排队、断连回放、`interrupted` / `expired` 恢复 |
 
 ---

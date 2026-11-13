@@ -196,6 +196,21 @@ func (a *App) ExpirePendingApprovals(ctx context.Context) error {
 				call.EndedAt = domain.Now()
 				call.Error = approval.Note
 				tr.ToolCall = &call
+				// 与取消路径一致：每个 tool_use 都要有一条 tool.result。
+				// 少了它，重启后回放出的历史带着孤立的工具调用，下一次请求
+				// 会被供应商直接拒绝。
+				resultEv, rerr := domain.NewEvent(domain.EventToolResult, task.SessionID, task.ID,
+					domain.ToolResultPayload{
+						Tool:       call.Name,
+						ToolCallID: string(call.ID),
+						Status:     string(domain.ToolCanceled),
+						IsError:    true,
+						Output:     approval.Note + "，工具未执行",
+					})
+				if rerr != nil {
+					return rerr
+				}
+				tr.Events = append(tr.Events, resultEv)
 			}
 		case errors.Is(err, domain.ErrNotFound):
 		default:

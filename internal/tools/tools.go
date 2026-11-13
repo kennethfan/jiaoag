@@ -56,6 +56,12 @@ type Prepared struct {
 	// Change 非空时，这次调用必须先经过用户审批才能落盘；此时顶层不会调用
 	// Execute，而是由 agent 走「提案 → 审批 → CAS 落盘」。
 	Change *Change
+	// Command 非空表示这是一次命令执行。工具只填 argv/cwd/env，执行后端由
+	// 宿主注入（ADR-0011），工具无权指定。
+	Command *Command
+	// LogPath 由 agent 填入：它知道 session/task/tool_call 三元组，工具不需要
+	// 知道会话标识。为空表示不落全文日志。
+	LogPath string
 }
 
 // Change 是一次「将要发生的写入」。
@@ -85,6 +91,17 @@ type Result struct {
 	// 界面与回放据此知道「这段不是全部」。
 	Truncated bool
 	Elapsed   time.Duration
+
+	// 以下字段只对命令工具有值。ExitCode 为 nil 表示没跑到「有退出码」这一步
+	// （后端不可用、参数错误等）。
+	ExitCode   *int
+	OutputPath string
+	// BackendVersion 是执行后端自报的身份（如 direct/darwin），随审计落库：
+	// 事后要能回答「这条命令是在哪个后端上跑出来的」。
+	BackendVersion string
+	TimedOut       bool
+	// LogError 非空表示全文日志没有完整落盘，工具结果里必须带上警告。
+	LogError string
 }
 
 // MaxOutputBytes 是单次工具输出的硬上限。工具的参数上界（max_results 等）

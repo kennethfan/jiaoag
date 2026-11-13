@@ -118,7 +118,7 @@ func TestApproveWritesFile(t *testing.T) {
 func TestDenyLeavesDiskUntouched(t *testing.T) {
 	rec := &fakeRecorder{
 		decide: func(agent.ApprovalRequest) (agent.ApprovalResult, error) {
-			return agent.ApprovalResult{Decision: domain.DecisionDeny, Source: domain.SourceUser}, nil
+			return agent.ApprovalResult{Decision: domain.DecisionDeny, Source: domain.SourceUser, Note: "别动这个文件"}, nil
 		},
 	}
 	provider := &scriptedProvider{scripts: []streamScript{
@@ -141,24 +141,43 @@ func TestDenyLeavesDiskUntouched(t *testing.T) {
 		t.Fatalf("缺少 proposal.rejected：%v", rec.kinds())
 	}
 
-	// 回给模型的必须是工具错误，它才能据此换方案。
-	last := rec.transitions[len(rec.transitions)-1]
-	_ = last
-	var found bool
+	// 回给模型的必须是工具错误，它才能据此换方案；但 event 里的 status 是
+	// denied，不能退化成「工具失败」——那是另一回事。
+	res := lastToolResult(t, rec)
+	if !res.IsError || res.Status != string(domain.ToolDenied) {
+		t.Fatalf("tool.result = %+v，期望 denied", res)
+	}
+
+	// 谁拒绝的、为什么拒绝必须留在日志里：审计的 actor 与理由都不能丢。
+	var (
+		action, actor, detail string
+	)
+	for _, tr := range rec.transitions {
+		for _, a := range tr.Audit {
+			if a.Action == "tool.denied" {
+				action, actor, detail = a.Action, a.Actor, string(a.Detail)
+			}
+		}
+	}
+	if action == "" || actor != "user" {
+		t.Fatalf("审计 = %+v，期望 tool.denied/user", action)
+	}
+	if !strings.Contains(detail, "别动这个文件") {
+		t.Fatalf("审计应带用户理由，实际 %s", detail)
+	}
+	var reason string
 	for _, ev := range rec.events {
-		if ev.Type != domain.EventToolResult {
+		if ev.Type != domain.EventProposalRejected {
 			continue
 		}
-		var p domain.ToolResultPayload
+		var p domain.ProposalRejectedPayload
 		if err := ev.Decode(&p); err != nil {
 			t.Fatal(err)
 		}
-		if p.IsError {
-			found = true
-		}
+		reason = p.Reason
 	}
-	if !found {
-		t.Fatal("拒绝应以工具错误回给模型")
+	if !strings.Contains(reason, "别动这个文件") {
+		t.Fatalf("proposal.rejected 应保留用户理由，实际 %q", reason)
 	}
 }
 
@@ -238,6 +257,12 @@ func TestCancelWhileWaitingExpiresApproval(t *testing.T) {
 		t.Fatalf("取消后应记录 proposal.rejected：%v", rec.kinds())
 	}
 
+	// 这次调用没有结果就结束了，必须补一条 canceled 的 tool.result：否则
+	// 历史里留下一个没有回填的 tool_use，下一次请求会被供应商拒绝。
+	if res := lastToolResult(t, rec); res.Status != string(domain.ToolCanceled) || !res.IsError {
+		t.Fatalf("取消后的 tool.result = %+v，期望 canceled", res)
+	}
+
 	// 工具调用必须收尾，否则 tool_calls 永远停在 waiting_approval。
 	var canceled bool
 	for _, tr := range rec.transitions {
@@ -247,6 +272,54 @@ func TestCancelWhileWaitingExpiresApproval(t *testing.T) {
 	}
 	if !canceled {
 		t.Fatal("取消后应把工具调用标成 canceled")
+	}
+}
+
+// 批准与取消撞在同一瞬间：批准是既成事实，必须落成 allow 而不是 expired；
+// 但任务已经取消，不能再动磁盘，调用要以 canceled 收尾且只留一条 tool.result。
+func TestAllowAtCancelMomentStillResolvesApproval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := &fakeRecorder{decide: func(agent.ApprovalRequest) (agent.ApprovalResult, error) {
+		cancel()
+		return agent.ApprovalResult{Decision: domain.DecisionAllowOnce, Source: domain.SourceUser}, nil
+	}}
+	provider := &scriptedProvider{scripts: []streamScript{
+		writeRound("call_w", "out.txt", "x"),
+	}}
+	ag, task, dir := newWriteAgent(t, provider, rec, 4)
+
+	if err := ag.Run(ctx, task); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rec.lastStatus().To != domain.TaskCanceled {
+		t.Fatalf("终态 = %s，期望 canceled", rec.lastStatus().To)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out.txt")); !os.IsNotExist(err) {
+		t.Fatal("取消后不该落盘")
+	}
+
+	// 审批不能因为取消就退回 pending 或被改写成 expired。
+	var decision domain.Decision
+	for _, tr := range rec.transitions {
+		if tr.Approval != nil {
+			decision = tr.Approval.Decision
+		}
+	}
+	if decision != domain.DecisionAllowOnce {
+		t.Fatalf("审批决议 = %q，期望 allow_once", decision)
+	}
+
+	var results int
+	for _, ev := range rec.events {
+		if ev.Type == domain.EventToolResult {
+			results++
+		}
+	}
+	if results != 1 {
+		t.Fatalf("tool.result 条数 = %d，期望 1", results)
+	}
+	if res := lastToolResult(t, rec); res.Status != string(domain.ToolCanceled) || !res.IsError {
+		t.Fatalf("tool.result = %+v，期望 canceled", res)
 	}
 }
 

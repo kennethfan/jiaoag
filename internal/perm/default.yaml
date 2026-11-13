@@ -1,0 +1,50 @@
+# 内嵌默认规则集（ADR-0004）。
+#
+# 条目增删必须同步 ADR-0004。三条约束缺一不可：
+#   programs —— 只放行已知程序；argv[0] 必须是程序名本身（带路径一律审批）；
+#   allow_flags/deny_flags —— 未列出的 flag 一律审批（--output、-exec 等）；
+#   path_args —— 非 flag 参数必须落在工作区根内。
+# 外部 policy.d/*.yaml 只能收紧，不能放宽。
+#
+# git 不在这里放行：`git status/diff/log` 会读取仓库自己的配置（diff.external、
+# gitattributes driver、core.fsmonitor），repo 被改过就等于一条免审批的任意
+# 执行通道。只读 git 走 internal/tools 的三个专用工具，它们固定注入了
+# `-c core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`；run_command 里的
+# git 一律需要审批。
+version: builtin-2
+rules:
+  - id: exec.go
+    programs: [go]
+    # build 已移出白名单：go build 会把二进制写到当前目录（`go build ./...`
+    # 也会为每个 main 包落一个产物），等于绕过了「写入必须审批」。需要构建
+    # 产物时让用户批准，或用 `go vet` / `go test` 做只编译检查。
+    subcommands: [test, vet, run]
+    allow_flags:
+      [-v, -run, -count, -timeout, -short, -race, -bench, -benchtime,
+       -json, -failfast, -tags, -p, -cover, -covermode, -parallel,
+       -shuffle, -vet, -trimpath, -mod, -buildvcs]
+    deny_flags:
+      [-exec, -toolexec, -o, -overlay, -C, -modfile, -coverprofile,
+       -cpuprofile, -memprofile, -blockprofile, -mutexprofile, -trace,
+       -outputdir, -ldflags, -gcflags, -asmflags, -buildmode, -pkgdir]
+    path_args: true
+
+  - id: exec.ls
+    programs: [ls]
+    allow_flags: [-l, -a, -A, -h, -1, -R, -r, -t, -S, -F, -d, -p]
+    path_args: true
+
+  - id: exec.cat
+    programs: [cat]
+    allow_flags: [-n, -b, -s, -E, -T, -v]
+    path_args: true
+
+  - id: exec.head
+    programs: [head]
+    allow_flags: [-n, -c, -q, -v]
+    path_args: true
+
+  - id: exec.wc
+    programs: [wc]
+    allow_flags: [-l, -w, -c, -m, -L]
+    path_args: true

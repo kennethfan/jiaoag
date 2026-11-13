@@ -119,3 +119,37 @@ func TestSubmitRejectsEmptyPrompt(t *testing.T) {
 		t.Fatal("空任务应被拒绝")
 	}
 }
+
+// 关闭之后所有写入都必须被明确拒绝：否则会落一条永远排不上、也没有终态的
+// 任务，或者把 sqlite 的「数据库已关闭」错误当成业务错误抛给客户端。
+// 这里自己建 App 而不是用 newApp，是为了只关一次。
+func TestWritesAfterCloseAreRejected(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "jiaoag.db"))
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	a := app.New(db, event.NewHub())
+	sess, err := a.CreateSession(ctx, t.TempDir(), "", "", "")
+	if err != nil {
+		t.Fatalf("创建会话: %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("关闭: %v", err)
+	}
+
+	task, err := a.SubmitTask(ctx, sess.ID, "关闭之后提交")
+	if !errors.Is(err, app.ErrAppClosed) {
+		t.Fatalf("关闭后提交应返回 ErrAppClosed，得到 %v", err)
+	}
+	if task.ID != "" {
+		t.Fatalf("被拒绝的提交不应返回任务: %+v", task)
+	}
+
+	if _, err := a.CreateSession(ctx, t.TempDir(), "", "", ""); !errors.Is(err, app.ErrAppClosed) {
+		t.Fatalf("关闭后建会话应返回 ErrAppClosed，得到 %v", err)
+	}
+	if err := a.CancelTask(ctx, sess.ID, "tsk_missing"); !errors.Is(err, app.ErrAppClosed) {
+		t.Fatalf("关闭后取消应返回 ErrAppClosed，得到 %v", err)
+	}
+}

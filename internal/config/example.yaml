@@ -11,10 +11,24 @@ storage:
   db_path: ~/.local/share/jiaoag/jiaoag.db
   output_dir: ~/.local/share/jiaoag/outputs
 
+policy:
+  # 本地收紧规则目录；外部规则只能让命令落到审批，不能放宽白名单（ADR-0010）。
+  dir: ~/.config/jiaoag/policy.d
+
+exec:
+  # v1 只有 direct（宿主直连）。降级必须显式，不会静默回退（ADR-0011）。
+  backend: direct
+  # 单条命令的默认超时秒数；单次调用可在 1-600 之间覆盖。
+  timeout_s: 120
+  # 进事件的输出上限，必须低于 agent 的 8 KB 截断阈值。
+  event_limit: 8192
+  # 全文日志的磁盘上限。
+  log_limit: 4194304
+
 agent:
   # 单个任务的最大轮次，兜底防止失控循环。
   max_rounds: 24
-  # 单条命令的超时秒数。
+  # 单条命令的超时秒数（exec.timeout_s 未配置时沿用）。
   command_timeout_seconds: 120
   # 上下文预算（UTF-8 字符数）。超出时从最旧一轮开始丢弃，system 与
   # 最后一条用户消息永不丢。

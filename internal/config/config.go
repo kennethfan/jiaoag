@@ -27,8 +27,39 @@ type Config struct {
 	Server    Server     `yaml:"server"`
 	Storage   Storage    `yaml:"storage"`
 	Agent     Agent      `yaml:"agent"`
+	Policy    Policy     `yaml:"policy"`
+	Exec      Exec       `yaml:"exec"`
 	Providers []Provider `yaml:"providers"`
 }
+
+// Policy 是本地权限规则的位置。外部规则只能收紧（ADR-0010）。
+type Policy struct {
+	Dir string `yaml:"dir"`
+}
+
+// Exec 是命令执行的约束。
+type Exec struct {
+	// Backend 取 direct（v1 唯一实现）。降级必须显式，不能静默回退。
+	Backend string `yaml:"backend"`
+	// TimeoutSeconds 是单条命令的默认超时；单次调用可降到 1s、升到 600s。
+	TimeoutSeconds int `yaml:"timeout_s"`
+	// EventLimit 是进事件的输出上限，必须低于 agent 的 8 KB 截断阈值。
+	EventLimit int `yaml:"event_limit"`
+	// LogLimit 是全文日志的磁盘上限。
+	LogLimit int `yaml:"log_limit"`
+}
+
+// 执行默认值。EventLimit 刻意压在 agent 的 8 KB 阈值上：超出就会被二次
+// 截断成 6 KB，等于白留一份没用的中段。
+const (
+	DefaultExecBackend  = "direct"
+	DefaultEventLimit   = 8 << 10
+	DefaultExecLogLimit = 4 << 20
+	// MaxExecEventLimit 对齐 agent 的 8 KB 工具结果阈值：再大也会被二次
+	// 截成首 4 KB + 尾 2 KB，等于白留一段永远到不了模型的中段。
+	MaxExecEventLimit     = 8 << 10
+	MaxExecTimeoutSeconds = 600
+)
 
 // Server 是监听与鉴权配置。
 type Server struct {
@@ -219,6 +250,21 @@ func (c *Config) applyDefaults() {
 	if c.Agent.ContextBudgetChars <= 0 {
 		c.Agent.ContextBudgetChars = DefaultContextBudgetChars
 	}
+	if c.Policy.Dir == "" {
+		c.Policy.Dir = filepath.Join(ConfigDir(), "policy.d")
+	}
+	if c.Exec.Backend == "" {
+		c.Exec.Backend = DefaultExecBackend
+	}
+	if c.Exec.TimeoutSeconds <= 0 {
+		c.Exec.TimeoutSeconds = c.Agent.CommandTimeoutSeconds
+	}
+	if c.Exec.EventLimit <= 0 {
+		c.Exec.EventLimit = DefaultEventLimit
+	}
+	if c.Exec.LogLimit <= 0 {
+		c.Exec.LogLimit = DefaultExecLogLimit
+	}
 }
 
 // ValidateServer 校验服务端启动所需的全部字段。
@@ -280,6 +326,18 @@ func (c *Config) validateCommon() error {
 		if p == "" {
 			return fmt.Errorf("%s 不能为空", name)
 		}
+	}
+	if c.Exec.Backend != DefaultExecBackend {
+		return fmt.Errorf("exec.backend 目前只支持 %q，当前为 %q", DefaultExecBackend, c.Exec.Backend)
+	}
+	if c.Exec.TimeoutSeconds <= 0 || c.Exec.TimeoutSeconds > MaxExecTimeoutSeconds {
+		return fmt.Errorf("exec.timeout_s 必须在 1-%d 之间，当前为 %d", MaxExecTimeoutSeconds, c.Exec.TimeoutSeconds)
+	}
+	if c.Exec.EventLimit < 1024 || c.Exec.EventLimit > MaxExecEventLimit {
+		return fmt.Errorf("exec.event_limit 必须在 1024-%d 之间（不超过 8 KB 工具结果阈值），当前为 %d", MaxExecEventLimit, c.Exec.EventLimit)
+	}
+	if c.Exec.LogLimit < c.Exec.EventLimit {
+		return fmt.Errorf("exec.log_limit(%d) 不能小于 exec.event_limit(%d)", c.Exec.LogLimit, c.Exec.EventLimit)
 	}
 	return nil
 }

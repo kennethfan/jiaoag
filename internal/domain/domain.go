@@ -97,6 +97,15 @@ const (
 	ToolCanceled       ToolCallStatus = "canceled"
 )
 
+// Terminal 报告工具调用是否已经结束（不再接受迁移）。
+func (s ToolCallStatus) Terminal() bool {
+	switch s {
+	case ToolSucceeded, ToolFailed, ToolDenied, ToolCanceled:
+		return true
+	}
+	return false
+}
+
 // ToolCall 记录一次工具调用的输入、状态与输出引用。
 type ToolCall struct {
 	ID         ToolCallID

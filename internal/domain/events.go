@@ -173,6 +173,12 @@ type ApprovalRequestedPayload struct {
 	// 提示「你看到的不是全部」，否则就是在让人盲批一份没看全的改动。
 	Truncated bool     `json:"truncated,omitempty"`
 	Command   []string `json:"command,omitempty"`
+	// 命令审批必须展示真实 argv、cwd、后端与超时：用户批的应该是「实际要跑的
+	// 东西」，而不是一句「要不要执行命令」。
+	Cwd       string `json:"cwd,omitempty"`
+	Backend   string `json:"backend,omitempty"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 type ApprovalResolvedPayload struct {

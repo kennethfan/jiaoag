@@ -66,6 +66,20 @@ type fakeRecorder struct {
 }
 
 func (r *fakeRecorder) Record(_ context.Context, tr domain.Transition) error {
+	// 存储层每次写入都是当时那份快照；这里也复制一份，否则后续对 ToolCall 的
+	// 原地修改会把历史迁移全部改成最终状态，测试就断言不了「什么时候是什么状态」。
+	if tr.ToolCall != nil {
+		cp := *tr.ToolCall
+		tr.ToolCall = &cp
+	}
+	if tr.Approval != nil {
+		cp := *tr.Approval
+		tr.Approval = &cp
+	}
+	if tr.Proposal != nil {
+		cp := *tr.Proposal
+		tr.Proposal = &cp
+	}
 	r.transitions = append(r.transitions, tr)
 	for _, ev := range tr.Events {
 		r.seq++

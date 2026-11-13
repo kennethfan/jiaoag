@@ -29,6 +29,9 @@ type Decision struct {
 	Verdict Verdict
 	// Reason 写进审计与界面，说明「为什么放行/为什么要问」。
 	Reason string
+	// PolicyVersion 与 RuleID 进审计：事后要能回答「当时用的是哪套规则」。
+	PolicyVersion string
+	RuleID        string
 }
 
 // Decide 按工具声明的副作用给出判定。
@@ -38,8 +41,20 @@ type Decision struct {
 //  2. 只有 read 副作用 → 放行：读不到东西也伤不到什么，不值得打断用户；
 //  3. 其余（process / network / 未声明）→ 必审批：不认识的副作用按最危险的算。
 func Decide(spec tools.Spec) Decision {
-	writes := false
-	onlyRead := len(spec.Effects) > 0
+	writes, onlyRead := effectsClass(spec)
+	switch {
+	case writes:
+		return Decision{Verdict: RequireUser, Reason: "tool_writes: 写入必须经用户批准"}
+	case onlyRead:
+		return Decision{Verdict: Allow, Reason: "read_only: 只读工具自动放行"}
+	default:
+		return Decision{Verdict: RequireUser, Reason: "unknown_effect: 未识别的副作用按最危险的算"}
+	}
+}
+
+// effectsClass 把副作用分成「写」与「纯只读」两类；其余一律不算只读。
+func effectsClass(spec tools.Spec) (writes, onlyRead bool) {
+	onlyRead = len(spec.Effects) > 0
 	for _, e := range spec.Effects {
 		switch e {
 		case tools.EffectProposeWrite:
@@ -49,14 +64,7 @@ func Decide(spec tools.Spec) Decision {
 			onlyRead = false
 		}
 	}
-	switch {
-	case writes:
-		return Decision{Verdict: RequireUser, Reason: "tool_writes: 写入必须经用户批准"}
-	case onlyRead:
-		return Decision{Verdict: Allow, Reason: "read_only: 只读工具自动放行"}
-	default:
-		return Decision{Verdict: RequireUser, Reason: "unknown_effect: 未识别的副作用按最危险的算"}
-	}
+	return writes, onlyRead
 }
 
 // Describe 把副作用列表拼成一句人话，供审计与 tool.prepared 事件使用。

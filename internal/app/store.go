@@ -32,8 +32,18 @@ type Store interface {
 	GetToolCall(ctx context.Context, id domain.ToolCallID) (domain.ToolCall, error)
 	// PendingApprovals 返回所有未裁决的审批，供启动时清理遗留状态。
 	PendingApprovals(ctx context.Context) ([]domain.Approval, error)
+	// UnfinishedToolCalls 返回停在非终态、且没有 tool.result 事件的工具调用，
+	// 供启动时收尾没有审批行可查的那批。
+	UnfinishedToolCalls(ctx context.Context) ([]domain.ToolCall, error)
+	// UnfinishedTasks 返回所有还没走到终态的任务，供启动时把幽灵任务标成 canceled。
+	UnfinishedTasks(ctx context.Context) ([]domain.Task, error)
+	// ResolvedApprovalsWithoutToolResult 返回已裁决、但对应工具调用没有
+	// tool.result 事件的审批，供启动时的一致性检查报告。
+	ResolvedApprovalsWithoutToolResult(ctx context.Context) ([]domain.Approval, error)
 	// ProposalByToolCall 按工具调用查变更提案；不存在时返回 domain.ErrNotFound。
 	ProposalByToolCall(ctx context.Context, id domain.ToolCallID) (domain.Proposal, error)
+	// RecentAudit 返回某个任务最近 limit 条审计记录（按 id 倒序）。
+	RecentAudit(ctx context.Context, taskID domain.TaskID, limit int) ([]domain.AuditRecord, error)
 
 	// Replay 返回 Seq 严格大于 from 的事件，按 Seq 升序。
 	// limit <= 0 时使用默认批量（200），上限 1000。

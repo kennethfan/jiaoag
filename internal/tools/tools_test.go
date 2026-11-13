@@ -188,7 +188,8 @@ func TestSpecsAndDigestAreStable(t *testing.T) {
 	if len(names) != 3 || names[0] != "glob" || names[1] != "grep" || names[2] != "read_file" {
 		t.Fatalf("工具名应排序：%v", names)
 	}
-	if reg.Digest() != reg.Digest() {
+	first := reg.Digest()
+	if again := reg.Digest(); first != again {
 		t.Fatal("同一次构造的 digest 应稳定")
 	}
 	other, _ := registryWithWorkspace(t)

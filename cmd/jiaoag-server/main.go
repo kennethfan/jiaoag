@@ -9,12 +9,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
+	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/server"
 	"github.com/kennethfan/jiaoag/internal/store"
 	"github.com/kennethfan/jiaoag/internal/tools"
@@ -69,6 +72,16 @@ func run(cfgPath, listen string) error {
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
+	policyDir, err := config.ExpandHome(cfg.Policy.Dir)
+	if err != nil {
+		return err
+	}
+	ruleset, err := perm.NewLoader(policyDir).Load()
+	if err != nil {
+		return err
+	}
+	backend := execpkg.NewDirect()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -78,10 +91,11 @@ func run(cfgPath, listen string) error {
 	}
 	application := app.New(db, event.NewHub())
 	defer application.Close()
-	if err := application.ConfigureRuntime(runtimeDeps(cfg, log)); err != nil {
+	if err := application.ConfigureRuntime(runtimeDeps(cfg, log, backend, ruleset)); err != nil {
 		return err
 	}
 	log.Info("数据已就绪", "db", cfg.Storage.DBPath)
+	log.Info("执行环境已就绪", "policy", ruleset.Version, "policy_hash", ruleset.Hash[:12], "backend", backend.Name())
 
 	srv, err := server.New(cfg, log, version.Version)
 	if err != nil {
@@ -93,7 +107,11 @@ func run(cfgPath, listen string) error {
 }
 
 // runtimeDeps 把配置翻译成执行依赖：app 不认识 config，这里做唯一的接线。
-func runtimeDeps(cfg *config.Config, log *slog.Logger) app.RuntimeDeps {
+func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset) app.RuntimeDeps {
+	outputDir, err := config.ExpandHome(cfg.Storage.OutputDir)
+	if err != nil {
+		outputDir = cfg.Storage.OutputDir
+	}
 	return app.RuntimeDeps{
 		Provider: func(sess domain.Session) (llm.Provider, string, error) {
 			provider, ok := cfg.Provider(sess.Provider)
@@ -113,12 +131,21 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger) app.RuntimeDeps {
 			}
 			return built, model, nil
 		},
-		Tools: func(ws *workspace.Workspace) (*tools.Registry, error) {
+		Tools: func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error) {
+			env.EventLimit = cfg.Exec.EventLimit
+			env.LogLimit = cfg.Exec.LogLimit
 			return tools.NewRegistry(
 				tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws),
 				tools.NewWriteFile(ws), tools.NewEditFile(ws),
+				tools.NewRunCommand(ws, env), tools.NewCheckCommand(ws, env),
+				tools.NewReadOutput(env),
+				tools.NewGitStatus(ws, env), tools.NewGitDiff(ws, env), tools.NewGitLog(ws, env),
 			)
 		},
+		Backend:       backend,
+		Ruleset:       ruleset,
+		OutputDir:     outputDir,
+		ExecTimeout:   time.Duration(cfg.Exec.TimeoutSeconds) * time.Second,
 		MaxRounds:     cfg.Agent.MaxRounds,
 		ContextBudget: cfg.Agent.ContextBudgetChars,
 		Logger:        log,

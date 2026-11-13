@@ -7,6 +7,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -36,11 +37,14 @@ type App struct {
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
 
-	// runtimeMu 保护 runtime 与 runs。它只覆盖「查表 + 登记」，不与 commitMu
-	// 嵌套：提交仍在 commitMu 内完成，这里不引入第二个串行点。
+	// runtimeMu 保护 runtime、runs 与 closed。它只覆盖「查表 + 登记」，不与
+	// commitMu 嵌套：提交仍在 commitMu 内完成，这里不引入第二个串行点。
 	runtimeMu sync.Mutex
 	runtime   *RuntimeDeps
 	runs      map[domain.SessionID]*taskRun
+	// closed 表示 Close 已经开始：之后提交的任务一律拒绝。它与「接受提交」
+	// 共用一把锁，因此不存在「已经通过忙检查、在关库之后才落库」的提交。
+	closed bool
 
 	// approvals 保存审批等待者与会话级白名单，见 approval.go。它有自己的锁：
 	// 等待裁决是长时间阻塞的，不能占用 runtimeMu（否则取消与提交都会被卡住）。
@@ -76,17 +80,52 @@ func New(store Store, hub *event.Hub) *App {
 	}
 }
 
+// ErrAppClosed 表示 App 已开始关闭：进程退出路径上不再接受新任务。
+var ErrAppClosed = errors.New("app: 正在关闭，不再接受新任务")
+
+// closeGrace 是 Close 留给任务自行收尾的窗口。取消之后命令执行与供应商调用
+// 都会立即返回，正常任务在这个窗口内就能写完终态；窗口要比单条命令的超时短，
+// 否则退出会白白等待，剩下的由补写终态兜底。
+const closeGrace = 5 * time.Second
+
 // Close 取消运行中的任务、断开订阅并关闭存储。
 //
 // 先取消再等待：任务收到取消会记录 canceled 终态，此时数据库仍然打开；
 // 直接关库会让这些写入失败，任务永远停在 running。
-func (a *App) Close() error {
+func (a *App) Close() error { return a.close(closeGrace) }
+
+// close 是 Close 的实现，窗口可注入：测试用短窗口覆盖「窗口用完仍没收尾」的分支。
+func (a *App) close(grace time.Duration) error {
+	// 在 runtimeMu 内置位，与 SubmitTask 的登记互斥：置位时要么没有任何
+	// 提交在路上，要么那把锁正在被某个提交持有——等它把任务登记、落库、
+	// 启动完再置位，waitRuns 的快照就必然包含它。置位之后提交一律被拒，
+	// 不会再出现「任务已入队却没人执行、也没有终态」的记录。
+	//
+	// 重复关闭（defer + 显式调用）直接视为已完成：既不再等一轮窗口，也不会
+	// 拿已关的库去补写终态。首次关闭的错误不回放，调用方当时就拿到了。
+	a.runtimeMu.Lock()
+	if a.closed {
+		a.runtimeMu.Unlock()
+		return nil
+	}
+	a.closed = true
+	a.runtimeMu.Unlock()
+
 	if a.baseCancel != nil {
 		a.baseCancel()
 	}
-	a.waitRuns(5 * time.Second)
+	// 窗口用完还没收尾的任务必须在这里补写终态：下面的关库之后它们再也写不
+	// 进去，库里就会留下一条永远 running 的任务。
+	a.abandonRuns(a.waitRuns(grace))
 	a.hub.CloseAll()
 	return a.store.Close()
+}
+
+// closedNow 报告 App 是否已开始关闭。
+func (a *App) closedNow() bool {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	return a.closed
 }
 
 // Hub 暴露扇出器给传输层（订阅在线事件）。
@@ -97,6 +136,11 @@ func NewID(prefix string) (string, error) { return domain.NewID(prefix) }
 
 // CreateSession 创建工作区会话，并写入 session.created。
 func (a *App) CreateSession(ctx context.Context, workspace, provider, model, title string) (domain.Session, error) {
+	// 关闭之后 store 马上就要关：这里直接拒绝，不让调用方拿 sqlite 的
+	// 「数据库已关闭」当成业务错误。
+	if a.closedNow() {
+		return domain.Session{}, ErrAppClosed
+	}
 	if !filepath.IsAbs(workspace) {
 		return domain.Session{}, fmt.Errorf("app: 工作区必须是绝对路径: %q", workspace)
 	}
@@ -135,6 +179,10 @@ func (a *App) CreateSession(ctx context.Context, workspace, provider, model, tit
 func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt string) (domain.Task, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return domain.Task{}, fmt.Errorf("app: 任务内容为空")
+	}
+	// 早退：关闭之后不必再读会话、建供应商。真正的判定在提交前的锁内。
+	if a.closedNow() {
+		return domain.Task{}, ErrAppClosed
 	}
 	sess, err := a.store.GetSession(ctx, sessionID)
 	if err != nil {
@@ -189,6 +237,9 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	// 忙时拒绝要在建任务之前：先建后拒会留下一条永远排不上的 queued 记录。
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
+	if a.closed {
+		return domain.Task{}, ErrAppClosed
+	}
 	if deps != nil {
 		if run, ok := a.runs[sessionID]; ok && run != nil {
 			return domain.Task{}, ErrSessionBusy

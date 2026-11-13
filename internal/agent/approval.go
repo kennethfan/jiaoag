@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
@@ -124,15 +125,25 @@ func (a *Agent) rejectChange(ctx context.Context, task domain.Task, toolCall *do
 	if err != nil {
 		return tools.Result{}, err
 	}
-	rejected, err := rejectedEvent(task, proposal, "用户拒绝")
+	// 用户写的理由要原样进事件与审计：这两处是事后还原「为什么没写」的唯一
+	// 依据，不能用一句固定的「用户拒绝」把它盖掉。
+	rejected, err := rejectedEvent(task, proposal, note)
 	if err != nil {
 		return tools.Result{}, err
 	}
-	if err := a.record(ctx, task, domain.Transition{
+	// 用户可能按下回车的同时取消任务：拒绝是既成事实，不能因为 ctx 一起
+	// 失效就退回 pending。
+	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Events:   []domain.Event{resolved, rejected},
+		Audit: []domain.AuditRecord{{
+			Actor:      auditActor(approval.Source),
+			Action:     auditToolDenied,
+			ToolCallID: toolCall.ID,
+			Detail:     rejectedDetail(change.Path, note),
+		}},
+		Events: []domain.Event{resolved, rejected},
 	}); err != nil {
 		return tools.Result{}, err
 	}
@@ -157,6 +168,34 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		return tools.Result{}, err
 	}
 
+	// 裁决落定与取消撞在一起：批准是既成事实，必须落成 allow 而不是 expired；
+	// 但任务已经取消，不能再动磁盘。此时把提案标 stale、调用标 canceled，
+	// 并补一条 tool.result——否则审批永远 pending，历史里也少一条 tool_result。
+	if cerr := ctx.Err(); cerr != nil {
+		note := "任务已取消，写入未发生"
+		proposal.Status = domain.ProposalStale
+		toolCall.Status = domain.ToolCanceled
+		toolCall.EndedAt = domain.Now()
+		toolCall.Error = note
+		rejected, rerr := rejectedEvent(task, proposal, note)
+		if rerr != nil {
+			return tools.Result{}, rerr
+		}
+		result, rerr := toolResultEvent(task, toolCall, domain.ToolCanceled, note)
+		if rerr != nil {
+			return tools.Result{}, rerr
+		}
+		if rerr := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+			ToolCall: toolCall,
+			Approval: approval,
+			Proposal: proposal,
+			Events:   []domain.Event{resolved, rejected, result},
+		}); rerr != nil {
+			return tools.Result{}, rerr
+		}
+		return tools.Result{}, cerr
+	}
+
 	// CAS：用户审阅期间文件可能被别的进程改过。此时覆盖会静默丢掉别人的
 	// 改动，所以拒绝并要求模型重新读、重新出 diff。
 	hash, exists, err := a.opts.Workspace.Hash(change.Path)
@@ -171,7 +210,7 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		if err != nil {
 			return tools.Result{}, err
 		}
-		if rerr := a.record(ctx, task, domain.Transition{
+		if rerr := a.record(context.WithoutCancel(ctx), task, domain.Transition{
 			ToolCall: toolCall,
 			Approval: approval,
 			Proposal: proposal,
@@ -205,7 +244,8 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 	if err != nil {
 		return tools.Result{}, err
 	}
-	if err := a.record(ctx, task, domain.Transition{
+	// 磁盘已经变了：这条结局必须落库，哪怕任务在同一瞬间被取消。
+	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
@@ -227,7 +267,7 @@ func (a *Agent) failChange(ctx context.Context, task domain.Task, toolCall *doma
 	if err != nil {
 		return tools.Result{}, err
 	}
-	if err := a.record(ctx, task, domain.Transition{
+	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
@@ -271,13 +311,42 @@ func (a *Agent) expireApproval(task domain.Task, toolCall *domain.ToolCall,
 	if err != nil {
 		return err
 	}
+	// 这次调用没有结果就结束了：必须补一条 tool.result，否则历史里会留下
+	// 一个没有回填的 tool_use，下一次请求直接失败。
+	result, err := toolResultEvent(task, toolCall, domain.ToolCanceled, approval.Note+"，写入未发生")
+	if err != nil {
+		return err
+	}
 	// 不跟随已取消的 ctx：否则这条收尾写入自己也写不进去。
 	return a.record(context.WithoutCancel(context.Background()), task, domain.Transition{
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Events:   []domain.Event{ev, rejected},
+		Events:   []domain.Event{ev, rejected, result},
 	})
+}
+
+// rejectedDetail 是「这次调用没有发生」的审计事实：路径与原因。
+// 没有路径的拒绝（例如策略拒绝执行没有可审内容的工具）不写空字段。
+func rejectedDetail(path, reason string) json.RawMessage {
+	detail := map[string]string{"reason": reason}
+	if path != "" {
+		detail["path"] = path
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// auditActor 把审批来源映射成审计的 actor：谁做的决定就记谁，
+// 不能一律写成 user——策略拒绝与系统收尾都不是「用户拒绝了」。
+func auditActor(source domain.ApprovalSource) string {
+	if source == "" {
+		return string(domain.SourceUser)
+	}
+	return string(source)
 }
 
 // rejectedEvent 记录「这次写入没有发生」以及落在哪种结局上。

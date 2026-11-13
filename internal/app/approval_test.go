@@ -1,9 +1,12 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +65,7 @@ func configureWriteRuntime(t *testing.T, a *app.App, provider llm.Provider) {
 		Provider: func(domain.Session) (llm.Provider, string, error) {
 			return provider, "test-model", nil
 		},
-		Tools: func(ws *workspace.Workspace) (*tools.Registry, error) {
+		Tools: func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error) {
 			return tools.NewRegistry(
 				tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws),
 				tools.NewWriteFile(ws), tools.NewEditFile(ws),
@@ -385,6 +388,302 @@ func TestExpirePendingApprovalsCancelsToolCall(t *testing.T) {
 	}
 	if got.EndedAt.IsZero() {
 		t.Fatal("遗留工具调用应有结束时间")
+	}
+
+	// 重启收尾也要补 tool.result：否则这条会话回放出的历史带着孤立的
+	// tool_use，下一次提交会被供应商拒绝。
+	events, err := a.Events(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ToolResultPayload
+	for _, ev := range events {
+		if ev.Type != domain.EventToolResult {
+			continue
+		}
+		if err := ev.Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result.ToolCallID != string(call.ID) || result.Status != string(domain.ToolCanceled) || !result.IsError {
+		t.Fatalf("遗留调用的 tool.result = %+v，期望 canceled", result)
+	}
+}
+
+// 启动检查要报出「审批已裁决、却没有 tool.result」的调用：这类历史回放会
+// 带着孤立的 tool_use，下一次提交会被供应商拒绝。只报有缺口的那条。
+func TestCheckApprovalConsistencyReportsMissingToolResult(t *testing.T) {
+	ctx := context.Background()
+	a := newApp(t)
+	sess, err := a.CreateSession(ctx, t.TempDir(), "", "", "一致性")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	task, err := a.SubmitTask(ctx, sess.ID, "占位")
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+
+	base := domain.ToolCall{
+		TaskID: task.ID, SessionID: sess.ID, Round: 1, Name: "write_file",
+		Args: []byte(`{}`), Status: domain.ToolCanceled, CreatedAt: domain.Now(),
+	}
+	missing := base
+	missing.ID = "call_missing"
+	finished := base
+	finished.ID = "call_finished"
+
+	record := func(call domain.ToolCall, approvalID domain.ApprovalID) {
+		t.Helper()
+		approval := &domain.Approval{
+			ID: approvalID, TaskID: task.ID, ToolCallID: call.ID,
+			Kind: domain.ApprovalDiff, Risk: domain.RiskMedium,
+			Decision: domain.DecisionAllowOnce, Source: domain.SourceUser,
+			RequestedAt: domain.Now(), ResolvedAt: domain.Now(),
+		}
+		if err := a.Record(ctx, domain.Transition{
+			TaskID: task.ID, ToolCall: &call, Approval: approval,
+		}); err != nil {
+			t.Fatalf("写入审批 %s: %v", approvalID, err)
+		}
+	}
+	record(missing, "apr_missing")
+	record(finished, "apr_finished")
+
+	// 只有 finished 有工具结果。
+	ev, err := domain.NewEvent(domain.EventToolResult, sess.ID, task.ID, domain.ToolResultPayload{
+		Tool: "write_file", ToolCallID: string(finished.ID),
+		Status: string(domain.ToolCanceled), IsError: true, Output: "已取消",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Record(ctx, domain.Transition{TaskID: task.ID, Events: []domain.Event{ev}}); err != nil {
+		t.Fatalf("写入 tool.result: %v", err)
+	}
+
+	gaps, err := a.CheckApprovalConsistency(ctx)
+	if err != nil {
+		t.Fatalf("CheckApprovalConsistency: %v", err)
+	}
+	if len(gaps) != 1 || gaps[0].ToolCallID != missing.ID {
+		t.Fatalf("不一致记录 = %+v，期望只有 %s", gaps, missing.ID)
+	}
+}
+
+// 崩溃时正在跑的调用没有审批行可查：启动收尾必须把它们补成 canceled，
+// 否则回放出的历史会永久带着没有回填的 tool_use。
+func TestStartupReapsUnfinishedToolCalls(t *testing.T) {
+	ctx := context.Background()
+	a := newApp(t)
+	sess, err := a.CreateSession(ctx, t.TempDir(), "", "", "遗留调用")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	task, err := a.SubmitTask(ctx, sess.ID, "占位")
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+
+	base := domain.ToolCall{
+		TaskID: task.ID, SessionID: sess.ID, Round: 1,
+		Name: "read_file", Args: []byte(`{}`), CreatedAt: domain.Now(),
+	}
+	calls := []domain.ToolCall{base, base}
+	calls[0].ID, calls[0].Status = "call_prepared", domain.ToolPrepared
+	calls[1].ID, calls[1].Status = "call_running", domain.ToolRunning
+	for i := range calls {
+		if err := a.Record(ctx, domain.Transition{
+			TaskID: task.ID, ToolCall: &calls[i],
+		}); err != nil {
+			t.Fatalf("写入工具调用 %s: %v", calls[i].ID, err)
+		}
+	}
+
+	configureWriteRuntime(t, a, &roundProvider{})
+
+	for _, want := range calls {
+		got, err := a.GetToolCall(ctx, want.ID)
+		if err != nil {
+			t.Fatalf("GetToolCall %s: %v", want.ID, err)
+		}
+		if got.Status != domain.ToolCanceled {
+			t.Fatalf("%s 状态 = %s，期望 canceled", want.ID, got.Status)
+		}
+		if got.EndedAt.IsZero() {
+			t.Fatalf("%s 缺少结束时间", want.ID)
+		}
+	}
+
+	events, err := a.Events(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results := map[string]int{}
+	for _, ev := range events {
+		if ev.Type != domain.EventToolResult {
+			continue
+		}
+		var p domain.ToolResultPayload
+		if err := ev.Decode(&p); err != nil {
+			t.Fatal(err)
+		}
+		if p.Status != string(domain.ToolCanceled) || !p.IsError {
+			t.Fatalf("tool.result = %+v，期望 canceled/is_error", p)
+		}
+		results[p.ToolCallID]++
+	}
+	for _, want := range calls {
+		if results[string(want.ID)] != 1 {
+			t.Fatalf("%s 的 tool.result 条数 = %d，期望 1", want.ID, results[string(want.ID)])
+		}
+	}
+
+	stored, err := a.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.TaskCanceled {
+		t.Fatalf("幽灵任务终态 = %s，期望 canceled", stored.Status)
+	}
+}
+
+// 连工具都还没调用的任务同样要收尾：崩溃时可能正等着模型输出。
+func TestStartupCancelsGhostTaskWithoutApproval(t *testing.T) {
+	ctx := context.Background()
+	a := newApp(t)
+	sess, err := a.CreateSession(ctx, t.TempDir(), "", "", "幽灵任务")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	task, err := a.SubmitTask(ctx, sess.ID, "跑到一半进程没了")
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+
+	configureWriteRuntime(t, a, &roundProvider{})
+
+	stored, err := a.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != domain.TaskCanceled {
+		t.Fatalf("幽灵任务终态 = %s，期望 canceled", stored.Status)
+	}
+}
+
+// 启动收尾必须留下可查的告警：补了哪条调用、收了哪个任务，运维要能在
+// 启动日志里直接看到，而不是只能从状态反推。
+func TestReapUnfinishedLogsWarnings(t *testing.T) {
+	ctx := context.Background()
+	a := newApp(t)
+	sess, err := a.CreateSession(ctx, t.TempDir(), "", "", "启动告警")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	task, err := a.SubmitTask(ctx, sess.ID, "占位")
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+	call := &domain.ToolCall{
+		ID: "call_log", TaskID: task.ID, SessionID: sess.ID, Round: 1,
+		Name: "read_file", Args: []byte(`{}`),
+		Status: domain.ToolRunning, CreatedAt: domain.Now(),
+	}
+	if err := a.Record(ctx, domain.Transition{TaskID: task.ID, ToolCall: call}); err != nil {
+		t.Fatalf("写入工具调用: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	if err := a.ReapUnfinished(ctx, logger); err != nil {
+		t.Fatalf("ReapUnfinished: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"启动收尾未完成的工具调用",
+		"tool_call=call_log",
+		"启动取消遗留任务",
+		"task=" + string(task.ID),
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("启动日志缺少 %q：\n%s", want, out)
+		}
+	}
+}
+
+// 审批已经裁决、却没有 tool.result 的调用不能留成悬空 tool_use：历史回放会
+// 被供应商直接拒绝，整个会话就不可用了。启动收尾补一条 canceled +「结果未知」，
+// 既不假装知道它跑没跑，也让历史结构完整。
+func TestStartupBackfillsDecidedCallsWithUnknownResult(t *testing.T) {
+	ctx := context.Background()
+	a := newApp(t)
+	sess, err := a.CreateSession(ctx, t.TempDir(), "", "", "已裁决缺口")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	task, err := a.SubmitTask(ctx, sess.ID, "占位")
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+	call := &domain.ToolCall{
+		ID: "call_gap", TaskID: task.ID, SessionID: sess.ID, Round: 1,
+		Name: "run_command", Args: []byte(`{}`),
+		Status: domain.ToolWaitingApprove, ApprovalID: "apr_gap", CreatedAt: domain.Now(),
+	}
+	approval := &domain.Approval{
+		ID: "apr_gap", TaskID: task.ID, ToolCallID: call.ID,
+		Kind: domain.ApprovalCommand, Risk: domain.RiskHigh,
+		Decision: domain.DecisionAllowOnce, Source: domain.SourceUser,
+		RequestedAt: domain.Now(), ResolvedAt: domain.Now(),
+	}
+	if err := a.Record(ctx, domain.Transition{
+		TaskID: task.ID, ToolCall: call, Approval: approval,
+	}); err != nil {
+		t.Fatalf("写入已裁决审批: %v", err)
+	}
+
+	configureWriteRuntime(t, a, &roundProvider{})
+
+	got, err := a.GetToolCall(ctx, call.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ToolCanceled {
+		t.Fatalf("调用状态 = %s，期望补成 canceled", got.Status)
+	}
+	if got.Error != "执行中进程重启，结果未知" {
+		t.Fatalf("调用错误 = %q", got.Error)
+	}
+
+	events, err := a.Events(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result domain.ToolResultPayload
+	for _, ev := range events {
+		if ev.Type != domain.EventToolResult {
+			continue
+		}
+		if err := ev.Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if result.ToolCallID != string(call.ID) || result.Status != string(domain.ToolCanceled) {
+		t.Fatalf("tool.result = %+v，期望 canceled", result)
+	}
+	if !strings.Contains(result.Output, "结果未知") {
+		t.Fatalf("tool.result 应说明结果未知：%q", result.Output)
+	}
+
+	// 补写之后一致性检查不应再报缺口。
+	gaps, err := a.CheckApprovalConsistency(ctx)
+	if err != nil {
+		t.Fatalf("CheckApprovalConsistency: %v", err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("补写后仍有缺口：%+v", gaps)
 	}
 }
 

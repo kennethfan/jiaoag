@@ -149,7 +149,8 @@ func TestHashDistinguishesContent(t *testing.T) {
 	if patch.Hash(nil) == patch.Hash([]byte("x")) {
 		t.Fatal("不同内容不该得到同一摘要")
 	}
-	if patch.Hash([]byte("x")) != patch.Hash([]byte("x")) {
+	h1 := patch.Hash([]byte("x"))
+	if h2 := patch.Hash([]byte("x")); h1 != h2 {
 		t.Fatal("相同内容应得到同一摘要")
 	}
 	if got := patch.ShortHash(patch.Hash([]byte("x"))); len(got) != 12 {
