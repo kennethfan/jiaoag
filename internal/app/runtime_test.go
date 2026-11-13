@@ -129,7 +129,7 @@ func TestSubmitTaskRunsToCompletion(t *testing.T) {
 	}
 }
 
-func TestSubmitTaskRejectsWhenSessionBusy(t *testing.T) {
+func TestSubmitTaskQueuesWhenSessionBusy(t *testing.T) {
 	ctx := context.Background()
 	a := newApp(t)
 	configureRuntime(t, a, &fakeProvider{block: true})
@@ -144,15 +144,30 @@ func TestSubmitTaskRejectsWhenSessionBusy(t *testing.T) {
 	}
 	waitRunning(t, a, first.ID)
 
-	if _, err := a.SubmitTask(ctx, sess.ID, "第二个"); !errors.Is(err, app.ErrSessionBusy) {
-		t.Fatalf("忙时应返回 ErrSessionBusy，得到 %v", err)
+	second, err := a.SubmitTask(ctx, sess.ID, "第二个")
+	if err != nil {
+		t.Fatalf("忙时提交应排队而不是被拒绝: %v", err)
+	}
+	if second.Status != domain.TaskQueued {
+		t.Fatalf("第二个任务状态 = %s，期望 queued", second.Status)
+	}
+	// 会话内串行：第一个还在跑，第二个不能进 running。
+	if got, err := a.GetTask(ctx, second.ID); err != nil || got.Status != domain.TaskQueued {
+		t.Fatalf("排队任务不应提前启动: status=%v err=%v", got.Status, err)
 	}
 
-	// 清理：取消后再关库，避免 Close 等满 5 秒。
+	// 第一个让出会话后，队首应当自动接班。
 	if err := a.CancelTask(ctx, sess.ID, first.ID); err != nil {
 		t.Fatalf("取消: %v", err)
 	}
 	waitTerminal(t, a, first.ID)
+	waitRunning(t, a, second.ID)
+
+	// 清理：取消后再关库，避免 Close 等满 5 秒。
+	if err := a.CancelTask(ctx, sess.ID, second.ID); err != nil {
+		t.Fatalf("取消第二个: %v", err)
+	}
+	waitTerminal(t, a, second.ID)
 }
 
 func TestCancelQueuedTask(t *testing.T) {

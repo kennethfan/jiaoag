@@ -32,6 +32,8 @@ type Options struct {
 	Workspace string
 	Provider  string
 	Model     string
+	// SessionID 非空时跳过建会话，直接订阅该会话（进程重启后用它回到现场）。
+	SessionID string
 }
 
 type (
@@ -50,7 +52,12 @@ type Model struct {
 	conn   *websocket.Conn
 	status string
 
-	sessionID  string
+	sessionID string
+	// runTaskID 是正在执行（或等审批）的任务，esc 只取消它。提交排队任务时
+	// 服务端回执里的 id 不能覆盖它，否则 esc 会取消错误的任务。
+	runTaskID string
+	// queuedIDs 记录本会话里排队中的任务，仅用于界面提示。
+	queuedIDs  map[domain.TaskID]struct{}
 	taskID     string
 	taskStatus string
 	round      int
@@ -107,7 +114,13 @@ func New(opts Options) *Model {
 			opts.Workspace = wd
 		}
 	}
-	return &Model{opts: opts, status: "连接中…", maxLines: 500}
+	return &Model{
+		opts:      opts,
+		status:    "连接中…",
+		maxLines:  500,
+		sessionID: opts.SessionID,
+		queuedIDs: make(map[domain.TaskID]struct{}),
+	}
 }
 
 // Init 立即发起连接。
@@ -205,9 +218,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case connectedMsg:
 		m.conn = msg.conn
 		m.status = fmt.Sprintf("已连接 %s · 服务端 %s", m.opts.URL, msg.hello.ServerVersion)
-		m.dialog = nil
-		m.sessionID, m.taskID, m.taskStatus, m.stream = "", "", "", ""
-		m.approval = nil
+		if m.sessionID != "" {
+			// 断线重连 / --session 恢复：复用原会话，全量重放。
+			//
+			// 一律 from_seq=0：待审批可能发生在断线之前，用增量回放会让
+			// 「倒计时/面板」永久不出现。重放会重建历史，所以先清空本地视图。
+			m.resetView()
+			return m, tea.Batch(
+				waitForEnvelope(m.conn),
+				sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+					SessionID: m.sessionID,
+					FromSeq:   0,
+				}),
+			)
+		}
+		m.resetView()
+		m.sessionID = ""
 		return m, tea.Batch(
 			waitForEnvelope(m.conn),
 			sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
@@ -249,10 +275,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch key {
 	case "esc":
 		// 有任务在跑时 esc 是取消，否则退出：避免误按把界面关掉。
-		if m.cancelable() {
+		// 只认正在执行/等审批的那个 id，排队任务不能在这里被误取消。
+		if m.runTaskID != "" {
 			return m, sendCmd(m.conn, protocol.TypeTaskCancel, protocol.TaskCancelPayload{
 				SessionID: m.sessionID,
-				TaskID:    m.taskID,
+				TaskID:    m.runTaskID,
 			})
 		}
 		m.close()
@@ -266,12 +293,11 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if text == "" || m.sessionID == "" {
 			return m, nil
 		}
-		if m.cancelable() {
-			m.appendLine("当前任务还在运行，先按 esc 取消")
-			return m, nil
-		}
+		// 运行中也可以提交：服务端会把它排到队尾，会话内仍是串行执行。
+		//
+		// 提问不回显在这里：它由 task.queued 事件统一渲染，否则断线重连后的
+		// 全量重放会缺用户原话，而实时提交又会打两遍。
 		m.input = ""
-		m.appendLine("› " + text)
 		return m, sendCmd(m.conn, protocol.TypeTaskSubmit, protocol.TaskSubmitPayload{
 			SessionID: m.sessionID,
 			Text:      text,
@@ -309,15 +335,20 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 	case protocol.TypeTaskQueued:
 		var p protocol.TaskPayload
 		if err := env.Decode(&p); err == nil {
-			m.taskID, m.taskStatus = p.ID, p.Status
-			m.stream = ""
+			// 回执的 status 恒为 queued（服务端先落库再标记 running）。
+			// 排队信息只进 queuedIDs；运行中任务的显示不能被它抢占。
+			m.queuedIDs[domain.TaskID(p.ID)] = struct{}{}
+			if m.runTaskID == "" {
+				m.taskID, m.taskStatus = p.ID, p.Status
+			}
+			m.appendLine(fmt.Sprintf("任务 %s 已提交，按会话内顺序执行（排队 %d）",
+				shortID(p.ID), len(m.queuedIDs)))
 		}
 		return nil
 
 	case protocol.TypeTaskCanceled:
 		// 回执只表示「取消请求已被接受」：运行中的任务由服务端 agent 收尾，
-		// 此刻可能仍是 running。终态以 task.status 事件为准，这里不能改本地状态，
-		// 否则 cancelable() 提前变 false，用户会撞上 session_busy。
+		// 此刻可能仍是 running。终态以 task.status 事件为准，这里不能改本地状态。
 		m.appendLine("已请求取消（等终态确认）")
 		return nil
 
@@ -346,19 +377,57 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 		}
 		return nil
 	}
-	if p.TaskID != "" {
+	// 运行中任务的事件才更新头部显示；排队任务的事件不能把 id 抢过去。
+	if p.TaskID != "" && (m.runTaskID == "" || p.TaskID == m.runTaskID) {
 		m.taskID = p.TaskID
 	}
 	switch p.Kind {
+	case string(domain.EventSessionCreated):
+		// 同仓警告只在创建时出现：写路径有 CAS 保护，命令类工具则可能互踩。
+		var s domain.SessionCreatedPayload
+		if err := json.Unmarshal(p.Payload, &s); err == nil && len(s.SharedWorkspace) > 0 {
+			m.appendLine(fmt.Sprintf("⚠ 同一仓库还有会话 %s 在运行（写入有 CAS 保护，命令可能互踩）",
+				strings.Join(s.SharedWorkspace, ", ")))
+		}
+	case string(domain.EventTaskQueued):
+		if p.TaskID != "" {
+			m.queuedIDs[domain.TaskID(p.TaskID)] = struct{}{}
+		}
+		// 提问的唯一来源：实时提交与全量重放都靠这条事件重建用户可见的对话行。
+		var q domain.TaskQueuedPayload
+		if err := json.Unmarshal(p.Payload, &q); err == nil {
+			if prompt := strings.TrimSpace(q.Prompt); prompt != "" {
+				m.appendLine("› " + prompt)
+			}
+		}
 	case string(domain.EventTaskStatus):
 		var s domain.TaskStatusPayload
 		if err := json.Unmarshal(p.Payload, &s); err == nil {
-			m.taskStatus = string(s.To)
+			tid := p.TaskID
+			switch s.To {
+			case domain.TaskRunning, domain.TaskWaitingApproval:
+				// 只有真正在执行的才是 esc 的目标。
+				if tid != "" {
+					m.runTaskID = tid
+					m.taskID = tid
+					delete(m.queuedIDs, domain.TaskID(tid))
+				}
+				m.taskStatus = string(s.To)
+			case domain.TaskCompleted, domain.TaskFailed, domain.TaskCanceled:
+				if tid != "" {
+					delete(m.queuedIDs, domain.TaskID(tid))
+				}
+				// 排队任务被取消时，运行中任务的显示与流式文本不能被清掉。
+				if tid == m.runTaskID || m.runTaskID == "" {
+					m.taskStatus = string(s.To)
+					m.stream = ""
+					if tid != "" && tid == m.runTaskID {
+						m.runTaskID = ""
+					}
+				}
+			}
 			if s.To == domain.TaskFailed && s.Error != "" {
 				m.appendLine("失败：" + s.Error)
-			}
-			if s.To == domain.TaskCompleted || s.To == domain.TaskFailed || s.To == domain.TaskCanceled {
-				m.stream = ""
 			}
 			if s.PromptTok+s.OutputTok > 0 {
 				m.tokens = s.PromptTok + s.OutputTok
@@ -472,7 +541,11 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 func (m *Model) View() tea.View {
 	var b strings.Builder
 	fmt.Fprintf(&b, "jiaoag %s  %s\n", version.Version, m.status)
-	fmt.Fprintf(&b, "任务 %s · 状态 %s · 第 %d 轮 · token %d\n", shortID(m.taskID), orDash(m.taskStatus), m.round, m.tokens)
+	fmt.Fprintf(&b, "任务 %s · 状态 %s · 第 %d 轮 · token %d", shortID(m.taskID), orDash(m.taskStatus), m.round, m.tokens)
+	if n := len(m.queuedIDs); n > 0 {
+		fmt.Fprintf(&b, " · 排队 %d", n)
+	}
+	b.WriteByte('\n')
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')
 	b.WriteString(strings.Join(m.dialog, "\n"))
@@ -497,6 +570,21 @@ func (m *Model) View() tea.View {
 	return tea.NewView(b.String())
 }
 
+// resetView 清空本地会话视图，只保留 sessionID。
+//
+// 重连后一律 from_seq=0 全量重放，历史、流式文本残余、待审批面板都从事件
+// 重建；先清空才不会把断线前的一帧和重放结果叠在一起。
+func (m *Model) resetView() {
+	m.taskID, m.taskStatus, m.stream = "", "", ""
+	m.runTaskID = ""
+	m.queuedIDs = make(map[domain.TaskID]struct{})
+	m.round, m.tokens = 0, 0
+	m.dialog = nil
+	m.approval = nil
+}
+
+// cancelable 报告本地是否认为有任务未结束（含排队）。esc 不依赖它：
+// 取消只作用于 runTaskID，避免误取消排队任务。
 func (m *Model) cancelable() bool {
 	return m.taskStatus == string(domain.TaskQueued) || m.taskStatus == string(domain.TaskRunning)
 }

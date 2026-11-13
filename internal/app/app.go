@@ -1,8 +1,9 @@
 // Package app 是应用层：唯一的事务边界与唯一的事件发布者。
 //
 // M1 覆盖「账本」：会话与任务的创建、状态迁移落库、事件回放。M3 在本层
-// 接上任务执行：app 负责协程生命周期、取消与忙时拒绝，agent 只负责一轮轮
-// 对话。执行依赖通过 ConfigureRuntime 注入，未注入时退回只入队的行为。
+// 接上任务执行：app 负责协程生命周期与取消。M6 起会话内任务按 FIFO 排队，
+// 跨会话并行；agent 只负责一轮轮对话。执行依赖通过 ConfigureRuntime 注入，
+// 未注入时退回只入队的行为。
 package app
 
 import (
@@ -37,11 +38,17 @@ type App struct {
 	baseCtx    context.Context
 	baseCancel context.CancelFunc
 
-	// runtimeMu 保护 runtime、runs 与 closed。它只覆盖「查表 + 登记」，不与
-	// commitMu 嵌套：提交仍在 commitMu 内完成，这里不引入第二个串行点。
+	// runtimeMu 保护 runtime、runs、queue 与 closed。它覆盖「查表 + 登记」，
+	// 也允许在锁内提交：提交与出队必须原子，否则队首会被拉起两次。
+	//
+	// 锁顺序固定为 runtimeMu → commitMu，**禁止反向**：在 commit 回调里取
+	// runtimeMu 会与这里的嵌套直接死锁。
 	runtimeMu sync.Mutex
 	runtime   *RuntimeDeps
 	runs      map[domain.SessionID]*taskRun
+	// queue 是每个会话的 FIFO 队列：只放已经落库的 queued 任务与提交时构造
+	// 好的 agent（prompt hash / extensions digest 在提交时就冻结）。
+	queue map[domain.SessionID][]pendingTask
 	// closed 表示 Close 已经开始：之后提交的任务一律拒绝。它与「接受提交」
 	// 共用一把锁，因此不存在「已经通过忙检查、在关库之后才落库」的提交。
 	closed bool
@@ -77,6 +84,7 @@ func New(store Store, hub *event.Hub) *App {
 		baseCtx:    ctx,
 		baseCancel: cancel,
 		runs:       make(map[domain.SessionID]*taskRun),
+		queue:      make(map[domain.SessionID][]pendingTask),
 	}
 }
 
@@ -109,11 +117,15 @@ func (a *App) close(grace time.Duration) error {
 		return nil
 	}
 	a.closed = true
+	// 队列里的任务还没起协程：必须在关库前标掉，不能留给下个进程的启动清理。
+	queued := a.queue
+	a.queue = make(map[domain.SessionID][]pendingTask)
 	a.runtimeMu.Unlock()
 
 	if a.baseCancel != nil {
 		a.baseCancel()
 	}
+	a.cancelQueuedOnClose(queued)
 	// 窗口用完还没收尾的任务必须在这里补写终态：下面的关库之后它们再也写不
 	// 进去，库里就会留下一条永远 running 的任务。
 	a.abandonRuns(a.waitRuns(grace))
@@ -158,11 +170,19 @@ func (a *App) CreateSession(ctx context.Context, workspace, provider, model, tit
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// 同仓只警告不拒绝：两个会话各改各的文件没问题，命令与构建会互踩。
+	// 这条查询失败不该挡住建会话——它只是提示。
+	shared, err := a.sharedWorkspaceSessions(ctx, sess.Workspace, sess.ID)
+	if err != nil {
+		a.logger().Warn("检查同一工作区的活跃会话失败", "workspace", sess.Workspace, "err", err)
+		shared = nil
+	}
 	ev, err := domain.NewEvent(domain.EventSessionCreated, sess.ID, "", domain.SessionCreatedPayload{
-		Workspace: sess.Workspace,
-		Provider:  sess.Provider,
-		Model:     sess.Model,
-		Title:     sess.Title,
+		Workspace:       sess.Workspace,
+		Provider:        sess.Provider,
+		Model:           sess.Model,
+		Title:           sess.Title,
+		SharedWorkspace: shared,
 	})
 	if err != nil {
 		return domain.Session{}, err
@@ -175,7 +195,9 @@ func (a *App) CreateSession(ctx context.Context, workspace, provider, model, tit
 	return sess, nil
 }
 
-// SubmitTask 把用户请求入队（M1 不执行），并写入 task.queued。
+// SubmitTask 提交一个任务：会话空闲就立刻执行，已有任务在跑就排到队尾。
+//
+// 排队只放内存队列，数据库里的状态仍是 queued（唯一的状态来源）。
 func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt string) (domain.Task, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return domain.Task{}, fmt.Errorf("app: 任务内容为空")
@@ -189,17 +211,12 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 		return domain.Task{}, err
 	}
 
-	// 两次加锁：先快检，再复查。
+	// 两次加锁：先快照依赖，再复查登记。
 	//
 	// newAgent 要读工作区、构造供应商（可能读密钥文件）。把这些 I/O 放在
-	// runtimeMu 里会让所有会话的提交与取消一起排队等它；但「忙判断 + 任务
-	// 登记」必须原子，所以锁外只做构造，锁内重新检查一次再落库。
+	// runtimeMu 里会让所有会话的提交与取消一起排队等它；但「任务登记」必须
+	// 原子，所以锁外只做构造，锁内再判断该入队还是立刻启动。
 	deps := a.currentRuntime()
-	if deps != nil {
-		if err := a.checkIdle(sessionID); err != nil {
-			return domain.Task{}, err
-		}
-	}
 
 	var (
 		ag               *agent.Agent
@@ -234,23 +251,31 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	if err != nil {
 		return domain.Task{}, err
 	}
-	// 忙时拒绝要在建任务之前：先建后拒会留下一条永远排不上的 queued 记录。
+	// 登记与「入队 / 立刻启动」必须在同一把锁里完成：否则两个并发提交都会
+	// 看到「没有 run」，各自起一个协程，会话内串行就失了。
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	if a.closed {
 		return domain.Task{}, ErrAppClosed
-	}
-	if deps != nil {
-		if run, ok := a.runs[sessionID]; ok && run != nil {
-			return domain.Task{}, ErrSessionBusy
-		}
 	}
 	if err := a.commit(func() ([]domain.Event, error) {
 		return a.store.CreateTask(ctx, task, []domain.Event{ev})
 	}); err != nil {
 		return domain.Task{}, err
 	}
-	if ag != nil {
+	pending := pendingTask{sess: sess, task: task, ag: ag, deps: deps}
+	switch {
+	case deps == nil || ag == nil:
+		// 未配置执行：只落库不跑（M1 语义，存储与协议测试依赖它）。
+	case a.runs[sessionID] != nil:
+		// 已有任务在跑：排队，等它让出会话。
+		a.enqueueLocked(pending)
+	case len(a.queue[sessionID]) > 0:
+		// 队列非空却没有 run：队首的启动还没落地（例如刚被 clearRun 拉起）。
+		// 新任务必须排到队尾，别插队。
+		a.enqueueLocked(pending)
+		a.startNextLocked(sessionID)
+	default:
 		a.startLocked(sess, task, ag, deps)
 	}
 	return task, nil

@@ -105,6 +105,36 @@ func (s *Store) ListSessions(ctx context.Context) ([]domain.Session, error) {
 	return out, nil
 }
 
+// SessionsWithActiveTasks 返回仍有未终态任务的会话。
+//
+// 同仓警告需要按「真实路径」比较（软链写法不同但指向同一目录），而路径归一
+// 放在 app 层做——存储层只负责把候选集缩小到有活跃任务的会话。
+// waiting_approval 也算活跃：批准后马上就要落盘，正是最该提醒的时刻。
+func (s *Store) SessionsWithActiveTasks(ctx context.Context) ([]domain.Session, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT s.id, s.workspace, s.provider, s.model, s.title, s.created_at, s.updated_at
+		 FROM sessions s JOIN tasks t ON t.session_id = s.id
+		 WHERE t.status NOT IN ('completed', 'failed', 'canceled')
+		 ORDER BY s.created_at ASC, s.id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("store: 列出活跃会话: %w", err)
+	}
+	defer rows.Close()
+
+	var out []domain.Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: 扫描会话: %w", err)
+		}
+		out = append(out, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历活跃会话: %w", err)
+	}
+	return out, nil
+}
+
 // CreateTask 原子地写入任务与其事件（通常是 task.queued）。
 func (s *Store) CreateTask(ctx context.Context, task domain.Task, events []domain.Event) ([]domain.Event, error) {
 	if !task.ID.Valid() {

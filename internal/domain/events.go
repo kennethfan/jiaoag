@@ -99,6 +99,9 @@ type SessionCreatedPayload struct {
 	Provider  string `json:"provider,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Title     string `json:"title,omitempty"`
+	// SharedWorkspace 列出同一工作区里还有 queued/running 任务的其它会话。
+	// 只做提示：两个会话各改各的文件没问题，命令与构建会互踩。
+	SharedWorkspace []string `json:"shared_workspace,omitempty"`
 }
 
 type TaskQueuedPayload struct {

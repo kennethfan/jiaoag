@@ -18,6 +18,8 @@ type Store interface {
 	CreateSession(ctx context.Context, s domain.Session, events []domain.Event) ([]domain.Event, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	ListSessions(ctx context.Context) ([]domain.Session, error)
+	// SessionsWithActiveTasks 返回仍有未终态任务的会话，供同仓检测。
+	SessionsWithActiveTasks(ctx context.Context) ([]domain.Session, error)
 
 	CreateTask(ctx context.Context, t domain.Task, events []domain.Event) ([]domain.Event, error)
 	GetTask(ctx context.Context, id domain.TaskID) (domain.Task, error)

@@ -233,6 +233,12 @@ func (a *App) ExpirePendingApprovals(ctx context.Context) error {
 
 // expireProposalOf 把该审批对应的提案标成 stale。
 func (a *App) expireProposalOf(ctx context.Context, task domain.Task, callID domain.ToolCallID) error {
+	return a.expireProposalOfWithNote(ctx, task, callID, "进程重启，提案已失效")
+}
+
+// expireProposalOfWithNote 按指定原因把提案标成 stale。note 会进事件，调用方
+// 要写清「为什么这个提案没有落盘」。
+func (a *App) expireProposalOfWithNote(ctx context.Context, task domain.Task, callID domain.ToolCallID, note string) error {
 	proposal, err := a.store.ProposalByToolCall(ctx, callID)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
@@ -249,7 +255,7 @@ func (a *App) expireProposalOf(ctx context.Context, task domain.Task, callID dom
 			ProposalID: proposal.ID,
 			Path:       proposal.Path,
 			Status:     proposal.Status,
-			Reason:     "进程重启，提案已失效",
+			Reason:     note,
 		})
 	if err != nil {
 		return err

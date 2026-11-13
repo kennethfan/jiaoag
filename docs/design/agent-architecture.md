@@ -1,6 +1,6 @@
 # jiaoag agent 架构
 
-状态：v1 设计基线。M0–M5 已落地；M6（并发与容错）按本文实施。
+状态：v1 设计基线。M0–M6 已落地；本文描述的是当前实现。
 关联：`CONTEXT.md`、`docs/adr/0001`–`0013`。
 
 ---
@@ -288,6 +288,8 @@ sequenceDiagram
 
 反序会漏事件。`from_seq` 之后的既有事件由 `store.Replay` 提供。
 
+客户端**重连一律传 `from_seq=0`** 并先清空本地视图，再按回放重建。增量回放会漏掉断线之前发生的 `approval.requested`（它可能早于客户端记录的 `lastSeq`），表现为「任务卡在等审批、界面却没有面板」。要支持增量回放，需要额外一条「当前待审批快照」帧，留给 v2；TUI 进程重启用 `--session <id>` 走同一条全量重放路径。
+
 ---
 
 ## 7. 并发与状态所有权
@@ -296,10 +298,11 @@ sequenceDiagram
 |---|---|
 | 任务状态迁移 | 只由 `agent` 决定，经 `Recorder` 落库 |
 | 事务 / seq / 广播 | 只在 `app`（唯一写者） |
-| 会话内并发 | **一个会话最多一个 running 任务，其余 `queued` 排队**（上下文不交错，seq 单写者） |
+| 会话内并发 | **一个会话最多一个 running 任务，其余 `queued` 排队**（内存 FIFO，当前任务收尾后自动拉起队首；上下文不交错，seq 单写者） |
 | 跨会话并发 | 不设上限；provider 限流放装饰器 |
-| 取消 | ctx 树：server → task → round → tool；`select` 覆盖审批等待与流式读 |
-| 崩溃兜底 | 每个任务 goroutine `recover` → `failed{internal}`，不影响其他任务 |
+| 取消 | ctx 树：server → task → round → tool；`select` 覆盖审批等待与流式读；排队任务先从 FIFO 摘除再转 `canceled` |
+| 崩溃兜底 | 每个任务 goroutine `recover`：先收尾该任务未完成的 tool_call / 提案，再写终态（已取消则 `canceled`，否则 `failed{internal_error}`）；堆栈只进服务端日志 |
+| 同仓并发 | 只警告不拒绝：`session.created.shared_workspace` 列出同一 workspace（`Clean`+`EvalSymlinks` 归一）里还有未终态任务的会话 |
 
 ---
 

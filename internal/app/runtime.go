@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/kennethfan/jiaoag/internal/agent"
@@ -17,10 +18,6 @@ import (
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
-
-// ErrSessionBusy 表示会话里已有运行中的任务。v1 不做排队（M6），直接拒绝，
-// 客户端应立即告知用户而不是让请求悬着。
-var ErrSessionBusy = errors.New("app: 会话已有运行中的任务，请等它结束或先取消")
 
 // RuntimeDeps 是执行任务所需的外部依赖。
 //
@@ -100,17 +97,6 @@ func (a *App) currentRuntime() *RuntimeDeps {
 	return a.runtime
 }
 
-// checkIdle 做一次便宜的忙检查，让注定被拒的请求不必先读工作区、建供应商。
-// 真正的判定在提交前的第二次检查，这里只是提前失败。
-func (a *App) checkIdle(sessionID domain.SessionID) error {
-	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
-	if run, ok := a.runs[sessionID]; ok && run != nil {
-		return ErrSessionBusy
-	}
-	return nil
-}
-
 // newAgent 按会话配置构造本次任务用的 agent，并顺带算出提示词与扩展指纹。
 //
 // deps 由调用方在锁外传入：本函数要读工作区、构造供应商（可能读密钥文件），
@@ -167,18 +153,68 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 
 // startLocked 启动执行协程。调用方必须持有 runtimeMu。
 func (a *App) startLocked(sess domain.Session, task domain.Task, ag *agent.Agent, deps *RuntimeDeps) {
+	// 一个会话同时只能有一个 run。走到这里说明调用方的判定已经过时（例如
+	// 两个协程同时把会话看成空闲）：此时绝不能覆盖旧 run——旧 run 的 cancel
+	// 与 done 会就此失联，两个任务也会同时写同一份上下文。
+	if cur := a.runs[sess.ID]; cur != nil {
+		deps.Logger.Error("会话已有运行中的任务，新的任务放回队首",
+			"session", sess.ID, "running", cur.taskID, "task", task.ID)
+		a.queue[sess.ID] = append([]pendingTask{{
+			sess: sess, task: task, ag: ag, deps: deps,
+		}}, a.queue[sess.ID]...)
+		return
+	}
+
 	ctx, cancel := context.WithCancel(a.baseCtx)
 	run := &taskRun{taskID: task.ID, cancel: cancel, done: make(chan struct{})}
 	a.runs[sess.ID] = run
 
 	go func() {
+		// 顺序按 LIFO：recover 最先跑（先补终态），再让出会话（clearRun），
+		// 最后才关闭 done 并释放 ctx。反过来的话，下一个任务可能在失败收尾
+		// 落库之前就开跑。
 		defer close(run.done)
 		defer cancel()
 		defer a.clearRun(sess.ID, task.ID)
+		started := false
+		defer func() {
+			r := recover()
+			if r == nil {
+				return
+			}
+			// 堆栈只进服务端日志：事件是会话历史，不该被实现细节污染。
+			deps.Logger.Error("任务 panic", "task", task.ID, "panic", r, "stack", string(debug.Stack()))
+
+			// 写库不能跟随已取消的 ctx，否则「取消导致 panic」会连终态都写不下。
+			canceled := ctx.Err() != nil
+			ctx := context.WithoutCancel(ctx)
+			if !started {
+				// 还没 markRunning：queued 只能迁到 canceled，不能记成 failed。
+				if err := a.cancelGhost(ctx, task, "任务启动阶段发生内部错误"); err != nil {
+					deps.Logger.Error("补写启动失败终态失败", "task", task.ID, "err", err)
+				}
+				return
+			}
+			// panic 会绕过 agent 的工具收尾，先补齐该任务范围内的半成品，
+			// 否则回放会留下没有 tool.result 的 tool_use，下一次请求被供应商拒绝。
+			a.settlePanickedTask(ctx, task)
+			message := fmt.Sprintf("任务内部错误：%v", r)
+			if canceled {
+				message = fmt.Sprintf("任务取消时发生内部错误：%v", r)
+			}
+			a.finishAfterPanic(ctx, task, canceled, message)
+		}()
 
 		// 取消可能发生在协程启动之前：markRunning 用不随 ctx 取消的 context
 		// 写库，否则任务会停在 running 而没有任何终态。
 		if err := a.markRunning(context.WithoutCancel(ctx), task); err != nil {
+			var te *domain.TransitionError
+			if errors.As(err, &te) && te.From == domain.TaskQueued {
+				// 排队期间被取消：没有可以推进的东西，直接让出会话。
+				// 只有 from=queued 才算这种情况；from=running 说明同一个任务被
+				// 启动了两次，那是编程错误，必须留痕。
+				return
+			}
 			deps.Logger.Error("标记任务运行失败", "task", task.ID, "err", err)
 			// 已经进了数据库的 queued 任务必须有个终态，否则它会永远挂在
 			// 会话里，客户端也看不出它已经死了。
@@ -188,6 +224,7 @@ func (a *App) startLocked(sess domain.Session, task domain.Task, ag *agent.Agent
 			}
 			return
 		}
+		started = true
 		if err := ag.Run(ctx, task); err != nil {
 			deps.Logger.Error("任务执行失败", "task", task.ID, "err", err)
 		}
@@ -221,11 +258,192 @@ func (a *App) failTask(ctx context.Context, task domain.Task, message string) er
 	})
 }
 
+// panic 补写用到的说明。工具调用与审批是「半成品」，值得写明原因；对外
+// 事件里只有一句人话，堆栈永远不落库。
+const (
+	panicNote        = "任务内部错误，工具调用未完成"
+	panicUnknownNote = "任务内部错误，结果未知"
+)
+
+// settlePanickedTask 收尾 panic 任务范围内的半成品：待审批、工具调用、提案。
+//
+// panic 会绕过 agent 的 abortTool/审批收尾，若不补齐，事件日志里会留下
+// 「有 tool_use、无 tool.result」的历史，下一次请求会被供应商直接拒绝。
+// 这里逐条提交并只记日志，不因单条失败中断整体收尾。
+func (a *App) settlePanickedTask(ctx context.Context, task domain.Task) {
+	logger := a.logger()
+
+	pending, err := a.store.PendingApprovals(ctx)
+	if err != nil {
+		logger.Error("读取待审批失败，跳过审批收尾", "task", task.ID, "err", err)
+	} else {
+		for _, approval := range pending {
+			if approval.TaskID != task.ID {
+				continue
+			}
+			// 读与写之间有窗口：用户可能刚好批准了这条审批。重读一次，
+			// 已裁决就让给 ResolveApproval，不能把决定覆盖成 expired。
+			fresh, aerr := a.store.GetApproval(ctx, approval.ID)
+			if aerr != nil {
+				logger.Error("重读审批失败，跳过该条", "task", task.ID, "approval", approval.ID, "err", aerr)
+				continue
+			}
+			if fresh.Decision != "" {
+				continue
+			}
+			approval = fresh
+			approval.Decision = domain.DecisionExpired
+			approval.Source = domain.SourceSystem
+			approval.ResolvedAt = domain.Now()
+			approval.Note = panicNote
+			ev, err := domain.NewEvent(domain.EventApprovalResolved, task.SessionID, task.ID,
+				domain.ApprovalResolvedPayload{
+					ApprovalID: approval.ID,
+					Decision:   domain.DecisionExpired,
+					Source:     domain.SourceSystem,
+					Note:       approval.Note,
+				})
+			if err != nil {
+				logger.Error("构造审批失效事件失败", "task", task.ID, "approval", approval.ID, "err", err)
+				continue
+			}
+			tr := domain.Transition{TaskID: task.ID, Approval: &approval, Events: []domain.Event{ev}}
+			call, err := a.store.GetToolCall(ctx, approval.ToolCallID)
+			switch {
+			case err == nil && call.Status == domain.ToolWaitingApprove:
+				call.Status = domain.ToolCanceled
+				call.EndedAt = domain.Now()
+				call.Error = panicNote
+				tr.ToolCall = &call
+				resultEv, rerr := domain.NewEvent(domain.EventToolResult, task.SessionID, task.ID,
+					domain.ToolResultPayload{
+						Tool:       call.Name,
+						ToolCallID: string(call.ID),
+						Status:     string(domain.ToolCanceled),
+						IsError:    true,
+						Output:     panicNote + "，工具未执行",
+					})
+				if rerr != nil {
+					logger.Error("构造工具结果事件失败", "task", task.ID, "tool_call", call.ID, "err", rerr)
+					continue
+				}
+				tr.Events = append(tr.Events, resultEv)
+			case err == nil, errors.Is(err, domain.ErrNotFound):
+			default:
+				logger.Error("读取工具调用失败", "task", task.ID, "tool_call", approval.ToolCallID, "err", err)
+			}
+			if err := a.commit(func() ([]domain.Event, error) { return a.store.Apply(ctx, tr) }); err != nil {
+				logger.Error("收尾待审批失败", "task", task.ID, "approval", approval.ID, "err", err)
+				continue
+			}
+			if err := a.expireProposalOfWithNote(ctx, task, approval.ToolCallID, panicNote); err != nil {
+				logger.Error("收尾提案失败", "task", task.ID, "tool_call", approval.ToolCallID, "err", err)
+			}
+		}
+	}
+
+	calls, err := a.store.UnfinishedToolCalls(ctx)
+	if err != nil {
+		logger.Error("读取未完成工具调用失败", "task", task.ID, "err", err)
+		return
+	}
+	for _, call := range calls {
+		if call.TaskID != task.ID {
+			continue
+		}
+		decided, err := a.approvalDecided(ctx, call)
+		if err != nil {
+			logger.Error("判断审批状态失败", "task", task.ID, "tool_call", call.ID, "err", err)
+		}
+		note := panicNote
+		if decided {
+			note = panicUnknownNote
+		}
+		call.Status = domain.ToolCanceled
+		call.EndedAt = domain.Now()
+		call.Error = note
+		ev, err := domain.NewEvent(domain.EventToolResult, call.SessionID, call.TaskID,
+			domain.ToolResultPayload{
+				Tool:       call.Name,
+				ToolCallID: string(call.ID),
+				Status:     string(domain.ToolCanceled),
+				IsError:    true,
+				Output:     note + "，未产生结果",
+			})
+		if err != nil {
+			logger.Error("构造工具结果事件失败", "task", task.ID, "tool_call", call.ID, "err", err)
+			continue
+		}
+		if err := a.commit(func() ([]domain.Event, error) {
+			return a.store.Apply(ctx, domain.Transition{
+				TaskID:   call.TaskID,
+				ToolCall: &call,
+				Events:   []domain.Event{ev},
+			})
+		}); err != nil {
+			logger.Error("收尾未完成工具调用失败", "task", task.ID, "tool_call", call.ID, "err", err)
+		}
+		if err := a.expireProposalOfWithNote(ctx, task, call.ID, note); err != nil {
+			logger.Error("收尾提案失败", "task", task.ID, "tool_call", call.ID, "err", err)
+		}
+	}
+}
+
+// finishAfterPanic 按任务的**当前**状态补写 panic 终态。
+//
+// 不能沿用提交时的 task.Status（那是 queued）：事件里的 from 必须反映库里
+// 真实状态。已有终态时只告警不覆盖——收尾阶段的 panic 不该抹掉正常结局。
+func (a *App) finishAfterPanic(ctx context.Context, task domain.Task, canceled bool, message string) {
+	logger := a.logger()
+	current, err := a.store.GetTask(ctx, task.ID)
+	if err != nil {
+		logger.Error("读取任务失败，无法补写 panic 终态", "task", task.ID, "err", err)
+		return
+	}
+	if current.Status.Terminal() {
+		logger.Warn("任务已有终态，跳过 panic 补写", "task", task.ID, "status", current.Status)
+		return
+	}
+
+	to, reason := domain.TaskFailed, "internal_error"
+	if canceled {
+		to, reason = domain.TaskCanceled, "canceled"
+	}
+	ev, err := domain.NewEvent(domain.EventTaskStatus, current.SessionID, current.ID,
+		domain.TaskStatusPayload{
+			From:   current.Status,
+			To:     to,
+			Reason: reason,
+			Error:  message,
+		})
+	if err != nil {
+		logger.Error("构造 panic 终态事件失败", "task", task.ID, "err", err)
+		return
+	}
+	tr := domain.Transition{TaskID: current.ID, To: to, Events: []domain.Event{ev}}
+	if to == domain.TaskFailed {
+		tr.Reason = message
+	}
+	err = a.commit(func() ([]domain.Event, error) { return a.store.Apply(ctx, tr) })
+	var te *domain.TransitionError
+	switch {
+	case errors.As(err, &te):
+		logger.Warn("panic 终态补写与并发迁移冲突", "task", task.ID, "err", err)
+	case err != nil:
+		logger.Error("补写 panic 终态失败", "task", task.ID, "err", err)
+	}
+}
+
 func (a *App) clearRun(sessionID domain.SessionID, taskID domain.TaskID) {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	if run, ok := a.runs[sessionID]; ok && run.taskID == taskID {
 		delete(a.runs, sessionID)
+		// 会话让出来了：队首如果还有任务，立刻接班。启动仍在同一把锁内，
+		// 否则两个协程都可能看到「没有 run」。
+		if !a.closed {
+			a.startNextLocked(sessionID)
+		}
 	}
 }
 
@@ -263,6 +481,9 @@ func (a *App) CancelTask(ctx context.Context, sessionID domain.SessionID, taskID
 		run.cancel()
 		return nil
 	}
+	// 排队中的任务先出队：否则它会在下一次 clearRun 时被当作队首拉起，
+	// 白跑一个协程才撞上「已取消」的非法迁移。
+	a.removeQueuedLocked(sessionID, taskID)
 	a.runtimeMu.Unlock()
 
 	// 之后的读写都不跟随调用方 ctx：客户端常在发完 task.cancel 后立刻断开，

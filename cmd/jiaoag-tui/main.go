@@ -23,6 +23,7 @@ func main() {
 		cfgPath = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
 		url     = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
 		check   = flag.Bool("check", false, "只做一次连接与心跳验证后退出（用于自检/脚本）")
+		sesID   = flag.String("session", "", "恢复指定会话（进程重启后用 --session <id> 回到原会话）")
 	)
 	flag.Parse()
 
@@ -42,7 +43,7 @@ func main() {
 	if target == "" {
 		target = "ws://" + dialableAddr(cfg.Server.Listen) + "/ws"
 	}
-	opts := tui.Options{URL: target, Token: token}
+	opts := tui.Options{URL: target, Token: token, SessionID: *sesID}
 
 	if *check {
 		runCheck(opts)
