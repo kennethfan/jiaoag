@@ -273,6 +273,28 @@ func TestCancelWhileWaitingExpiresApproval(t *testing.T) {
 	if !canceled {
 		t.Fatal("取消后应把工具调用标成 canceled")
 	}
+
+	// 取消路径的状态也要自洽：进入审批 → 回到 running → canceled。
+	// finish 的 From 硬编码 running，所以审批收尾必须先回 running。
+	var entered, resumed bool
+	for _, ev := range rec.events {
+		if ev.Type != domain.EventTaskStatus {
+			continue
+		}
+		var p domain.TaskStatusPayload
+		if err := ev.Decode(&p); err != nil {
+			t.Fatalf("解码 task.status: %v", err)
+		}
+		switch {
+		case p.From == domain.TaskRunning && p.To == domain.TaskWaitingApproval:
+			entered = true
+		case p.From == domain.TaskWaitingApproval && p.To == domain.TaskRunning:
+			resumed = true
+		}
+	}
+	if !entered || !resumed {
+		t.Fatalf("取消路径的审批状态事件不完整（进入=%v 返回=%v）：%v", entered, resumed, rec.kinds())
+	}
 }
 
 // 批准与取消撞在同一瞬间：批准是既成事实，必须落成 allow 而不是 expired；

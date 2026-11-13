@@ -170,10 +170,17 @@ func (a *Agent) proposeCommand(ctx context.Context, task domain.Task, toolCall *
 	if err != nil {
 		return tools.Result{}, nil, err
 	}
+	// 命令审批期间任务必须显式投影成 waiting_approval：回放与界面都靠这条
+	// 状态区分「在等你批准」和「正在执行」。与审批行、事件同事务落库。
+	waiting, err := waitingApprovalEvent(task)
+	if err != nil {
+		return tools.Result{}, nil, err
+	}
 	if err := a.record(ctx, task, domain.Transition{
+		To:       domain.TaskWaitingApproval,
 		ToolCall: toolCall,
 		Approval: approval,
-		Events:   []domain.Event{requested},
+		Events:   []domain.Event{requested, waiting},
 	}); err != nil {
 		return tools.Result{}, nil, err
 	}
@@ -208,11 +215,16 @@ func (a *Agent) proposeCommand(ctx context.Context, task domain.Task, toolCall *
 			return tools.Result{}, nil, err
 		}
 		// 裁决是既成事实：即使任务同时被取消，approval.resolved 也要落库，
-		// 不能留下一条永远 pending 的审批。
+		// 不能留下一条永远 pending 的审批。同时任务回到 running——审批结束了。
+		resumed, rerr := resumeRunningEvent(task)
+		if rerr != nil {
+			return tools.Result{}, nil, rerr
+		}
 		if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+			To:       domain.TaskRunning,
 			ToolCall: toolCall,
 			Approval: approval,
-			Events:   []domain.Event{resolved},
+			Events:   []domain.Event{resolved, resumed},
 		}); err != nil {
 			return tools.Result{}, nil, err
 		}
@@ -265,10 +277,15 @@ func (a *Agent) rejectCommand(ctx context.Context, task domain.Task, toolCall *d
 		return tools.Result{}, nil, err
 	}
 	// 拒绝同理：按下「拒绝」和取消同时发生时，拒绝仍然是有效裁决。
+	resumed, err := resumeRunningEvent(task)
+	if err != nil {
+		return tools.Result{}, nil, err
+	}
 	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+		To:       domain.TaskRunning,
 		ToolCall: toolCall,
 		Approval: approval,
-		Events:   []domain.Event{resolved},
+		Events:   []domain.Event{resolved, resumed},
 	}); err != nil {
 		return tools.Result{}, nil, err
 	}
@@ -314,9 +331,15 @@ func (a *Agent) expireCommandApproval(task domain.Task, toolCall *domain.ToolCal
 	if err != nil {
 		return err
 	}
+	// 审批收尾后任务回到 running，随后由 abortTool 或 finish 写终态。
+	resumed, err := resumeRunningEvent(task)
+	if err != nil {
+		return err
+	}
 	return a.record(context.WithoutCancel(context.Background()), task, domain.Transition{
+		To:       domain.TaskRunning,
 		ToolCall: toolCall,
 		Approval: approval,
-		Events:   []domain.Event{ev, result},
+		Events:   []domain.Event{ev, result, resumed},
 	})
 }

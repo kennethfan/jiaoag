@@ -10,6 +10,27 @@ import (
 	"github.com/kennethfan/jiaoag/internal/tools"
 )
 
+// waitingApprovalEvent 产生「任务开始等待审批」的状态事件。
+//
+// 阻塞在审批上的任务必须显式投影成 waiting_approval：只记工具调用会让界面
+// 与事后排查始终看到 running，「等你批准」和「正在执行」分不开（v1 的任务
+// 生命周期是 running ⇄ waiting_approval）。
+func waitingApprovalEvent(task domain.Task) (domain.Event, error) {
+	return domain.NewEvent(domain.EventTaskStatus, task.SessionID, task.ID, domain.TaskStatusPayload{
+		From:   domain.TaskRunning,
+		To:     domain.TaskWaitingApproval,
+		Reason: "approval",
+	})
+}
+
+// resumeRunningEvent 产生「裁决已落定，任务回到运行」的状态事件。
+func resumeRunningEvent(task domain.Task) (domain.Event, error) {
+	return domain.NewEvent(domain.EventTaskStatus, task.SessionID, task.ID, domain.TaskStatusPayload{
+		From: domain.TaskWaitingApproval,
+		To:   domain.TaskRunning,
+	})
+}
+
 // proposeChange 走完一次写入审批：提案落库 → 等裁决 → 拒绝/过期/落盘。
 //
 // 每个分支只写一次原子迁移（投影 + 事件同事务）。落盘本身不产生事件，
@@ -68,11 +89,18 @@ func (a *Agent) proposeChange(ctx context.Context, task domain.Task, toolCall *d
 	if err != nil {
 		return tools.Result{}, err
 	}
+	// 进入审批与任务状态同事务：审批行已落库却还显示 running，回放时
+	// 就分不清「真的在执行」和「其实在等你点批准」。
+	waiting, err := waitingApprovalEvent(task)
+	if err != nil {
+		return tools.Result{}, err
+	}
 	if err := a.record(ctx, task, domain.Transition{
+		To:       domain.TaskWaitingApproval,
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Events:   []domain.Event{created, requested},
+		Events:   []domain.Event{created, requested, waiting},
 	}); err != nil {
 		return tools.Result{}, err
 	}
@@ -132,8 +160,13 @@ func (a *Agent) rejectChange(ctx context.Context, task domain.Task, toolCall *do
 		return tools.Result{}, err
 	}
 	// 用户可能按下回车的同时取消任务：拒绝是既成事实，不能因为 ctx 一起
-	// 失效就退回 pending。
+	// 失效就退回 pending。裁决落定就把任务转回 running，让后续轮次继续推进。
+	resumed, err := resumeRunningEvent(task)
+	if err != nil {
+		return tools.Result{}, err
+	}
 	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+		To:       domain.TaskRunning,
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
@@ -143,7 +176,7 @@ func (a *Agent) rejectChange(ctx context.Context, task domain.Task, toolCall *do
 			ToolCallID: toolCall.ID,
 			Detail:     rejectedDetail(change.Path, note),
 		}},
-		Events: []domain.Event{resolved, rejected},
+		Events: []domain.Event{resolved, rejected, resumed},
 	}); err != nil {
 		return tools.Result{}, err
 	}
@@ -185,11 +218,16 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		if rerr != nil {
 			return tools.Result{}, rerr
 		}
+		resumed, rerr := resumeRunningEvent(task)
+		if rerr != nil {
+			return tools.Result{}, rerr
+		}
 		if rerr := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+			To:       domain.TaskRunning,
 			ToolCall: toolCall,
 			Approval: approval,
 			Proposal: proposal,
-			Events:   []domain.Event{resolved, rejected, result},
+			Events:   []domain.Event{resolved, rejected, result, resumed},
 		}); rerr != nil {
 			return tools.Result{}, rerr
 		}
@@ -210,11 +248,16 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		if err != nil {
 			return tools.Result{}, err
 		}
+		resumed, err := resumeRunningEvent(task)
+		if err != nil {
+			return tools.Result{}, err
+		}
 		if rerr := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+			To:       domain.TaskRunning,
 			ToolCall: toolCall,
 			Approval: approval,
 			Proposal: proposal,
-			Events:   []domain.Event{resolved, rejected},
+			Events:   []domain.Event{resolved, rejected, resumed},
 		}); rerr != nil {
 			return tools.Result{}, rerr
 		}
@@ -245,11 +288,16 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		return tools.Result{}, err
 	}
 	// 磁盘已经变了：这条结局必须落库，哪怕任务在同一瞬间被取消。
+	resumed, err := resumeRunningEvent(task)
+	if err != nil {
+		return tools.Result{}, err
+	}
 	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+		To:       domain.TaskRunning,
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Events:   []domain.Event{resolved, applied},
+		Events:   []domain.Event{resolved, applied, resumed},
 	}); err != nil {
 		return tools.Result{}, err
 	}
@@ -267,11 +315,16 @@ func (a *Agent) failChange(ctx context.Context, task domain.Task, toolCall *doma
 	if err != nil {
 		return tools.Result{}, err
 	}
+	resumed, err := resumeRunningEvent(task)
+	if err != nil {
+		return tools.Result{}, err
+	}
 	if err := a.record(context.WithoutCancel(ctx), task, domain.Transition{
+		To:       domain.TaskRunning,
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Events:   []domain.Event{resolved, rejected},
+		Events:   []domain.Event{resolved, rejected, resumed},
 	}); err != nil {
 		return tools.Result{}, err
 	}
@@ -317,12 +370,18 @@ func (a *Agent) expireApproval(task domain.Task, toolCall *domain.ToolCall,
 	if err != nil {
 		return err
 	}
+	// 审批已经结束，任务回到 running：finish 写终态时 From=running 才属实。
+	resumed, err := resumeRunningEvent(task)
+	if err != nil {
+		return err
+	}
 	// 不跟随已取消的 ctx：否则这条收尾写入自己也写不进去。
 	return a.record(context.WithoutCancel(context.Background()), task, domain.Transition{
+		To:       domain.TaskRunning,
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Events:   []domain.Event{ev, rejected, result},
+		Events:   []domain.Event{ev, rejected, result, resumed},
 	})
 }
 

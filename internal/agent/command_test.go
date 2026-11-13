@@ -250,6 +250,54 @@ func TestNonWhitelistedCommandWaitsForApproval(t *testing.T) {
 	}
 }
 
+// 审批等待期间任务必须显式投影成 waiting_approval，裁决后回到 running。
+// 否则回放与界面会把「正在等你批准」显示成「正在执行」，取消时 finish 的
+// From=running 也会与历史里最后一条状态对不上。
+func TestCommandApprovalProjectsTaskWaitingApproval(t *testing.T) {
+	var statusAtDecision domain.TaskStatus
+	rec := &fakeRecorder{}
+	rec.decide = func(agent.ApprovalRequest) (agent.ApprovalResult, error) {
+		statusAtDecision = rec.lastStatus().To
+		return agent.ApprovalResult{Decision: domain.DecisionAllowOnce, Source: domain.SourceUser}, nil
+	}
+	provider := &scriptedProvider{scripts: []streamScript{
+		commandRound("call_c", []string{"rm", "-rf", "build"}),
+		finalRound("删了"),
+	}}
+	b := &commandBackend{result: execpkg.Result{ExitCode: 0}}
+	ag, task, _ := newCommandAgent(t, provider, rec, b)
+
+	if err := ag.Run(context.Background(), task); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if statusAtDecision != domain.TaskWaitingApproval {
+		t.Fatalf("裁决前任务状态 = %q，期望 waiting_approval", statusAtDecision)
+	}
+
+	var entered, resumed bool
+	for _, ev := range rec.events {
+		if ev.Type != domain.EventTaskStatus {
+			continue
+		}
+		var p domain.TaskStatusPayload
+		if err := ev.Decode(&p); err != nil {
+			t.Fatalf("解码 task.status: %v", err)
+		}
+		switch {
+		case p.From == domain.TaskRunning && p.To == domain.TaskWaitingApproval:
+			entered = true
+		case p.From == domain.TaskWaitingApproval && p.To == domain.TaskRunning:
+			resumed = true
+		}
+	}
+	if !entered || !resumed {
+		t.Fatalf("审批状态事件不完整（进入=%v 返回=%v）：%v", entered, resumed, rec.kinds())
+	}
+	if rec.lastStatus().To != domain.TaskCompleted {
+		t.Fatalf("终态 = %s", rec.lastStatus().To)
+	}
+}
+
 func TestDeniedCommandNeverRuns(t *testing.T) {
 	rec := &fakeRecorder{decide: func(agent.ApprovalRequest) (agent.ApprovalResult, error) {
 		return agent.ApprovalResult{Decision: domain.DecisionDeny, Source: domain.SourceUser, Note: "别删"}, nil
