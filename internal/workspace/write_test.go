@@ -89,6 +89,9 @@ func TestWriteCreatesAndReplaces(t *testing.T) {
 }
 
 func TestWriteKeepsMode(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("Windows 没有 POSIX 权限位，跳过")
+	}
 	ws, dir := newTestWorkspace(t)
 	path := filepath.Join(dir, "secret.txt")
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {

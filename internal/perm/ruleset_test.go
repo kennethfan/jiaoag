@@ -117,6 +117,9 @@ func TestEveryMetacharCharacterRequiresApproval(t *testing.T) {
 }
 
 func TestWhitelistRejectsUnsafeArguments(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("白名单的路径规则按 POSIX 语义编写，Windows 跳过")
+	}
 	rs := perm.DefaultRuleset()
 	cases := [][]string{
 		// 读工作区外文件、读进程环境。

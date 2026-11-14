@@ -129,6 +129,7 @@ func configureCommandRuntime(t *testing.T, a *app.App, provider llm.Provider) st
 // TestEndToEndWhitelistedCommand 是 M5 的验收路径：真实执行后端跑
 // `go test ./...`，不打断用户，输出回显，再用 read_output 从落盘全文补看。
 func TestEndToEndWhitelistedCommand(t *testing.T) {
+	skipPOSIXCommands(t)
 	ctx := context.Background()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/demo\n\ngo 1.21\n"), 0o600); err != nil {

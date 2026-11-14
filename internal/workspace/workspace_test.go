@@ -21,6 +21,9 @@ func newTestWorkspace(t *testing.T) (*workspace.Workspace, string) {
 }
 
 func TestResolveRejectsEscape(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("Windows 的路径分隔符与卷语义不同，本用例在 Unix 上覆盖")
+	}
 	ws, _ := newTestWorkspace(t)
 
 	for _, rel := range []string{"..", "../secret", "a/../../b"} {

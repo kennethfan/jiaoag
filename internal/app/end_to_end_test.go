@@ -594,7 +594,17 @@ func TestEndToEndCancelWhileAwaitingApproval(t *testing.T) {
 // TestEndToEndCancelRunningCommand 验证命令执行中被取消：进程组整体被杀，
 // 任务转 canceled，工具结果也是 canceled。用一个每 100ms 写心跳的测试进程
 // 作靶子——取消后心跳停止，比只看任务状态更能证明子进程真的死了。
+// skipPOSIXCommands 跳过依赖 sh/cat 等 POSIX 可执行文件的用例：Windows 上
+// 这些命令不存在，失败与产品行为无关。
+func skipPOSIXCommands(t *testing.T) {
+	t.Helper()
+	if os.PathSeparator != '/' {
+		t.Skip("依赖 POSIX 命令（sh/cat），Windows 跳过")
+	}
+}
+
 func TestEndToEndCancelRunningCommand(t *testing.T) {
+	skipPOSIXCommands(t)
 	ctx := context.Background()
 	dir := t.TempDir()
 	heartbeat := filepath.Join(dir, "heartbeat.txt")
@@ -940,6 +950,7 @@ func TestEndToEndReadOutputRecoversTruncated(t *testing.T) {
 // TestEndToEndCommandTimeout 验证执行超时：进程组被整体杀掉，审计记
 // exec.timeout（actor=system）而不是 exec.failed，任务照常收尾。
 func TestEndToEndCommandTimeout(t *testing.T) {
+	skipPOSIXCommands(t)
 	ctx := context.Background()
 	dir := t.TempDir()
 	heartbeat := filepath.Join(dir, "heartbeat.txt")
@@ -1334,6 +1345,7 @@ func assertExecApprovedBy(t *testing.T, ctx context.Context, a *app.App, taskID 
 // 批准落盘 → 跑 `go test ./...` → 回显结果。它把 M4 与 M5 接在一起，验证
 // 落盘的事件先于执行，且执行结果真的回到了模型与事件流里。
 func TestEndToEndWriteApproveThenRunTest(t *testing.T) {
+	skipPOSIXCommands(t)
 	ctx := context.Background()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"),
