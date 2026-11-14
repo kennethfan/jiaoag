@@ -39,8 +39,11 @@ const (
 	jobObjectLimitProcessMemory  = 0x00000100
 	jobObjectLimitKillOnJobClose = 0x00002000
 
-	// AssignProcessToJobObject 要求句柄至少有这两个权限。
-	processSetQuota  = 0x0200
+	// AssignProcessToJobObject 要求进程句柄至少有 PROCESS_SET_QUOTA 与
+	// PROCESS_TERMINATE 权限。注意 PROCESS_SET_QUOTA 是 0x0100，0x0200 是
+	// PROCESS_SET_INFORMATION——拿错权限时 OpenProcess 会成功，但随后
+	// AssignProcessToJobObject 报 Access is denied。
+	processSetQuota  = 0x0100
 	processTerminate = 0x0001
 
 	// LARGE_INTEGER 的 CPU 时间单位是 100ns。
