@@ -59,9 +59,17 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 
+	// Windows 的盘符（C:\…）在 file URI 里必须写成 file:///C:/…：直接把
+	// Path 设成 "C:\…" 会得到 file:C:%5C…，被 SQLite 当成非法 authority。
+	// Unix 路径已经是绝对路径（以 / 开头），转换后行为不变。
+	slash := filepath.ToSlash(abs)
+	if !strings.HasPrefix(slash, "/") {
+		slash = "/" + slash
+	}
+
 	dsn := (&url.URL{
 		Scheme:   "file",
-		Path:     abs,
+		Path:     slash,
 		RawQuery: "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
 	}).String()
 

@@ -220,8 +220,8 @@ func TestProviderPanicFailsTaskAndNextRuns(t *testing.T) {
 	}
 	first := submitTask(t, a, sess, "会崩的任务")
 	second := submitTask(t, a, sess, "正常任务")
-	waitRunning(t, a, first.ID)
-
+	// panic 发生在 markRunning 之后、几毫秒内就落到 failed；用轮询去抓 running
+	// 会与实现赛跑（CI 上稳定错过，本地偶发）。这里直接等终态，语义不变。
 	failed := waitTerminal(t, a, first.ID)
 	if failed.Status != domain.TaskFailed {
 		t.Fatalf("panic 任务状态 = %s，期望 failed", failed.Status)

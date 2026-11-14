@@ -93,6 +93,11 @@ func waitRunning(t *testing.T, a *app.App, id domain.TaskID) {
 		if task.Status == domain.TaskRunning {
 			return
 		}
+		// 瞬时完成的任务（例如 provider 立刻 panic）会跳过 running 窗口；
+		// 在这里直接失败，别让调用方等到 5 秒超时才发现等错了东西。
+		if task.Status.Terminal() {
+			t.Fatalf("任务 %s 已直接到达 %s：waitRunning 只适用于 running 会持续的任务", id, task.Status)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("任务没有进入 running")

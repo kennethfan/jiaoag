@@ -297,7 +297,7 @@ func TestRejectsNewerSchema(t *testing.T) {
 		t.Fatalf("关闭: %v", err)
 	}
 
-	raw, err := sql.Open("sqlite", "file:"+path)
+	raw, err := sql.Open("sqlite", testDSN(path))
 	if err != nil {
 		t.Fatalf("直连: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRejectsIncompleteSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "jiaoag.db")
 
-	raw, err := sql.Open("sqlite", "file:"+path)
+	raw, err := sql.Open("sqlite", testDSN(path))
 	if err != nil {
 		t.Fatalf("直连: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestRejectsModifiedMigration(t *testing.T) {
 		t.Fatalf("关闭: %v", err)
 	}
 
-	raw, err := sql.Open("sqlite", "file:"+path)
+	raw, err := sql.Open("sqlite", testDSN(path))
 	if err != nil {
 		t.Fatalf("直连: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestAddsChecksumColumnToLegacyTable(t *testing.T) {
 		t.Fatalf("关闭: %v", err)
 	}
 
-	raw, err := sql.Open("sqlite", "file:"+path)
+	raw, err := sql.Open("sqlite", testDSN(path))
 	if err != nil {
 		t.Fatalf("直连: %v", err)
 	}
@@ -425,7 +425,7 @@ func TestAddsChecksumColumnToLegacyTable(t *testing.T) {
 		t.Fatalf("关闭: %v", err)
 	}
 
-	check, err := sql.Open("sqlite", "file:"+path)
+	check, err := sql.Open("sqlite", testDSN(path))
 	if err != nil {
 		t.Fatalf("直连: %v", err)
 	}
