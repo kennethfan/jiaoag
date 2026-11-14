@@ -47,7 +47,11 @@ func TestJobObjectMemoryLimit(t *testing.T) {
 
 	// 600MB 足以超过 256MB 的单进程上限，又远小于 CI runner 的物理内存，
 	// 因此「无限制时必须成功」这条对照也成立。
-	const script = `$a = New-Object byte[] (600MB); "allocated=$($a.Length)"`
+	//
+	// 分配失败必须显式 exit 1：PowerShell 遇到 New-Object 抛出的异常时默认
+	// 只打印错误、继续执行后续语句并以外面的成功状态退出，光看退出码会把
+	// 「被 Job Object 拦下」误判成「分配成功」。
+	const script = `try { $a = New-Object byte[] (600MB); "allocated=$($a.Length)" } catch { "allocate-failed: $_"; exit 1 }`
 
 	run := func(l Limits) (int, string, string) {
 		g, err := newProcGroup(l)
@@ -87,8 +91,8 @@ func TestJobObjectMemoryLimit(t *testing.T) {
 	}
 
 	code, out, limits := run(Limits{MemoryMB: 256})
-	if code == 0 {
-		t.Fatalf("限制 256MB 后分配 600MB 仍然成功（输出 %q，%s）", out, limits)
+	if code == 0 || !strings.Contains(out, "allocate-failed") {
+		t.Fatalf("限制 256MB 后分配 600MB 没有被拦下（退出码 %d，输出 %q，%s）", code, out, limits)
 	}
 }
 
