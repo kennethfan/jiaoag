@@ -39,6 +39,10 @@ agent:
   # 上下文预算（UTF-8 字符数）。超出时从最旧一轮开始丢弃，system 与
   # 最后一条用户消息永不丢。
   context_budget_chars: 60000
+  # 跨会话同时执行的任务数上限；0 = 用默认（4）。
+  max_concurrent_tasks: 4
+  # 单会话排队任务数上限；0 = 用默认（16）。超出时 task.submit 返回 queue_full。
+  max_queue_depth: 16
 
 # type 取 openai（OpenAI 兼容协议）或 anthropic（Messages API）。
 providers:
@@ -51,6 +55,9 @@ providers:
     timeout_seconds: 120
     # 只对限流与暂时性失败生效，默认 2；写 0 表示不重试。
     max_retries: 2
+    # 每分钟请求数 / token 数上限；0 = 不限。超出配额的请求会等待，不会失败。
+    # rpm: 60
+    # tpm: 200000
 
   - name: anthropic
     type: anthropic
@@ -59,3 +66,6 @@ providers:
     api_key: file:~/.config/jiaoag/anthropic.key
     timeout_seconds: 180
     max_retries: 1
+    # 每分钟请求数 / token 数上限；0 = 不限。超出配额的请求会等待，不会失败。
+    # rpm: 60
+    # tpm: 200000

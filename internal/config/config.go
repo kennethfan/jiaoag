@@ -95,10 +95,20 @@ type Agent struct {
 	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
 	// ContextBudgetChars 是上下文预算（UTF-8 字符数），超出的最旧轮次会被丢弃。
 	ContextBudgetChars int `yaml:"context_budget_chars"`
+	// MaxConcurrentTasks 是跨会话同时执行的任务数上限；0 表示不限。
+	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"`
+	// MaxQueueDepth 是单会话排队任务数上限；0 表示不限。
+	MaxQueueDepth int `yaml:"max_queue_depth"`
 }
 
 // DefaultContextBudgetChars 与 agent.DefaultContextBudget 保持一致。
 const DefaultContextBudgetChars = 60000
+
+// DefaultMaxConcurrentTasks 是跨会话同时执行的任务数默认上限。
+const DefaultMaxConcurrentTasks = 4
+
+// DefaultMaxQueueDepth 是单会话排队任务数的默认上限。
+const DefaultMaxQueueDepth = 16
 
 // Provider 描述一家模型供应商。
 type Provider struct {
@@ -112,6 +122,12 @@ type Provider struct {
 	// 未配置走默认值，显式 0 表示不重试（合法），所以不能让零值等价于缺省。
 	TimeoutSeconds *int `yaml:"timeout_seconds"`
 	MaxRetries     *int `yaml:"max_retries"`
+
+	// RPM 是每分钟请求数上限；0 表示不限。超出的请求会等待而不是失败，
+	// 避免把 429 的重试放大成雪崩。
+	RPM int `yaml:"rpm"`
+	// TPM 是每分钟 token 数上限（输入+输出估算）；0 表示不限。
+	TPM int `yaml:"tpm"`
 }
 
 // 供应商调用的默认约束。
@@ -266,6 +282,13 @@ func (c *Config) applyDefaults() {
 	if c.Agent.ContextBudgetChars <= 0 {
 		c.Agent.ContextBudgetChars = DefaultContextBudgetChars
 	}
+	// 0 表示「用默认值」，不提供真正的无限；确需放开就填一个很大的数。
+	if c.Agent.MaxConcurrentTasks <= 0 {
+		c.Agent.MaxConcurrentTasks = DefaultMaxConcurrentTasks
+	}
+	if c.Agent.MaxQueueDepth <= 0 {
+		c.Agent.MaxQueueDepth = DefaultMaxQueueDepth
+	}
 	if c.Policy.Dir == "" {
 		c.Policy.Dir = filepath.Join(ConfigDir(), "policy.d")
 	}
@@ -365,6 +388,18 @@ func (c *Config) validateCommon() error {
 	}
 	if mb := c.Exec.Limits.MemoryMB; mb > 0 && mb < MinExecMemoryMB {
 		return fmt.Errorf("exec.limits.memory_mb(%d) 太小，至少 %d", mb, MinExecMemoryMB)
+	}
+	// 负数没有意义：上限要么不设（0 走默认），要么是正数。
+	if c.Agent.MaxConcurrentTasks < 0 {
+		return errors.New("agent.max_concurrent_tasks 不能为负")
+	}
+	if c.Agent.MaxQueueDepth < 0 {
+		return errors.New("agent.max_queue_depth 不能为负")
+	}
+	for _, p := range c.Providers {
+		if p.RPM < 0 || p.TPM < 0 {
+			return fmt.Errorf("providers[%s] 的 rpm/tpm 不能为负", p.Name)
+		}
 	}
 	return nil
 }

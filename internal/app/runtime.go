@@ -32,7 +32,11 @@ type RuntimeDeps struct {
 	OutputDir   string
 	ExecTimeout time.Duration
 	// Limits 是单条命令的资源上限；零值表示不限制。
-	Limits        execpkg.Limits
+	Limits execpkg.Limits
+	// MaxConcurrentTasks 是跨会话同时执行的任务数上限；0 表示不限。
+	MaxConcurrentTasks int
+	// MaxQueueDepth 是单会话排队任务数上限；0 表示不限。
+	MaxQueueDepth int
 	MaxRounds     int
 	ContextBudget int
 	Logger        *slog.Logger
@@ -65,6 +69,11 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
 	a.runtime = &deps
+	// 全局限流与队列上限随运行时配置一起生效。slots 为 nil 表示不限并发。
+	a.maxQueueDepth = deps.MaxQueueDepth
+	if deps.MaxConcurrentTasks > 0 {
+		a.slots = make(chan struct{}, deps.MaxConcurrentTasks)
+	}
 	// 上一次进程留下的待审批永远等不到裁决（v1 不自动续跑），启动时先清掉。
 	// 放在这里而不是 New：清理要写库，而 New 返回不了错误。
 	if err := a.ExpirePendingApprovals(context.Background()); err != nil {
@@ -168,6 +177,17 @@ func (a *App) startLocked(sess domain.Session, task domain.Task, ag *agent.Agent
 		return
 	}
 
+	// 全局并发槽：拿不到就把任务放回队首，等 clearRun 里的 pump 来补位。
+	// 不能在这里阻塞等待——调用方持有 runtimeMu，阻塞会卡住所有会话。
+	if !a.tryAcquireSlot() {
+		deps.Logger.Warn("并发槽已满，任务放回队首",
+			"session", sess.ID, "task", task.ID)
+		a.queue[sess.ID] = append([]pendingTask{{
+			sess: sess, task: task, ag: ag, deps: deps,
+		}}, a.queue[sess.ID]...)
+		return
+	}
+
 	ctx, cancel := context.WithCancel(a.baseCtx)
 	run := &taskRun{taskID: task.ID, cancel: cancel, done: make(chan struct{})}
 	a.runs[sess.ID] = run
@@ -179,6 +199,8 @@ func (a *App) startLocked(sess domain.Session, task domain.Task, ag *agent.Agent
 		defer close(run.done)
 		defer cancel()
 		defer a.clearRun(sess.ID, task.ID)
+		// 槽必须在 clearRun 的 pump 之前释放（defer 是 LIFO）：补位时要看得见空位。
+		defer a.releaseSlot()
 		started := false
 		defer func() {
 			r := recover()
@@ -437,6 +459,48 @@ func (a *App) finishAfterPanic(ctx context.Context, task domain.Task, canceled b
 	}
 }
 
+// tryAcquireSlot 尝试占一个跨会话并发槽；没有配置上限时永远成功。
+func (a *App) tryAcquireSlot() bool {
+	if a.slots == nil {
+		return true
+	}
+	select {
+	case a.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseSlot 归还一个并发槽。重复归还不会让计数变负。
+func (a *App) releaseSlot() {
+	if a.slots == nil {
+		return
+	}
+	select {
+	case <-a.slots:
+	default:
+	}
+}
+
+func (a *App) slotsFull() bool {
+	return a.slots != nil && len(a.slots) >= cap(a.slots)
+}
+
+// pumpLocked 遍历所有排队会话，给空出来的并发槽补位。
+// 调用方必须持有 runtimeMu；槽满或已关闭时直接返回。
+func (a *App) pumpLocked() {
+	if a.closed {
+		return
+	}
+	for sid, list := range a.queue {
+		if len(list) == 0 || a.slotsFull() {
+			continue
+		}
+		a.startNextLocked(sid)
+	}
+}
+
 func (a *App) clearRun(sessionID domain.SessionID, taskID domain.TaskID) {
 	a.runtimeMu.Lock()
 	defer a.runtimeMu.Unlock()
@@ -446,6 +510,8 @@ func (a *App) clearRun(sessionID domain.SessionID, taskID domain.TaskID) {
 		// 否则两个协程都可能看到「没有 run」。
 		if !a.closed {
 			a.startNextLocked(sessionID)
+			// 本会话让出的同时，别的会话可能也在等槽位：统一补位。
+			a.pumpLocked()
 		}
 	}
 }

@@ -49,6 +49,12 @@ type App struct {
 	// queue 是每个会话的 FIFO 队列：只放已经落库的 queued 任务与提交时构造
 	// 好的 agent（prompt hash / extensions digest 在提交时就冻结）。
 	queue map[domain.SessionID][]pendingTask
+	// maxQueueDepth 是单会话排队任务数上限；0 表示不限。判定在提交的锁内完成，
+	// 因此排队上限与「落库」是原子的：被拒的任务不会留下一条多余的 queued。
+	maxQueueDepth int
+	// slots 是跨会话的并发槽，容量即同时执行的任务数上限；nil 表示不限。
+	// 槽只在 startLocked 里获取，拿不到就把任务放回队首，等有人让出槽再拉起。
+	slots chan struct{}
 	// closed 表示 Close 已经开始：之后提交的任务一律拒绝。它与「接受提交」
 	// 共用一把锁，因此不存在「已经通过忙检查、在关库之后才落库」的提交。
 	closed bool
@@ -139,6 +145,9 @@ func (a *App) closedNow() bool {
 	defer a.runtimeMu.Unlock()
 	return a.closed
 }
+
+// ErrQueueFull 表示该会话的排队任务已达配置上限，客户端应稍后重试。
+var ErrQueueFull = errors.New("app: 会话排队任务已满，请等前面的任务结束")
 
 // Hub 暴露扇出器给传输层（订阅在线事件）。
 func (a *App) Hub() *event.Hub { return a.hub }
@@ -257,6 +266,10 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	defer a.runtimeMu.Unlock()
 	if a.closed {
 		return domain.Task{}, ErrAppClosed
+	}
+	// 排队上限在落库前判定：被拒的任务不该留下一条永远排不上的 queued。
+	if a.maxQueueDepth > 0 && len(a.queue[sessionID]) >= a.maxQueueDepth {
+		return domain.Task{}, ErrQueueFull
 	}
 	if err := a.commit(func() ([]domain.Event, error) {
 		return a.store.CreateTask(ctx, task, []domain.Event{ev})

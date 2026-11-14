@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
 	"github.com/kennethfan/jiaoag/internal/protocol"
@@ -73,7 +74,12 @@ func (s *Server) handleTaskSubmit(ctx context.Context, c *clientConn, env protoc
 	}
 	task, err := s.app.SubmitTask(ctx, domain.SessionID(p.SessionID), p.Text)
 	if err != nil {
-		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		// 排队已满是可恢复的客户端错误：界面该提示稍后重试，而不是当成协议错误。
+		code := protocol.CodeBadRequest
+		if errors.Is(err, app.ErrQueueFull) {
+			code = protocol.CodeQueueFull
+		}
+		c.sendError(ctx, code, err.Error())
 		return
 	}
 	reply, err := protocol.New(protocol.TypeTaskQueued, taskPayload(task))

@@ -304,6 +304,8 @@ sequenceDiagram
 | 崩溃兜底 | 每个任务 goroutine `recover`：先收尾该任务未完成的 tool_call / 提案，再写终态（已取消则 `canceled`，否则 `failed{internal_error}`）；堆栈只进服务端日志 |
 | 同仓并发 | 只警告不拒绝：`session.created.shared_workspace` 列出同一 workspace（`Clean`+`EvalSymlinks` 归一）里还有未终态任务的会话 |
 | 界面队列 | TUI 从 `task.queued` / `task.status` 事件重建有序队列（重连全量回放同样成立），不新增协议帧；取消复用 `task.cancel`，队列面板与审批面板互斥 |
+| 跨会话并发上限 | 全局 `slots`（默认 4）：拿不到槽的任务回队首，槽释放后 `pumpLocked` 补位；会话内 FIFO 不变 |
+| provider 速率 | 令牌桶装饰器，链为 `retry(rate(timeout(adapter)))`：重试也计入配额；`rpm` / `tpm` 为 0 时不包装 |
 
 ---
 

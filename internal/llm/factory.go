@@ -37,5 +37,9 @@ func New(cfg config.Provider) (Provider, error) {
 		base = newAnthropic(cfg.Name, cfg.BaseURL, key, cfg.Model, client)
 	}
 
+	// 限速放在重试之内：每次重试都要重新拿配额，否则 429 的重试会成倍放大。
+	if cfg.RPM > 0 || cfg.TPM > 0 {
+		base = newRateProvider(base, cfg.RPM, cfg.TPM)
+	}
 	return newRetryProvider(newTimeoutProvider(base, cfg.Timeout()), cfg.Retries()), nil
 }

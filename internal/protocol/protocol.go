@@ -40,7 +40,9 @@ const (
 	CodeProtocolMismatch = "protocol_mismatch"
 	CodeUnsupported      = "unsupported_type"
 	CodeSessionBusy      = "session_busy"
-	CodeInternal         = "internal"
+	// CodeQueueFull 表示单会话排队任务已满，客户端稍后重试即可。
+	CodeQueueFull = "queue_full"
+	CodeInternal  = "internal"
 )
 
 // Envelope 是所有帧的统一信封；Payload 的具体类型由 Type 决定。

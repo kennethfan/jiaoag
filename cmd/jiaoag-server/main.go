@@ -151,9 +151,11 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 			MemoryMB:   cfg.Exec.Limits.MemoryMB,
 			MaxFiles:   cfg.Exec.Limits.MaxFiles,
 		},
-		MaxRounds:     cfg.Agent.MaxRounds,
-		ContextBudget: cfg.Agent.ContextBudgetChars,
-		Logger:        log,
+		MaxConcurrentTasks: cfg.Agent.MaxConcurrentTasks,
+		MaxQueueDepth:      cfg.Agent.MaxQueueDepth,
+		MaxRounds:          cfg.Agent.MaxRounds,
+		ContextBudget:      cfg.Agent.ContextBudgetChars,
+		Logger:             log,
 	}
 }
 
