@@ -222,6 +222,12 @@ func (s *Server) streamEvents(ctx context.Context, c *clientConn, sub *event.Sub
 	for {
 		batch, err := s.app.Replay(ctx, sessionID, sent, replayBatch)
 		if err != nil {
+			// 同一连接上换了订阅时，旧推送的 ctx 会被取消：Replay 立刻返回
+			// ctx 取消，而连接还归新订阅使用。此时往连接里写错误帧会让
+			// coder/websocket 直接关连接，客户端看到 connection reset by peer。
+			if ctx.Err() != nil {
+				return
+			}
 			c.sendError(ctx, protocol.CodeInternal, err.Error())
 			return
 		}
@@ -298,6 +304,11 @@ func (s *Server) reportOverflow(ctx context.Context, c *clientConn, sub *event.S
 }
 
 func sendEvent(ctx context.Context, c *clientConn, ev domain.Event) error {
+	// 订阅已被取消时不要再写：写失败会被 coder/websocket 当成致命错误并
+	// 关闭整条连接，而这条连接可能已经被新订阅接管。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	env, err := protocol.New(protocol.TypeEvent, protocol.StreamEventPayload{
 		Kind:    string(ev.Type),
 		TaskID:  string(ev.TaskID),
