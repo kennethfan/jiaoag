@@ -6,6 +6,7 @@
 - 架构与分层：`docs/design/agent-architecture.md`
 - 关键取舍：`docs/adr/`
 - 实施计划：`docs/plans/v1.md`
+- 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
 ## 构建
 
