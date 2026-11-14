@@ -84,7 +84,7 @@ graph TD
 | `internal/llm` | `Provider` 端口 + openai / anthropic 适配器 + 重试 / 超时 / 限流装饰器 |
 | `internal/workspace` | 工作区根、路径解析与越界防护、读、`Snapshot` / `Hash`、`Write`（同目录临时文件 + rename，保留权限；拒绝二进制 / `.git` / 符号链接） |
 | `internal/tools` | `Prepare` / `Execute` 两段式契约、注册表与 256 KB 输出收敛；11 个工具（read_file / grep / glob / write_file / edit_file、run_command / check_command、read_output、git_status / git_diff / git_log） |
-| `internal/exec` | 执行后端（ADR-0011）：`Plan` 校验、进程组与超时 / 取消杀组、头尾截断与全文日志（`Spec` 三档预算） |
+| `internal/exec` | 执行后端（ADR-0011）：`Plan` 校验、进程组 / Job Object 与超时 / 取消杀组、资源上限、头尾截断与全文日志（`Spec` 三档预算） |
 | `internal/perm` | 按工具副作用分级、默认拒绝；M5 已叠加参数级 argv 白名单与执行约束（ADR-0004） |
 | `internal/agent` | 上下文装配、轮次循环、审批挂起 / 恢复、取消 |
 | `internal/prompt` | 提示词分层装配（纯函数）、`{{var}}` 白名单替换、项目级确认与 hash（ADR-0012） |

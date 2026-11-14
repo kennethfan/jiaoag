@@ -31,7 +31,7 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时执行同一�
 
 随后编辑该文件：`server.token` 与各 `providers[].api_key` 支持三种写法——明文、`$ENV_NAME`、`file:/abs/path`。
 
-执行类工具的资源上限配在 `exec.limits`（`cpu_seconds` / `memory_mb` / `max_files`，0 表示不限制）：Unix 通过 `sh` 包装的 `ulimit` 施加，非 Unix 平台会降级并在审计里标记 `limits_degraded`。
+执行类工具的资源上限配在 `exec.limits`（`cpu_seconds` / `memory_mb` / `max_files`，0 表示不限制）：Unix 通过 `sh` 包装的 `ulimit` 施加；Windows 用 Job Object 施加 `cpu_seconds` 与 `memory_mb`（`max_files` 没有对应机制）。其余平台会降级并在审计里标记 `limits_degraded`。
 
 并发与配额：`agent.max_concurrent_tasks`（默认 4）限制跨会话同时执行的任务数，槽满时任务回队首等待；`agent.max_queue_depth`（默认 16）限制单会话排队深度，超出时 `task.submit` 返回 `queue_full`；`providers[].rpm` / `tpm` 是每分钟请求数与 token 数上限（0 = 不限），超出配额的调用会等待而不是失败。
 

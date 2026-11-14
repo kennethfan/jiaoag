@@ -88,9 +88,24 @@ func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) 
 	// 挑一个流会丢掉另一类最有用的一段。合并也保留了两者的时序。
 	cmd.Stdout = capture
 	cmd.Stderr = capture
-	setProcessGroup(cmd)
+
+	pg, err := newProcGroup(plan.Limits)
+	if err != nil {
+		return Result{}, wrap(plan, err)
+	}
+	// LIFO：先关进程组（Windows 的 KILL_ON_JOB_CLOSE 会收掉残留进程），
+	// 再关 capture，避免还有进程往已经关闭的日志句柄里写。
+	defer pg.close()
+	pg.beforeStart(cmd)
 
 	if err := cmd.Start(); err != nil {
+		return Result{}, wrap(plan, err)
+	}
+	if err := pg.afterStart(cmd); err != nil {
+		// 限制没能施加到这条命令上，就按失败处理：杀掉并如实报错，
+		// 不让它带着「有限制」的承诺继续跑。
+		pg.kill(cmd)
+		_ = cmd.Wait()
 		return Result{}, wrap(plan, err)
 	}
 
@@ -103,13 +118,13 @@ func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) 
 	case werr = <-done:
 	case <-runCtx.Done():
 		killed = true
-		killProcessGroup(cmd)
+		pg.kill(cmd)
 		werr = <-done
 	}
 	if !killed {
 		// 命令正常退出也要收拢进程组：`sh -c 'cmd &'` 会留下后台子进程，
 		// 它们不该跟着服务端一直活着。进程组已空时这次 kill 返回 ESRCH。
-		killProcessGroup(cmd)
+		pg.kill(cmd)
 	}
 
 	res = capture.Result()
