@@ -15,3 +15,18 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: make check
+
+  # Windows 没有 make：直接用 go 命令。它同时验证两件事——代码在 Windows 上
+  # 能编译，且平台测试（//go:build unix 之外的）能跑过。Windows 的进程树
+  # 收尾与 Job Object 限制在 issue #9 落地，这里只保证不回归编译面。
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
