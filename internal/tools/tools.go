@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/limits"
 )
 
@@ -102,6 +103,10 @@ type Result struct {
 	TimedOut       bool
 	// LogError 非空表示全文日志没有完整落盘，工具结果里必须带上警告。
 	LogError string
+	// Limits 是这次执行实际套用的资源上限，零值表示没有配置。
+	Limits execpkg.Limits
+	// LimitsDegraded 表示请求了限制但当前平台做不到，审计里要如实记录。
+	LimitsDegraded bool
 }
 
 // MaxOutputBytes 是单次工具输出的硬上限。工具的参数上界（max_results 等）

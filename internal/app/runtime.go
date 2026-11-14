@@ -26,11 +26,13 @@ type RuntimeDeps struct {
 	Provider func(sess domain.Session) (llm.Provider, string, error)
 	// Tools 按会话工作区构造工具集：工具绑定具体根目录，不能全局复用。
 	// env 携带执行后端、输出目录与 tool_call_id 反查，由 app 统一注入。
-	Tools         func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error)
-	Backend       execpkg.Backend
-	Ruleset       *perm.Ruleset
-	OutputDir     string
-	ExecTimeout   time.Duration
+	Tools       func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error)
+	Backend     execpkg.Backend
+	Ruleset     *perm.Ruleset
+	OutputDir   string
+	ExecTimeout time.Duration
+	// Limits 是单条命令的资源上限；零值表示不限制。
+	Limits        execpkg.Limits
 	MaxRounds     int
 	ContextBudget int
 	Logger        *slog.Logger
@@ -111,6 +113,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 		OutputDir:  deps.OutputDir,
 		SessionID:  string(sess.ID),
 		Timeout:    deps.ExecTimeout,
+		Limits:     deps.Limits,
 		OutputPath: a.outputPath,
 	})
 	if err != nil {

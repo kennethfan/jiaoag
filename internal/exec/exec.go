@@ -23,6 +23,8 @@ type Command struct {
 	Cwd     string
 	Timeout time.Duration
 	Env     []string
+	// Limits 是宿主要施加的资源约束；零值表示不限制（保持历史行为）。
+	Limits Limits
 }
 
 // Plan 是后端给出的最终执行计划：既要真的执行，也要进审批与审计。
@@ -34,6 +36,16 @@ type Plan struct {
 	Env      []string
 	Timeout  time.Duration
 	Degraded bool
+
+	// Limits 是本次执行要施加的约束；Argv 保持原始形状，包装在 Run 里完成，
+	// 这样审批与审计看到的仍是用户真正要跑的命令。
+	Limits       Limits
+	LimitSupport Support
+}
+
+// LimitsDegraded 报告「请求了限制但当前平台做不到全部」。
+func (p Plan) LimitsDegraded() bool {
+	return !p.Limits.IsZero() && len(p.LimitSupport.Missing(p.Limits)) > 0
 }
 
 // Spec 是本次执行的输出约束。

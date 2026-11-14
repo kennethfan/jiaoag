@@ -52,6 +52,8 @@ type RuntimeEnv struct {
 	Timeout    time.Duration
 	EventLimit int
 	LogLimit   int
+	// Limits 是单条命令的资源上限，由宿主配置注入；工具自己不做判定。
+	Limits execpkg.Limits
 	// OutputPath 把 tool_call_id 反查成全文日志路径；read_output 用它，
 	// 模型不能直接给路径。
 	OutputPath func(ctx context.Context, toolCallID string) (string, error)
@@ -192,6 +194,7 @@ func (t *commandTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 		Cwd:     cmd.Cwd,
 		Timeout: cmd.Timeout,
 		Env:     cmd.Env,
+		Limits:  t.env.Limits,
 	})
 	if err != nil {
 		return Result{}, err
@@ -205,6 +208,8 @@ func (t *commandTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 	out := t.render(res, cmd.Timeout)
 	out.Elapsed = time.Since(started)
 	out.BackendVersion = plan.Version
+	out.Limits = plan.Limits
+	out.LimitsDegraded = plan.LimitsDegraded()
 	return out, nil
 }
 

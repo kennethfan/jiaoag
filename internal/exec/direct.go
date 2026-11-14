@@ -39,13 +39,19 @@ func (b *Direct) Prepare(ctx context.Context, cmd Command) (Plan, error) {
 		// 对命令工具来说就是密钥泄漏的暗门，因此要求调用方显式给出。
 		return Plan{}, fmt.Errorf("exec: env 必须显式给出（空切片表示不继承）")
 	}
+	// 限制写错会在执行时才炸（ulimit 失败或参数越界），提前在这里挡住。
+	if err := cmd.Limits.Validate(); err != nil {
+		return Plan{}, fmt.Errorf("exec: %w", err)
+	}
 	return Plan{
-		Backend: b.Name(),
-		Version: b.version(),
-		Argv:    cmd.Argv,
-		Cwd:     cmd.Cwd,
-		Env:     cmd.Env,
-		Timeout: cmd.Timeout,
+		Backend:      b.Name(),
+		Version:      b.version(),
+		Argv:         cmd.Argv,
+		Cwd:          cmd.Cwd,
+		Env:          cmd.Env,
+		Timeout:      cmd.Timeout,
+		Limits:       cmd.Limits,
+		LimitSupport: supportLimits(),
 	}, nil
 }
 
@@ -68,7 +74,9 @@ func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) 
 		defer cancel()
 	}
 
-	cmd := exec.Command(plan.Argv[0], plan.Argv[1:]...)
+	// 资源限制通过 shell 包装施加；Plan.Argv 保持原始形状供审批与审计展示。
+	argv := wrapLimits(plan.Argv, plan.Limits)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = plan.Cwd
 	// nil 表示沿用父进程环境；显式空切片表示「清洗后没有可保留的变量」。
 	// 命令工具总是给出非 nil 的 Env，因此密钥类变量不会被静默继承。
@@ -97,6 +105,11 @@ func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) 
 		killed = true
 		killProcessGroup(cmd)
 		werr = <-done
+	}
+	if !killed {
+		// 命令正常退出也要收拢进程组：`sh -c 'cmd &'` 会留下后台子进程，
+		// 它们不该跟着服务端一直活着。进程组已空时这次 kill 返回 ESRCH。
+		killProcessGroup(cmd)
 	}
 
 	res = capture.Result()

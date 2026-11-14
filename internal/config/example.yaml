@@ -24,6 +24,12 @@ exec:
   event_limit: 8192
   # 全文日志的磁盘上限。
   log_limit: 4194304
+  # 单条命令的资源上限；0 = 不限制（默认，保持历史行为）。
+  # Unix 通过 sh 包装的 ulimit 施加；非 Unix 平台会降级并在审计里记 limits_degraded。
+  limits:
+    cpu_seconds: 0        # 建议 300：单条命令累计 CPU 时间上限
+    memory_mb: 0          # 建议 4096：非 0 时不得小于 64
+    max_files: 0          # 建议 1024：同时打开的文件句柄数
 
 agent:
   # 单个任务的最大轮次，兜底防止失控循环。

@@ -31,6 +31,8 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时执行同一�
 
 随后编辑该文件：`server.token` 与各 `providers[].api_key` 支持三种写法——明文、`$ENV_NAME`、`file:/abs/path`。
 
+执行类工具的资源上限配在 `exec.limits`（`cpu_seconds` / `memory_mb` / `max_files`，0 表示不限制）：Unix 通过 `sh` 包装的 `ulimit` 施加，非 Unix 平台会降级并在审计里标记 `limits_degraded`。
+
 ## 运行
 
 ```bash

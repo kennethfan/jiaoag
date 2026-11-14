@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
+	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/tools"
 )
@@ -27,16 +28,18 @@ const (
 // execAuditDetail 是审计记录里的事实：事后要能回答「刚才那条命令到底跑了
 // 什么、退出码多少、当时用的是哪套规则与哪个后端」。
 type execAuditDetail struct {
-	Argv           []string `json:"argv"`
-	Cwd            string   `json:"cwd"`
-	Backend        string   `json:"backend,omitempty"`
-	BackendVersion string   `json:"backend_version,omitempty"`
-	PolicyVersion  string   `json:"policy_version,omitempty"`
-	RuleID         string   `json:"rule_id,omitempty"`
-	ExitCode       *int     `json:"exit_code,omitempty"`
-	OutputPath     string   `json:"output_path,omitempty"`
-	LogError       string   `json:"log_error,omitempty"`
-	DurationMS     int64    `json:"duration_ms,omitempty"`
+	Argv           []string        `json:"argv"`
+	Cwd            string          `json:"cwd"`
+	Backend        string          `json:"backend,omitempty"`
+	BackendVersion string          `json:"backend_version,omitempty"`
+	PolicyVersion  string          `json:"policy_version,omitempty"`
+	RuleID         string          `json:"rule_id,omitempty"`
+	ExitCode       *int            `json:"exit_code,omitempty"`
+	OutputPath     string          `json:"output_path,omitempty"`
+	LogError       string          `json:"log_error,omitempty"`
+	DurationMS     int64           `json:"duration_ms,omitempty"`
+	Limits         *execpkg.Limits `json:"limits,omitempty"`
+	LimitsDegraded bool            `json:"limits_degraded,omitempty"`
 }
 
 // markCommandRunning 把命令调用投影成 running（不产生事件）。
@@ -113,6 +116,11 @@ func commandAudit(action, actor string, prepared tools.Prepared, result tools.Re
 		LogError:       result.LogError,
 		DurationMS:     result.Elapsed.Milliseconds(),
 	}
+	if !result.Limits.IsZero() {
+		limits := result.Limits
+		detail.Limits = &limits
+	}
+	detail.LimitsDegraded = result.LimitsDegraded
 	if cmd := prepared.Command; cmd != nil {
 		detail.Argv = cmd.Argv
 		detail.Cwd = cmd.Cwd

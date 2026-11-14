@@ -47,6 +47,22 @@ type Exec struct {
 	EventLimit int `yaml:"event_limit"`
 	// LogLimit 是全文日志的磁盘上限。
 	LogLimit int `yaml:"log_limit"`
+	// Limits 是单条命令的资源上限；零值表示不限制（保持历史行为）。
+	Limits ExecLimits `yaml:"limits"`
+}
+
+// MinExecMemoryMB 是 memory_mb 的最小可配置值：再低会把普通的编译/测试
+// 一起挡掉，比不设更烦人。
+const MinExecMemoryMB = 64
+
+// ExecLimits 是命令级资源限制。0 表示该项不限制。
+type ExecLimits struct {
+	// CPUSeconds 限制单个进程的 CPU 时间（RLIMIT_CPU / ulimit -t）。
+	CPUSeconds int `yaml:"cpu_seconds"`
+	// MemoryMB 限制地址空间（RLIMIT_AS / ulimit -v）。
+	MemoryMB int `yaml:"memory_mb"`
+	// MaxFiles 限制打开的文件句柄数（RLIMIT_NOFILE / ulimit -n）。
+	MaxFiles int `yaml:"max_files"`
 }
 
 // 执行默认值。EventLimit 刻意压在 agent 的 8 KB 阈值上：超出就会被二次
@@ -338,6 +354,17 @@ func (c *Config) validateCommon() error {
 	}
 	if c.Exec.LogLimit < c.Exec.EventLimit {
 		return fmt.Errorf("exec.log_limit(%d) 不能小于 exec.event_limit(%d)", c.Exec.LogLimit, c.Exec.EventLimit)
+	}
+	switch {
+	case c.Exec.Limits.CPUSeconds < 0:
+		return errors.New("exec.limits.cpu_seconds 不能为负")
+	case c.Exec.Limits.MemoryMB < 0:
+		return errors.New("exec.limits.memory_mb 不能为负")
+	case c.Exec.Limits.MaxFiles < 0:
+		return errors.New("exec.limits.max_files 不能为负")
+	}
+	if mb := c.Exec.Limits.MemoryMB; mb > 0 && mb < MinExecMemoryMB {
+		return fmt.Errorf("exec.limits.memory_mb(%d) 太小，至少 %d", mb, MinExecMemoryMB)
 	}
 	return nil
 }
