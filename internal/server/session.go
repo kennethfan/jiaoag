@@ -298,7 +298,8 @@ live:
 func (s *Server) reportOverflow(ctx context.Context, c *clientConn, sub *event.Subscription) {
 	select {
 	case <-sub.Overflow():
-		c.sendError(ctx, protocol.CodeInternal, "事件积压超出缓冲，请带 from_seq 重连")
+		// 同上：溢出提示也不能被订阅取消打断，否则同样会关连接。
+		c.sendError(context.WithoutCancel(ctx), protocol.CodeInternal, "事件积压超出缓冲，请带 from_seq 重连")
 	default:
 	}
 }
@@ -320,7 +321,10 @@ func sendEvent(ctx context.Context, c *clientConn, ev domain.Event) error {
 	env.SessionID = string(ev.SessionID)
 	env.Seq = int64(ev.Seq)
 	env.TS = ev.At.UnixMilli()
-	if err := c.send(ctx, env); err != nil {
+	// 写帧不跟随订阅取消：cancel 只该让循环下一轮退出。若让写也用取消后的
+	// ctx，wsjson.Write 会失败，coder/websocket 视之为致命错误直接关掉整条
+	// 连接——而这条连接可能已经被同连接上的新订阅接管。
+	if err := c.send(context.WithoutCancel(ctx), env); err != nil {
 		return fmt.Errorf("发送事件 %s#%d: %w", ev.Type, ev.Seq, err)
 	}
 	return nil
