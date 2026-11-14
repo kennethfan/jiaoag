@@ -3,13 +3,40 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 )
+
+// queryLimits 读回 Job Object 上实际生效的限额，失败信息里带上它，
+// 才能分清是「没设上」还是「设上了但没生效」。
+func queryLimits(g *procGroup) string {
+	if g.job == 0 {
+		return "没有 Job Object（已退化为 taskkill）"
+	}
+	var info jobObjectExtendedLimitInfo
+	r, _, callErr := procQueryInformationJobObject.Call(
+		uintptr(g.job),
+		jobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)),
+		unsafe.Sizeof(info),
+		0,
+	)
+	if r == 0 {
+		return fmt.Sprintf("查询 Job 限制失败: %v", callErr)
+	}
+	return fmt.Sprintf("LimitFlags=0x%x ProcessMemoryLimit=%d PerProcessUserTimeLimit=%d",
+		info.BasicLimitInformation.LimitFlags,
+		info.ProcessMemoryLimit,
+		info.BasicLimitInformation.PerProcessUserTimeLimit,
+	)
+}
 
 // Job Object 的内存上限必须真的生效：分配远超上限的缓冲区应当失败。
 func TestJobObjectMemoryLimit(t *testing.T) {
@@ -22,14 +49,17 @@ func TestJobObjectMemoryLimit(t *testing.T) {
 	// 因此「无限制时必须成功」这条对照也成立。
 	const script = `$a = New-Object byte[] (600MB); "allocated=$($a.Length)"`
 
-	run := func(l Limits) int {
+	run := func(l Limits) (int, string, string) {
 		g, err := newProcGroup(l)
 		if err != nil {
 			t.Fatalf("newProcGroup(%+v): %v", l, err)
 		}
 		defer g.close()
 
+		var out bytes.Buffer
 		cmd := exec.Command(ps, "-NoProfile", "-Command", script)
+		cmd.Stdout = &out
+		cmd.Stderr = &out
 		g.beforeStart(cmd)
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("启动 powershell: %v", err)
@@ -39,24 +69,26 @@ func TestJobObjectMemoryLimit(t *testing.T) {
 			_ = cmd.Wait()
 			t.Fatalf("把子进程加入 Job Object: %v", err)
 		}
+		limits := queryLimits(g)
 		werr := cmd.Wait()
 		if werr == nil {
-			return 0
+			return 0, out.String(), limits
 		}
 		var exit *exec.ExitError
 		if !errors.As(werr, &exit) {
-			t.Fatalf("等待 powershell: %v", werr)
+			t.Fatalf("等待 powershell: %v（输出 %q）", werr, out.String())
 		}
-		return exit.ExitCode()
+		return exit.ExitCode(), out.String(), limits
 	}
 
 	// 对照：没有限制时同一段脚本必须成功，否则后面的断言没有意义。
-	if code := run(Limits{}); code != 0 {
-		t.Skipf("无限制时分配 600MB 就失败了（退出码 %d），环境内存不足，跳过", code)
+	if code, out, _ := run(Limits{}); code != 0 || !strings.Contains(out, "allocated=") {
+		t.Skipf("无限制时分配 600MB 没有成功（退出码 %d，输出 %q），环境内存不足或 powershell 行为异常，跳过", code, out)
 	}
 
-	if code := run(Limits{MemoryMB: 256}); code == 0 {
-		t.Fatalf("限制 %dMB 后分配 600MB 仍然成功，Job Object 内存上限没有生效", 256)
+	code, out, limits := run(Limits{MemoryMB: 256})
+	if code == 0 {
+		t.Fatalf("限制 256MB 后分配 600MB 仍然成功（输出 %q，%s）", out, limits)
 	}
 }
 

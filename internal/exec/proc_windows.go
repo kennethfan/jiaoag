@@ -25,10 +25,12 @@ var (
 	// 不引入 golang.org/x/sys/windows：这里只需要四个过程，用 LazyDLL 直接取。
 	modKernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-	procCreateJobObject          = modKernel32.NewProc("CreateJobObjectW")
-	procSetInformationJobObject  = modKernel32.NewProc("SetInformationJobObject")
-	procAssignProcessToJobObject = modKernel32.NewProc("AssignProcessToJobObject")
-	procTerminateJobObject       = modKernel32.NewProc("TerminateJobObject")
+	procCreateJobObject           = modKernel32.NewProc("CreateJobObjectW")
+	procSetInformationJobObject   = modKernel32.NewProc("SetInformationJobObject")
+	procQueryInformationJobObject = modKernel32.NewProc("QueryInformationJobObject")
+	procAssignProcessToJobObject  = modKernel32.NewProc("AssignProcessToJobObject")
+	procIsProcessInJob            = modKernel32.NewProc("IsProcessInJob")
+	procTerminateJobObject        = modKernel32.NewProc("TerminateJobObject")
 )
 
 const (
@@ -45,6 +47,9 @@ const (
 	// AssignProcessToJobObject 报 Access is denied。
 	processSetQuota  = 0x0100
 	processTerminate = 0x0001
+	// IsProcessInJob 查询需要 PROCESS_QUERY_LIMITED_INFORMATION（0x1000），
+	// 它比 PROCESS_QUERY_INFORMATION 宽松，普通用户即可拿到。
+	processQueryLimitedInfo = 0x1000
 
 	// LARGE_INTEGER 的 CPU 时间单位是 100ns。
 	cpuTimeUnit100ns = 10_000_000
@@ -170,7 +175,7 @@ func (g *procGroup) afterStart(cmd *exec.Cmd) error {
 	if g.job == 0 || cmd.Process == nil {
 		return nil
 	}
-	h, err := syscall.OpenProcess(processSetQuota|processTerminate, false, uint32(cmd.Process.Pid))
+	h, err := syscall.OpenProcess(processSetQuota|processTerminate|processQueryLimitedInfo, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		// OpenProcess 对「进程已经退出」返回 ERROR_INVALID_PARAMETER(87)。
 		// 快速命令（echo 之类）可能在我们赋值前就跑完了：限制对已经结束的
@@ -184,6 +189,15 @@ func (g *procGroup) afterStart(cmd *exec.Cmd) error {
 
 	if r, _, callErr := procAssignProcessToJobObject.Call(uintptr(g.job), uintptr(h)); r == 0 {
 		return g.degrade(fmt.Errorf("exec: 把子进程加入 Job Object 失败: %w", callErr))
+	}
+
+	// AssignProcessToJobObject 成功不代表进程真的进来了：在已经处于某个 Job
+	// 的父进程下（CI runner、某些启动器）赋值可能被静默忽略，这时限制等于
+	// 没做。查一次 IsProcessInJob，避免「以为限了、其实没限」。
+	var inJob int32 // BOOL
+	_, _, _ = procIsProcessInJob.Call(uintptr(h), uintptr(g.job), uintptr(unsafe.Pointer(&inJob)))
+	if inJob == 0 {
+		return g.degrade(fmt.Errorf("exec: 子进程没有进入 Job Object，资源限制不会生效"))
 	}
 	return nil
 }
