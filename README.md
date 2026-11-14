@@ -36,8 +36,10 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时执行同一�
 ```bash
 export JIAOAG_TOKEN=...
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787
-./bin/jiaoag-tui               # q 退出，r 重连
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出
 ```
+
+任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
 
 无终端环境下自检两端是否互通：
 

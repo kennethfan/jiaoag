@@ -38,8 +38,8 @@ func TestQueuedReplyKeepsRunningTask(t *testing.T) {
 	if m.stream != "半截输出" {
 		t.Fatalf("排队回执清掉了流式文本：%q", m.stream)
 	}
-	if _, ok := m.queuedIDs[domain.TaskID("tsk_q")]; !ok {
-		t.Fatalf("排队任务没有登记：%v", m.queuedIDs)
+	if m.queueIndex("tsk_q") < 0 {
+		t.Fatalf("排队任务没有登记：%v", m.queue)
 	}
 	if !strings.Contains(strings.Join(m.dialog, "\n"), "排队") {
 		t.Fatalf("排队回执应给出提示：%v", m.dialog)
@@ -52,7 +52,7 @@ func TestQueuedTaskTerminalKeepsRunningStream(t *testing.T) {
 	m.runTaskID = "tsk_run"
 	m.taskID = "tsk_run"
 	m.taskStatus = string(domain.TaskRunning)
-	m.queuedIDs = map[domain.TaskID]struct{}{"tsk_q": {}}
+	m.queue = []queuedTask{{ID: "tsk_q"}}
 	m.stream = "半截输出"
 
 	raw, err := json.Marshal(domain.TaskStatusPayload{From: domain.TaskQueued, To: domain.TaskCanceled})
@@ -77,15 +77,15 @@ func TestQueuedTaskTerminalKeepsRunningStream(t *testing.T) {
 		t.Fatalf("排队任务终态改动了运行中任务：task=%q run=%q status=%q",
 			m.taskID, m.runTaskID, m.taskStatus)
 	}
-	if _, ok := m.queuedIDs["tsk_q"]; ok {
-		t.Fatalf("终态后排队任务未出队：%v", m.queuedIDs)
+	if m.queueIndex("tsk_q") >= 0 {
+		t.Fatalf("终态后排队任务未出队：%v", m.queue)
 	}
 }
 
 // esc 只取消正在执行的任务；排队任务不能成为取消目标。
 func TestEscTargetsRunningTaskOnly(t *testing.T) {
 	m := newModel(t)
-	m.queuedIDs = map[domain.TaskID]struct{}{"tsk_q": {}}
+	m.queue = []queuedTask{{ID: "tsk_q"}}
 
 	// 只有排队任务时 esc 仍是「退出」，不会误取消排队任务。
 	_, cmd := m.handleKey(tea.KeyPressMsg{Code: tea.KeyEscape})

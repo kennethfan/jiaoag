@@ -56,8 +56,11 @@ type Model struct {
 	// runTaskID 是正在执行（或等审批）的任务，esc 只取消它。提交排队任务时
 	// 服务端回执里的 id 不能覆盖它，否则 esc 会取消错误的任务。
 	runTaskID string
-	// queuedIDs 记录本会话里排队中的任务，仅用于界面提示。
-	queuedIDs  map[domain.TaskID]struct{}
+	// queue 是本会话排队中的任务，顺序即服务端 FIFO 执行顺序。它完全由
+	// task.queued / task.status 事件重建，重连全量回放时也能还原。
+	queue []queuedTask
+	// queuePanel 非空表示队列面板打开：此时按键交给面板，不写输入行。
+	queuePanel *queuePanelView
 	taskID     string
 	taskStatus string
 	round      int
@@ -119,7 +122,6 @@ func New(opts Options) *Model {
 		status:    "连接中…",
 		maxLines:  500,
 		sessionID: opts.SessionID,
-		queuedIDs: make(map[domain.TaskID]struct{}),
 	}
 }
 
@@ -272,7 +274,17 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.approval != nil {
 		return m.handleApprovalKey(key)
 	}
+	if m.queuePanel != nil {
+		return m.handleQueueKey(key)
+	}
 	switch key {
+	case "ctrl+q":
+		if len(m.queue) == 0 {
+			m.appendLine("队列为空：当前没有排队任务")
+			return m, nil
+		}
+		m.queuePanel = &queuePanelView{}
+		return m, nil
 	case "esc":
 		// 有任务在跑时 esc 是取消，否则退出：避免误按把界面关掉。
 		// 只认正在执行/等审批的那个 id，排队任务不能在这里被误取消。
@@ -336,13 +348,17 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		var p protocol.TaskPayload
 		if err := env.Decode(&p); err == nil {
 			// 回执的 status 恒为 queued（服务端先落库再标记 running）。
-			// 排队信息只进 queuedIDs；运行中任务的显示不能被它抢占。
-			m.queuedIDs[domain.TaskID(p.ID)] = struct{}{}
+			// 排队信息只进队列；运行中任务的显示不能被它抢占。
+			at := time.Time{}
+			if p.CreatedAt != 0 {
+				at = time.UnixMilli(p.CreatedAt)
+			}
+			m.enqueueQueued(domain.TaskID(p.ID), p.Prompt, at)
 			if m.runTaskID == "" {
 				m.taskID, m.taskStatus = p.ID, p.Status
 			}
 			m.appendLine(fmt.Sprintf("任务 %s 已提交，按会话内顺序执行（排队 %d）",
-				shortID(p.ID), len(m.queuedIDs)))
+				shortID(p.ID), len(m.queue)))
 		}
 		return nil
 
@@ -381,6 +397,10 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 	if p.TaskID != "" && (m.runTaskID == "" || p.TaskID == m.runTaskID) {
 		m.taskID = p.TaskID
 	}
+	if p.Kind == string(domain.EventApprovalRequested) {
+		// 面板互斥：审批优先，否则用户会一边审 diff 一边管队列。
+		m.queuePanel = nil
+	}
 	switch p.Kind {
 	case string(domain.EventSessionCreated):
 		// 同仓警告只在创建时出现：写路径有 CAS 保护，命令类工具则可能互踩。
@@ -390,12 +410,10 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 				strings.Join(s.SharedWorkspace, ", ")))
 		}
 	case string(domain.EventTaskQueued):
-		if p.TaskID != "" {
-			m.queuedIDs[domain.TaskID(p.TaskID)] = struct{}{}
-		}
 		// 提问的唯一来源：实时提交与全量重放都靠这条事件重建用户可见的对话行。
 		var q domain.TaskQueuedPayload
 		if err := json.Unmarshal(p.Payload, &q); err == nil {
+			m.enqueueQueued(domain.TaskID(p.TaskID), strings.TrimSpace(q.Prompt), time.Now())
 			if prompt := strings.TrimSpace(q.Prompt); prompt != "" {
 				m.appendLine("› " + prompt)
 			}
@@ -410,12 +428,12 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 				if tid != "" {
 					m.runTaskID = tid
 					m.taskID = tid
-					delete(m.queuedIDs, domain.TaskID(tid))
+					m.removeQueued(domain.TaskID(tid))
 				}
 				m.taskStatus = string(s.To)
 			case domain.TaskCompleted, domain.TaskFailed, domain.TaskCanceled:
 				if tid != "" {
-					delete(m.queuedIDs, domain.TaskID(tid))
+					m.removeQueued(domain.TaskID(tid))
 				}
 				// 排队任务被取消时，运行中任务的显示与流式文本不能被清掉。
 				if tid == m.runTaskID || m.runTaskID == "" {
@@ -542,7 +560,7 @@ func (m *Model) View() tea.View {
 	var b strings.Builder
 	fmt.Fprintf(&b, "jiaoag %s  %s\n", version.Version, m.status)
 	fmt.Fprintf(&b, "任务 %s · 状态 %s · 第 %d 轮 · token %d", shortID(m.taskID), orDash(m.taskStatus), m.round, m.tokens)
-	if n := len(m.queuedIDs); n > 0 {
+	if n := len(m.queue); n > 0 {
 		fmt.Fprintf(&b, " · 排队 %d", n)
 	}
 	b.WriteByte('\n')
@@ -559,13 +577,16 @@ func (m *Model) View() tea.View {
 	case m.approval != nil:
 		b.WriteByte('\n')
 		b.WriteString(m.renderApprovalPanel())
+	case m.queuePanel != nil:
+		b.WriteByte('\n')
+		b.WriteString(m.renderQueuePanel())
 	case m.sessionID != "":
 		b.WriteString("\n› ")
 		b.WriteString(m.input)
 		b.WriteString("▏\n")
 	}
-	if m.approval == nil {
-		b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+r] 重连  [ctrl+c] 退出\n")
+	if m.approval == nil && m.queuePanel == nil {
+		b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
 	}
 	return tea.NewView(b.String())
 }
@@ -577,7 +598,8 @@ func (m *Model) View() tea.View {
 func (m *Model) resetView() {
 	m.taskID, m.taskStatus, m.stream = "", "", ""
 	m.runTaskID = ""
-	m.queuedIDs = make(map[domain.TaskID]struct{})
+	m.queue = nil
+	m.queuePanel = nil
 	m.round, m.tokens = 0, 0
 	m.dialog = nil
 	m.approval = nil
