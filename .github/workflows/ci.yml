@@ -16,9 +16,9 @@ jobs:
           cache: true
       - run: make check
 
-  # Windows 没有 make：直接用 go 命令。它同时验证两件事——代码在 Windows 上
-  # 能编译，且平台测试（//go:build unix 之外的）能跑过。Windows 的进程树
-  # 收尾与 Job Object 限制在 issue #9 落地，这里只保证不回归编译面。
+  # Windows 没有 make：直接用 go 命令。除了验证代码在 Windows 上能编译，还会
+  # 真实执行平台测试（taskkill /T 的进程树收尾、Job Object 的 CPU/内存限额），
+  # 这些在 darwin/linux 上跑不了。
   windows:
     runs-on: windows-latest
     steps:
