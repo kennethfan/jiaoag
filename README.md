@@ -58,7 +58,7 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [/skill] 技能  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
@@ -73,6 +73,15 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 ```
 
 这条路径不经过服务端：不审批、不进审计、不受 `exec.backend` 沙箱约束，也不进入模型上下文——它就是你自己终端里的一条命令。默认 180 秒超时，单次最多展示 400 行（多出的行折叠成「省略 N 行」），连接断开时照样可用。详见 [`docs/local-shell.md`](docs/local-shell.md)。
+
+`/skill` 指定技能：`~/.agents/skills` 下的技能默认只有索引进上下文，正文按需加载；想让某条任务一定用上某个技能（尤其是标了 `disable-model-invocation` 的那些），用 `/skill` 点名，正文会直接进这条任务的系统提示：
+
+```text
+› /skill                 # 面板里 ↑↓ 选、enter 指定、x 清除
+› /skill grilling        # 或直接写名字
+```
+
+只影响下一条任务。详见 [`docs/skills.md`](docs/skills.md)。
 
 无终端环境下自检两端是否互通：
 
@@ -131,6 +140,7 @@ make demo-mcp
 | v2.7 | 本机命令：TUI 里 `!命令` 直接在客户端执行，流式输出、`ctrl+x` 终止，不审批/不审计/不进上下文（ADR-0022） | ✅ |
 | v2.8 | MCP 信任模型：写进配置即放行（`trust` 默认 `allow`），需要把关的 server 显式 `trust: ask` | ✅ |
 | v2.9 | 技能包：扫 `~/.agents/skills`，索引常驻、`skill` 工具按需加载正文（ADR-0023） | ✅ |
+| v2.10 | 主动调起技能：`disable-model-invocation` 不进索引，`/skill` 指定后正文直接进该任务系统提示（ADR-0024） | ✅ |
 
 ## 安全边界
 

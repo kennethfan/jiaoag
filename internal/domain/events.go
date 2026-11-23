@@ -118,9 +118,11 @@ type SessionUpdatedPayload struct {
 }
 
 type TaskQueuedPayload struct {
-	Prompt           string `json:"prompt"`
-	SystemPromptHash string `json:"system_prompt_hash,omitempty"`
-	ExtensionsDigest string `json:"extensions_digest,omitempty"`
+	Prompt string `json:"prompt"`
+	// Skills 是用户显式点名的技能名；重启续跑与回放据此重新加载正文。
+	Skills           []string `json:"skills,omitempty"`
+	SystemPromptHash string   `json:"system_prompt_hash,omitempty"`
+	ExtensionsDigest string   `json:"extensions_digest,omitempty"`
 }
 
 type TaskStatusPayload struct {

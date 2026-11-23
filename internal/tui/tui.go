@@ -68,7 +68,11 @@ type Model struct {
 	// queuePanel 非空表示队列面板打开：此时按键交给面板，不写输入行。
 	queuePanel *queuePanelView
 	// modelPanel 非空表示 /models 的模型选择面板打开，优先级高于输入行。
-	modelPanel      *modelPanelView
+	modelPanel *modelPanelView
+	// skillPanel 非空表示 /skill 的技能选择面板打开。
+	skillPanel *skillPanelView
+	// forcedSkills 是用户点名、要随下一条任务提交的技能；提交后清空。
+	forcedSkills    []string
 	sessionProvider string
 	sessionModel    string
 	taskID          string
@@ -243,6 +247,15 @@ func sendCmd(conn *websocket.Conn, typ string, payload any) tea.Cmd {
 			return closedMsg{err}
 		}
 		return nil
+	}
+}
+
+// taskSubmitPayload 组装一次提交：点名的技能只随这一条任务走，用完即清。
+func (m *Model) taskSubmitPayload(text string) protocol.TaskSubmitPayload {
+	return protocol.TaskSubmitPayload{
+		SessionID: m.sessionID,
+		Text:      text,
+		Skills:    m.forcedSkills,
 	}
 }
 
@@ -424,6 +437,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.modelPanel != nil {
 		return m.handleModelKey(key)
 	}
+	if m.skillPanel != nil {
+		return m.handleSkillKey(key)
+	}
 	switch key {
 	case "ctrl+q":
 		if len(m.queue) == 0 {
@@ -467,15 +483,26 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				SessionID: m.sessionID,
 			})
 		}
+		// /skill 选择下一条任务要加载的技能：带参数就直接点名，否则开面板。
+		if text == "/skill" || strings.HasPrefix(text, "/skill ") {
+			m.input = ""
+			if name := strings.TrimSpace(strings.TrimPrefix(text, "/skill")); name != "" {
+				m.armSkill(name)
+				return m, nil
+			}
+			m.appendLine("正在获取技能列表…")
+			return m, sendCmd(m.conn, protocol.TypeSkillList, protocol.SkillListPayload{
+				SessionID: m.sessionID,
+			})
+		}
 		// 运行中也可以提交：服务端会把它排到队尾，会话内仍是串行执行。
 		//
 		// 提问不回显在这里：它由 task.queued 事件统一渲染，否则断线重连后的
 		// 全量重放会缺用户原话，而实时提交又会打两遍。
+		payload := m.taskSubmitPayload(text)
 		m.input = ""
-		return m, sendCmd(m.conn, protocol.TypeTaskSubmit, protocol.TaskSubmitPayload{
-			SessionID: m.sessionID,
-			Text:      text,
-		})
+		m.forcedSkills = nil
+		return m, sendCmd(m.conn, protocol.TypeTaskSubmit, payload)
 	case "backspace":
 		if m.input != "" {
 			_, size := utf8.DecodeLastRuneInString(m.input)
@@ -552,6 +579,22 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			return nil
 		}
 		m.modelPanel = newModelPanel(p.Models, m.sessionModel, p.Source)
+		return nil
+
+	case protocol.TypeSkillListResult:
+		var p protocol.SkillListResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if len(p.Skills) == 0 {
+			m.appendLine("技能库为空：检查 agent.skills 与 skills_dirs")
+			return nil
+		}
+		armed := ""
+		if len(m.forcedSkills) > 0 {
+			armed = m.forcedSkills[0]
+		}
+		m.skillPanel = newSkillPanel(p.Skills, armed)
 		return nil
 
 	case protocol.TypeTaskQueued:
@@ -636,6 +679,9 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 			if prompt := strings.TrimSpace(q.Prompt); prompt != "" {
 				m.appendLine("› " + prompt)
 			}
+			if len(q.Skills) > 0 {
+				m.appendLine("⋯ 加载技能：" + strings.Join(q.Skills, ", "))
+			}
 		}
 	case string(domain.EventTaskStatus):
 		var s domain.TaskStatusPayload
@@ -719,9 +765,16 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 			if t.OutputPath != "" {
 				line += " · 全文已落盘"
 			}
+			skillLoaded := t.Tool == "skill" && !t.IsError
+			if skillLoaded {
+				line += " · 技能正文已载入"
+			}
 			m.appendLine(line)
-			for _, extra := range outputPreview(t) {
-				m.appendLine(extra)
+			// 技能正文是给模型的操作手册，逐行铺在对话里只会淹没上下文。
+			if !skillLoaded {
+				for _, extra := range outputPreview(t) {
+					m.appendLine(extra)
+				}
 			}
 		}
 	case string(domain.EventApprovalRequested):
@@ -814,6 +867,9 @@ func (m *Model) View() tea.View {
 	if m.sessionModel != "" {
 		fmt.Fprintf(&b, " · %s", modelLabel(m.sessionProvider, m.sessionModel))
 	}
+	if len(m.forcedSkills) > 0 {
+		fmt.Fprintf(&b, " · 技能 %s", strings.Join(m.forcedSkills, ","))
+	}
 	b.WriteByte('\n')
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')
@@ -834,16 +890,19 @@ func (m *Model) View() tea.View {
 	case m.modelPanel != nil:
 		b.WriteByte('\n')
 		b.WriteString(m.renderModelPanel())
+	case m.skillPanel != nil:
+		b.WriteByte('\n')
+		b.WriteString(m.renderSkillPanel())
 	case m.sessionID != "":
 		b.WriteString("\n› ")
 		b.WriteString(m.input)
 		b.WriteString("▏\n")
 	}
-	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil {
+	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil && m.skillPanel == nil {
 		if m.local != nil {
 			b.WriteString("[enter] 发送  [ctrl+x] 终止本机命令  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
 		} else {
-			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [!] 本机命令  [ctrl+c] 退出\n")
+			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [/skill] 技能  [!] 本机命令  [ctrl+c] 退出\n")
 		}
 	}
 	return tea.NewView(b.String())
@@ -859,6 +918,7 @@ func (m *Model) resetView() {
 	m.queue = nil
 	m.queuePanel = nil
 	m.modelPanel = nil
+	m.skillPanel = nil
 	m.round, m.tokens = 0, 0
 	m.localLines, m.localOmitted = 0, 0
 	m.dialog = nil

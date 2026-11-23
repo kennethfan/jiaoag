@@ -12,6 +12,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/event"
 	"github.com/kennethfan/jiaoag/internal/llm"
 	"github.com/kennethfan/jiaoag/internal/protocol"
+	"github.com/kennethfan/jiaoag/internal/skills"
 )
 
 // replayBatch 是单次回放的分批大小。存储层允许 1..1000，这里取 500 作为
@@ -162,6 +163,53 @@ func (s *Server) handleProviderModels(ctx context.Context, c *clientConn, env pr
 	_ = c.send(ctx, reply)
 }
 
+func (s *Server) handleSkillList(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil || s.cfg == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入运行时")
+		return
+	}
+	var p protocol.SkillListPayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	sess, err := s.app.GetSession(ctx, domain.SessionID(id))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	// 技能目录按工作区解析（相对目录相对工作区根），所以这里要会话。
+	// 列表本身很便宜：65 个技能只读每个 SKILL.md 的前 16 KB。
+	catalog, errs := skills.Load(s.cfg.Agent.SkillDirsFor(), sess.Workspace)
+	for _, err := range errs {
+		s.log.Warn("加载技能失败，已跳过", "error", err)
+	}
+	all := catalog.Skills()
+	out := make([]protocol.SkillInfo, 0, len(all))
+	for _, sk := range all {
+		out = append(out, protocol.SkillInfo{
+			Name:        sk.Name,
+			Description: sk.Description,
+			Manual:      sk.Manual,
+		})
+	}
+	reply, err := protocol.New(protocol.TypeSkillListResult, protocol.SkillListResultPayload{Skills: out})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
+	_ = c.send(ctx, reply)
+}
+
 func (s *Server) handleSessionList(ctx context.Context, c *clientConn) {
 	if s.app == nil {
 		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
@@ -194,7 +242,7 @@ func (s *Server) handleTaskSubmit(ctx context.Context, c *clientConn, env protoc
 		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
 		return
 	}
-	task, err := s.app.SubmitTask(ctx, domain.SessionID(p.SessionID), p.Text)
+	task, err := s.app.SubmitTask(ctx, domain.SessionID(p.SessionID), p.Text, p.Skills...)
 	if err != nil {
 		// 排队已满是可恢复的客户端错误：界面该提示稍后重试，而不是当成协议错误。
 		code := protocol.CodeBadRequest

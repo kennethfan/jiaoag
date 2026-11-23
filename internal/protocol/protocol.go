@@ -30,6 +30,8 @@ const (
 	TypeProviderModels    = "provider.models"     // C→S：列出该会话供应商的可用模型
 	// TypeProviderModelsResult 是 provider.models 的响应。
 	TypeProviderModelsResult = "provider.models.result" // S→C
+	TypeSkillList            = "skill.list"             // C→S：列出技能库（供 /skill 面板）
+	TypeSkillListResult      = "skill.list.result"      // S→C
 	TypeTaskSubmit           = "task.submit"            // C→S
 	TypeTaskQueued           = "task.queued"            // S→C
 	TypeTaskCancel           = "task.cancel"            // C→S：取消排队中或运行中的任务
@@ -154,10 +156,32 @@ type SessionListResultPayload struct {
 	Sessions []SessionPayload `json:"sessions"`
 }
 
-// TaskSubmitPayload 提交一个任务；M1 只入库入队，不执行。
+// TaskSubmitPayload 提交一个任务。
 type TaskSubmitPayload struct {
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
+	// Skills 是用户显式点名的技能：服务端会把正文直接注入这次任务，
+	// 不依赖模型自己决定要不要加载。
+	Skills []string `json:"skills,omitempty"`
+}
+
+// SkillListPayload 请求技能库列表。
+type SkillListPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// SkillInfo 是技能列表里的一项。
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Manual 表示 SKILL.md 声明了 disable-model-invocation：模型不会自动挑，
+	// 只能由用户显式指定。
+	Manual bool `json:"manual,omitempty"`
+}
+
+// SkillListResultPayload 是 skill.list 的响应。
+type SkillListResultPayload struct {
+	Skills []SkillInfo `json:"skills"`
 }
 
 // TaskCancelPayload 请求取消一个任务。任务已终止时是幂等的空操作。

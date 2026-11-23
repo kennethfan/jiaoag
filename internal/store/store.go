@@ -155,6 +155,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.verifyMigrationChecksums(ctx, migrations, current); err != nil {
 		return err
 	}
+	// 应用新迁移前先确认「已声明的版本」真的建出了结构：否则 ADD COLUMN 之类的
+	// 语句会以裸 SQL 错误（no such table: tasks）失败，看不出根因是历史库被改过。
+	if current > 0 {
+		if err := s.verifySchema(ctx, current); err != nil {
+			return err
+		}
+	}
 
 	for _, m := range migrations {
 		if m.version <= current {
@@ -277,9 +284,13 @@ func (s *Store) verifyMigrationChecksums(ctx context.Context, migrations []migra
 //
 // 只覆盖 events / tasks 的关键列，不是完整性校验；加列时不需要同步维护。
 func (s *Store) verifySchema(ctx context.Context, version int) error {
-	probes := [...]string{
+	probes := []string{
 		`SELECT session_id, seq, v, type, payload, created_at, task_id FROM events LIMIT 1`,
 		`SELECT id, session_id, status, last_seq FROM tasks LIMIT 1`,
+	}
+	if version >= 2 {
+		// 0002 加的列：版本号说升过了就必须真的有，否则后续查询才炸。
+		probes = append(probes, `SELECT skills FROM tasks LIMIT 1`)
 	}
 	for _, query := range probes {
 		rows, err := s.db.QueryContext(ctx, query)

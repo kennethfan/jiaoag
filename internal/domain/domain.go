@@ -65,10 +65,12 @@ type Session struct {
 
 // Task 是一次用户请求，按轮次推进。状态迁移见 state.go。
 type Task struct {
-	ID               TaskID
-	SessionID        SessionID
-	Status           TaskStatus
-	Prompt           string
+	ID        TaskID
+	SessionID SessionID
+	Status    TaskStatus
+	Prompt    string
+	// Skills 是提交时用户显式点名的技能名（由 /skill 面板选择）。
+	Skills           []string
 	SystemPromptHash string
 	ExtensionsDigest string
 	LastSeq          Seq

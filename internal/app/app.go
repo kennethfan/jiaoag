@@ -266,12 +266,44 @@ func (a *App) CreateSession(ctx context.Context, workspace, provider, model, tit
 	return sess, nil
 }
 
+// maxTaskSkills 限制单次任务能点名的技能数：每份正文最多 96 KB，
+// 再多就把上下文吃光了，通常是用户点错了。
+const maxTaskSkills = 4
+
+// normalizeSkills 去空白、去重、限数量。
+func normalizeSkills(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, name := range in {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if len(out) > maxTaskSkills {
+		return nil, fmt.Errorf("app: 一次最多指定 %d 个技能", maxTaskSkills)
+	}
+	return out, nil
+}
+
 // SubmitTask 提交一个任务：会话空闲就立刻执行，已有任务在跑就排到队尾。
 //
+// requested 是用户显式点名的技能，会随任务一起入库：重启续跑时仍能加载同一份
+// 正文，而不是悄悄丢掉技能。
+//
 // 排队只放内存队列，数据库里的状态仍是 queued（唯一的状态来源）。
-func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt string) (domain.Task, error) {
+func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt string, requested ...string) (domain.Task, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return domain.Task{}, fmt.Errorf("app: 任务内容为空")
+	}
+	wanted, err := normalizeSkills(requested)
+	if err != nil {
+		return domain.Task{}, err
 	}
 	// 早退：关闭之后不必再读会话、建供应商。真正的判定在提交前的锁内。
 	if a.closedNow() {
@@ -295,7 +327,7 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 		extensionsDigest string
 	)
 	if deps != nil {
-		ag, systemHash, extensionsDigest, err = a.newAgent(sess, deps)
+		ag, systemHash, extensionsDigest, err = a.newAgent(sess, deps, wanted)
 		if err != nil {
 			return domain.Task{}, err
 		}
@@ -310,12 +342,14 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 		SessionID:        sessionID,
 		Status:           domain.TaskQueued,
 		Prompt:           prompt,
+		Skills:           wanted,
 		SystemPromptHash: systemHash,
 		ExtensionsDigest: extensionsDigest,
 		CreatedAt:        domain.Now(),
 	}
 	ev, err := domain.NewEvent(domain.EventTaskQueued, sessionID, task.ID, domain.TaskQueuedPayload{
 		Prompt:           task.Prompt,
+		Skills:           task.Skills,
 		SystemPromptHash: task.SystemPromptHash,
 		ExtensionsDigest: task.ExtensionsDigest,
 	})

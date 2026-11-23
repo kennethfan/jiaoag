@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/kennethfan/jiaoag/internal/agent"
@@ -133,8 +134,9 @@ func (a *App) currentRuntime() *RuntimeDeps {
 // newAgent 按会话配置构造本次任务用的 agent，并顺带算出提示词与扩展指纹。
 //
 // deps 由调用方在锁外传入：本函数要读工作区、构造供应商（可能读密钥文件），
-// 不能占用 runtimeMu。
-func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, string, string, error) {
+// 不能占用 runtimeMu。requested 是用户在提交时显式点名的技能名：名字不存在
+// 直接报错，不静默降级——用户点了「用 grilling」，结果安静没加载，比失败更糟。
+func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []string) (*agent.Agent, string, string, error) {
 	ws, err := workspace.New(sess.Workspace)
 	if err != nil {
 		return nil, "", "", err
@@ -150,6 +152,10 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 			catalog = loaded
 			deps.Logger.Debug("技能已加载", "count", loaded.Len())
 		}
+	}
+	bodies, err := resolveSkillBodies(catalog, requested)
+	if err != nil {
+		return nil, "", "", err
 	}
 	registry, err := deps.Tools(ws, tools.RuntimeEnv{
 		Skills:     catalog,
@@ -188,6 +194,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 		Model:         model,
 		Memory:        memoryText,
 		SkillsIndex:   catalog.Section(),
+		SkillBodies:   bodies,
 		MaxRounds:     deps.MaxRounds,
 		ContextBudget: deps.ContextBudget,
 		Compact:       deps.ContextCompact,
@@ -212,6 +219,33 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 	}
 	sum := sha256.Sum256([]byte(registry.Digest() + "|" + rulesetHash + "|" + backendName + "|" + system.Hash))
 	return ag, system.Hash, hex.EncodeToString(sum[:]), nil
+}
+
+// resolveSkillBodies 把用户点名的技能解析成提示层正文。
+//
+// 名字不存在时报错而不是跳过：用户显式点了技能却没加载，等于静默改需求。
+func resolveSkillBodies(catalog *skills.Catalog, requested []string) ([]agent.SkillBody, error) {
+	if len(requested) == 0 {
+		return nil, nil
+	}
+	if catalog == nil || catalog.Len() == 0 {
+		return nil, fmt.Errorf("app: 没有可用的技能（检查 agent.skills 与 skills_dirs）")
+	}
+	seen := make(map[string]bool, len(requested))
+	out := make([]agent.SkillBody, 0, len(requested))
+	for _, name := range requested {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		text, err := catalog.Body(name)
+		if err != nil {
+			return nil, fmt.Errorf("app: 加载技能 %q: %w", name, err)
+		}
+		out = append(out, agent.SkillBody{Name: name, Text: text})
+	}
+	return out, nil
 }
 
 // startLocked 启动执行协程。调用方必须持有 runtimeMu。

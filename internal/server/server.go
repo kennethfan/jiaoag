@@ -293,6 +293,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			s.handleSessionUpdate(ctx, c, env)
 		case protocol.TypeProviderModels:
 			s.handleProviderModels(ctx, c, env)
+		case protocol.TypeSkillList:
+			s.handleSkillList(ctx, c, env)
 
 		case protocol.TypeSessionList:
 			s.handleSessionList(ctx, c)

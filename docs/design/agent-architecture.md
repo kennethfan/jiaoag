@@ -92,7 +92,7 @@ graph TD
 | `internal/server` | 鉴权、帧编解码、连接注册、订阅桥接；无业务逻辑 |
 | `internal/tui` | 渲染、输入、审批面板；`!命令` 经 `internal/localshell` 在客户端执行（ADR-0022） |
 | `internal/localshell` | 客户端本机命令：`sh -c` / `cmd /c`、按行流式回传、单行裁剪、超时与整组杀进程 |
-| `internal/skills` | 技能包发现与按需加载：扫描 `SKILL.md`、容错解析 frontmatter、只把索引交给提示词、正文由 `skill` 工具按需取（ADR-0023） |
+| `internal/skills` | 技能包发现与按需加载：扫描 `SKILL.md`、容错解析 frontmatter、只把索引交给提示词、正文由 `skill` 工具取或经用户 `/skill` 指定后直接注入（ADR-0023、ADR-0024） |
 
 ---
 
@@ -370,7 +370,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 事件消费者 / 审计导出 | ✅ | 订阅事件流 | v2 |
 | 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |
 | 跨会话记忆 | ✅ 仅工作区文件 | `MEMORY.md` + `remember` 工具 | v2 已实现（ADR-0018） |
-| 技能包 | ✅ 仅指令文本 | 目录扫描 + 索引注入 + `skill` 工具按需取正文；`disable-model-invocation` 的技能不进索引 | v2 已实现（ADR-0023） |
+| 技能包 | ✅ 仅指令文本 | 目录扫描 + 索引注入 + `skill` 工具按需取正文；`disable-model-invocation` 不进索引，用户可 `/skill` 指定并由服务端确定性注入 | v2 已实现（ADR-0023、ADR-0024） |
 | 提示词（系统提示 / 项目知识） | ⚠️ 仅追加 | `prompt.Assemble` + 项目级确认与 hash（ADR-0012） | v1 |
 | 工具描述 / 压缩提示 | ❌ | 调用契约与上下文完整性，属代码不属配置 | 不开放 |
 | 权限规则数据 | ⚠️ 只能收紧 | `perm.Loader` + `TightenRule` | v1 本地规则，v2 签名 feed |

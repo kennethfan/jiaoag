@@ -73,6 +73,14 @@ type ApprovalResult struct {
 }
 
 // Options 是 Agent 的依赖与约束。
+// SkillBody 是用户在某次任务里显式指定的技能正文。
+type SkillBody struct {
+	// Name 是技能名，用于提示层来源（user:skill:<name>）与日志。
+	Name string
+	// Text 是 catalog.Body 生成的正文（含基准目录）。
+	Text string
+}
+
 type Options struct {
 	Provider      llm.Provider
 	Tools         *tools.Registry
@@ -86,6 +94,9 @@ type Options struct {
 	Memory string
 	// SkillsIndex 是技能索引（名字 + 适用场景）；正文由 skill 工具按需加载。
 	SkillsIndex string
+	// SkillBodies 是用户在提交任务时显式点名的技能正文：用户已经说了要哪个，
+	// 就不必再让模型自己去调工具——直接进上下文，省一轮往返且不会挑错。
+	SkillBodies []SkillBody
 	Logger      *slog.Logger
 
 	// Ruleset 是命令白名单与收紧规则的不可变快照。
@@ -539,6 +550,15 @@ func (a *Agent) system() (prompt.Result, error) {
 		layers = append(append([]prompt.Layer(nil), layers...), prompt.Layer{
 			Source: "user:skills",
 			Text:   index,
+		})
+	}
+	for _, body := range a.opts.SkillBodies {
+		// 用户点名的技能正文：同样在核心之后，一层一个技能，方便从 hash 与
+		// 审计里看出这次任务到底加载了哪几个。开头那句是必需的：正文已经在
+		// 上下文里，不说明的话模型会再调一次 skill 工具，白花一轮往返。
+		layers = append(append([]prompt.Layer(nil), layers...), prompt.Layer{
+			Source: "user:skill:" + body.Name,
+			Text:   "（本技能正文已直接提供，无需再调用 skill 工具）\n\n" + body.Text,
 		})
 	}
 	if section := memory.Section(a.opts.Memory); section != "" {
