@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -301,6 +302,11 @@ func (a *App) Replay(ctx context.Context, sessionID domain.SessionID, from domai
 
 func (a *App) LastSeq(ctx context.Context, sessionID domain.SessionID) (domain.Seq, error) {
 	return a.store.LastSeq(ctx, sessionID)
+}
+
+// PendingApprovalPayloads 返回增量订阅时无法靠回放补齐的待审批载荷。
+func (a *App) PendingApprovalPayloads(ctx context.Context, sessionID domain.SessionID) ([]json.RawMessage, error) {
+	return a.store.PendingApprovalPayloads(ctx, sessionID)
 }
 
 func (a *App) ListSessions(ctx context.Context) ([]domain.Session, error) {

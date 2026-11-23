@@ -141,7 +141,7 @@ func TestReplayRendersUserPrompt(t *testing.T) {
 	}
 }
 
-// 断线重连复用会话并从 seq=0 全量重放，不能清掉 sessionID 重新建会话。
+// 首次重连（lastSeq=0）从 seq=0 全量重放，不能清掉 sessionID 重新建会话。
 func TestReconnectReusesSessionAndResetsView(t *testing.T) {
 	m := New(Options{Workspace: t.TempDir(), SessionID: "ses_keep"})
 	m.taskID = "tsk_1"

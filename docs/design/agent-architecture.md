@@ -284,11 +284,14 @@ sequenceDiagram
 
 1. **先订阅**（新事件进入缓冲）
 2. 回放 `from_seq .. last_seq`
-3. 刷缓冲（按 seq 去重）
+3. 增量订阅（`from_seq > 0`）补一帧 `event.snapshot`：仍待裁决的 `approval.requested` 原始载荷
+4. 刷缓冲（按 seq 去重）
 
 反序会漏事件。`from_seq` 之后的既有事件由 `store.Replay` 提供。
 
-客户端**重连一律传 `from_seq=0`** 并先清空本地视图，再按回放重建。增量回放会漏掉断线之前发生的 `approval.requested`（它可能早于客户端记录的 `lastSeq`），表现为「任务卡在等审批、界面却没有面板」。要支持增量回放，需要额外一条「当前待审批快照」帧，留给 v2；TUI 进程重启用 `--session <id>` 走同一条全量重放路径。
+TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta 的 `seq=0` 不推进），重连时带 `from_seq=lastSeq`：保留历史与队列视图，只清掉不入库的半截流式文本和旧审批面板。`lastSeq=0`（首次连接、`--session` 冷启动）仍走全量重放并清空视图。
+
+快照补的是「事件日志重建不了」的状态：`approval.requested` 若早于 `lastSeq`，增量回放永远不会再补它，表现为「任务卡在等审批、界面却没有面板」。因此快照只携带待审批载荷，不替代事件、不推进 seq；`from_seq` 超过服务端 head（数据库被重建、换了服务端）时服务端回 `reset=true`，客户端清空视图并从 0 重订阅。
 
 ---
 

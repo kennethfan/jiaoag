@@ -31,6 +31,7 @@ const (
 	TypeTaskCanceled      = "task.canceled"       // S→C：取消请求已被接受
 	TypeApprovalResolve   = "approval.resolve"    // C→S：对一次待审批给出裁决
 	TypeEventSubscribe    = "event.subscribe"     // C→S
+	TypeEventSnapshot     = "event.snapshot"      // S→C：增量订阅时补发非事件态（待审批）
 )
 
 // 错误码。
@@ -162,6 +163,22 @@ type StreamEventPayload struct {
 	Kind    string          `json:"kind"`
 	TaskID  string          `json:"task_id,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// EventSnapshotPayload 是增量订阅（from_seq>0）在回放之后补发的一次快照。
+//
+// 事件日志能重建历史，但重建不了「断线前就已经发生、之后不会再产生事件」
+// 的状态：待审批的 approval.requested 早于 from_seq，错过就永远不会再出现。
+// 快照只补这类非事件态；它不推进 seq，也不替代事件。
+type EventSnapshotPayload struct {
+	// HeadSeq 是快照时刻会话最后一条事件的 seq，供客户端判断自己的
+	// from_seq 是否已经越过服务端（数据库被重建等）。
+	HeadSeq int64 `json:"head_seq"`
+	// Reset 为真表示 from_seq 超过 HeadSeq：客户端必须清空本地视图、
+	// 从 0 重新订阅。此时 Pending 为空。
+	Reset bool `json:"reset,omitempty"`
+	// Pending 是仍然待裁决的 approval.requested 原始载荷（按请求顺序）。
+	Pending []StreamEventPayload `json:"pending,omitempty"`
 }
 
 // ApprovalResolvePayload 是用户对一次待审批的裁决。

@@ -329,6 +329,39 @@ func (s *Store) LastSeq(ctx context.Context, sessionID domain.SessionID) (domain
 	return domain.Seq(last), nil
 }
 
+// PendingApprovalPayloads 返回会话里仍然待裁决的 approval.requested 载荷。
+//
+// 增量回放（from_seq>0）会漏掉断线前就已发生的审批请求，而事件日志里
+// 只有请求事件、没有「当前仍待审批」的投影，所以要按审批行的 decision
+// 反查原始载荷。只返回本会话的审批：approvals 表本身没有 session_id。
+func (s *Store) PendingApprovalPayloads(ctx context.Context, sessionID domain.SessionID) ([]json.RawMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT e.payload
+		FROM events e
+		JOIN approvals a ON a.id = CAST(json_extract(e.payload, '$.approval_id') AS TEXT)
+		JOIN tasks t ON t.id = a.task_id
+		WHERE e.session_id = ? AND e.type = ? AND a.decision = '' AND t.session_id = ?
+		ORDER BY e.seq ASC`,
+		string(sessionID), string(domain.EventApprovalRequested), string(sessionID))
+	if err != nil {
+		return nil, fmt.Errorf("store: 读取会话 %s 待审批载荷: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	var out []json.RawMessage
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("store: 扫描待审批载荷: %w", err)
+		}
+		out = append(out, json.RawMessage(raw))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: 遍历待审批载荷: %w", err)
+	}
+	return out, nil
+}
+
 // GetApproval 按标识读取审批。不存在时返回 domain.ErrNotFound。
 func (s *Store) GetApproval(ctx context.Context, id domain.ApprovalID) (domain.Approval, error) {
 	row := s.db.QueryRowContext(ctx,

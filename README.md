@@ -93,6 +93,7 @@ make demo-mcp
 | M5 | `run_command` + 参数级权限策略 + 输出落文件 + git 只读 + 审计 | ✅ |
 | M6 | 多会话并行、同仓警告、会话内 FIFO 排队、panic 兜底、断连全量回放 | ✅ |
 | 加固 | 命令资源限制（Unix rlimit / Windows Job Object）、并发与配额（全局槽 + 队列深度 + provider 令牌桶）、TUI 队列面板、CI 双 job | ✅ |
+| 回放 | 增量回放 + 待审批快照（`event.snapshot`），`from_seq` 超前时重置 | ✅ |
 | v2.0 | MCP stdio 工具源：外部工具审批（默认逐次）、`trust: allow`、`external.*` 审计、失败隔离 | ✅ |
 
 ## 安全边界

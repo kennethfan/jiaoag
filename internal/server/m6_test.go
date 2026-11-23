@@ -152,7 +152,7 @@ func collectReplay(t *testing.T, conn *websocket.Conn, count int) (int64, []prot
 	return first, out
 }
 
-// 重连一律 from_seq=0：断线前后的事件都要按原 seq 完整重放。
+// 全量重连（from_seq=0）：断线前后的事件都要按原 seq 完整重放。
 func TestReconnectReplaysFromZero(t *testing.T) {
 	ts, application := newLedgerServer(t)
 	ctx := context.Background()
@@ -312,4 +312,148 @@ func TestApprovalSurvivesDisconnect(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("断连重连后任务没有完成")
+}
+
+// 增量订阅（from_seq>0）无法从回放里得到断线前的 approval.requested，
+// 服务端必须在回放后补一帧 event.snapshot；客户端据此恢复审批面板。
+func TestIncrementalReplaySendsPendingApprovalSnapshot(t *testing.T) {
+	ts, application := newLedgerServer(t)
+	configureWriteRuntime(t, application, &writeOnceProvider{})
+
+	ctx := context.Background()
+	sess, err := application.CreateSession(ctx, t.TempDir(), "openai", "test-model", "")
+	if err != nil {
+		t.Fatalf("创建会话: %v", err)
+	}
+	task, err := application.SubmitTask(ctx, sess.ID, "写个文件")
+	if err != nil {
+		t.Fatalf("提交任务: %v", err)
+	}
+
+	conn := dial(t, wsURL(ts), testToken)
+	handshake(t, conn)
+	sub, err := protocol.New(protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+		SessionID: string(sess.ID),
+		FromSeq:   0,
+	})
+	if err != nil {
+		t.Fatalf("构造 event.subscribe: %v", err)
+	}
+	write(t, conn, sub)
+	requested := awaitEvent(t, conn, domain.EventApprovalRequested)
+	req := decodeEvent[domain.ApprovalRequestedPayload](t, requested)
+
+	// 记下断线前的最后序号：approval.requested 本身已经在这之前。
+	last, err := application.LastSeq(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("读取 last_seq: %v", err)
+	}
+	conn.CloseNow()
+
+	conn2 := dial(t, wsURL(ts), testToken)
+	handshake(t, conn2)
+	sub2, err := protocol.New(protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+		SessionID: string(sess.ID),
+		FromSeq:   int64(last),
+	})
+	if err != nil {
+		t.Fatalf("构造增量 event.subscribe: %v", err)
+	}
+	write(t, conn2, sub2)
+
+	env := readEnvelope(t, conn2)
+	if env.Type != protocol.TypeEventSnapshot {
+		t.Fatalf("增量订阅第一帧 = %s，期望 event.snapshot", env.Type)
+	}
+	var snap protocol.EventSnapshotPayload
+	if err := env.Decode(&snap); err != nil {
+		t.Fatalf("解码快照: %v", err)
+	}
+	if snap.Reset {
+		t.Fatal("from_seq 未超过 head，不应要求重置")
+	}
+	if snap.HeadSeq < int64(last) {
+		t.Fatalf("快照 head_seq = %d，小于订阅位置 %d", snap.HeadSeq, last)
+	}
+	if len(snap.Pending) != 1 {
+		t.Fatalf("待审批快照数量 = %d，期望 1", len(snap.Pending))
+	}
+	if snap.Pending[0].Kind != string(domain.EventApprovalRequested) {
+		t.Fatalf("快照项类型 = %s", snap.Pending[0].Kind)
+	}
+	pending := decodeEvent[domain.ApprovalRequestedPayload](t, snap.Pending[0])
+	if pending.ApprovalID != req.ApprovalID {
+		t.Fatalf("快照审批 id = %s，期望 %s", pending.ApprovalID, req.ApprovalID)
+	}
+
+	// 快照恢复的审批必须仍能裁决，任务照常完成。
+	resolve, err := protocol.New(protocol.TypeApprovalResolve, protocol.ApprovalResolvePayload{
+		SessionID:  string(sess.ID),
+		ApprovalID: string(pending.ApprovalID),
+		Decision:   string(domain.DecisionAllowOnce),
+	})
+	if err != nil {
+		t.Fatalf("构造 approval.resolve: %v", err)
+	}
+	write(t, conn2, resolve)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		done, err := application.GetTask(ctx, task.ID)
+		if err != nil {
+			t.Fatalf("GetTask: %v", err)
+		}
+		if done.Status.Terminal() {
+			if done.Status != domain.TaskCompleted {
+				t.Fatalf("终态 = %s（%s）", done.Status, done.Error)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("增量重连后裁决没有让任务完成")
+}
+
+// from_seq 超过服务端 head（换了数据库 / 服务端重建）时必须要求重置，
+// 否则客户端会永远等不到任何事件。
+func TestIncrementalReplayResetWhenFromSeqAhead(t *testing.T) {
+	ts, application := newLedgerServer(t)
+	ctx := context.Background()
+	sess, err := application.CreateSession(ctx, t.TempDir(), "openai", "test-model", "")
+	if err != nil {
+		t.Fatalf("创建会话: %v", err)
+	}
+	last, err := application.LastSeq(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("读取 last_seq: %v", err)
+	}
+
+	conn := dial(t, wsURL(ts), testToken)
+	handshake(t, conn)
+	sub, err := protocol.New(protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+		SessionID: string(sess.ID),
+		FromSeq:   int64(last) + 1000,
+	})
+	if err != nil {
+		t.Fatalf("构造 event.subscribe: %v", err)
+	}
+	write(t, conn, sub)
+
+	env := readEnvelope(t, conn)
+	if env.Type != protocol.TypeEventSnapshot {
+		t.Fatalf("第一帧 = %s，期望 event.snapshot", env.Type)
+	}
+	var snap protocol.EventSnapshotPayload
+	if err := env.Decode(&snap); err != nil {
+		t.Fatalf("解码快照: %v", err)
+	}
+	if !snap.Reset {
+		t.Fatal("from_seq 超过 head 时应要求重置")
+	}
+	if snap.HeadSeq != int64(last) {
+		t.Fatalf("head_seq = %d，期望 %d", snap.HeadSeq, last)
+	}
+	if len(snap.Pending) != 0 {
+		t.Fatalf("重置快照不应带待审批，实际 %d 条", len(snap.Pending))
+	}
 }

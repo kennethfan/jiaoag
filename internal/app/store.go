@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 )
@@ -52,6 +53,10 @@ type Store interface {
 	Replay(ctx context.Context, sessionID domain.SessionID, from domain.Seq, limit int) ([]domain.Event, error)
 
 	LastSeq(ctx context.Context, sessionID domain.SessionID) (domain.Seq, error)
+
+	// PendingApprovalPayloads 返回会话里仍然待裁决的 approval.requested 载荷，
+	// 供增量订阅补快照。
+	PendingApprovalPayloads(ctx context.Context, sessionID domain.SessionID) ([]json.RawMessage, error)
 
 	Close() error
 }

@@ -53,6 +53,9 @@ type Model struct {
 	status string
 
 	sessionID string
+	// lastSeq 是本地已收到的最后一条持久事件序号。首次连接为 0（全量回放），
+	// 断线重连从它之后增量回放；临时流式帧 seq=0，不推进它。
+	lastSeq int64
 	// runTaskID 是正在执行（或等审批）的任务，esc 只取消它。提交排队任务时
 	// 服务端回执里的 id 不能覆盖它，否则 esc 会取消错误的任务。
 	runTaskID string
@@ -225,16 +228,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.conn = msg.conn
 		m.status = fmt.Sprintf("已连接 %s · 服务端 %s", m.opts.URL, msg.hello.ServerVersion)
 		if m.sessionID != "" {
-			// 断线重连 / --session 恢复：复用原会话，全量重放。
+			// 断线重连 / --session 恢复：从本地最后一条持久事件之后增量回放。
 			//
-			// 一律 from_seq=0：待审批可能发生在断线之前，用增量回放会让
-			// 「倒计时/面板」永久不出现。重放会重建历史，所以先清空本地视图。
-			m.resetView()
+			// 首次连接（lastSeq=0）仍走全量重放。增量时保留历史与队列视图，
+			// 但要清掉两样不入库的本地状态：半截流式文本，以及旧审批面板
+			// （它可能已在断线期间被裁决，由快照重新填充真正待审批的那些）。
+			from := m.lastSeq
+			if from == 0 {
+				m.resetView()
+			} else {
+				m.stream = ""
+				m.approval = nil
+			}
 			return m, tea.Batch(
 				waitForEnvelope(m.conn),
 				sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
 					SessionID: m.sessionID,
-					FromSeq:   0,
+					FromSeq:   from,
 				}),
 			)
 		}
@@ -336,6 +346,31 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 	switch env.Type {
+	case protocol.TypeEventSnapshot:
+		var p protocol.EventSnapshotPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if p.Reset {
+			// 本地 seq 超过服务端 head：两边不是同一份日志，只能从头来。
+			m.resetView()
+			return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+				SessionID: m.sessionID,
+				FromSeq:   0,
+			})
+		}
+		for _, ev := range p.Pending {
+			if ev.Kind != string(domain.EventApprovalRequested) {
+				continue
+			}
+			var a domain.ApprovalRequestedPayload
+			if err := json.Unmarshal(ev.Payload, &a); err == nil {
+				// 不写提示行：历史里可能已经有这条请求的提示，面板才是事实。
+				m.showApprovalRequest(a, false)
+			}
+		}
+		return nil
+
 	case protocol.TypeSessionCreated:
 		var p protocol.SessionPayload
 		if err := env.Decode(&p); err == nil {
@@ -396,6 +431,9 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 			m.stream += delta.Text
 		}
 		return nil
+	}
+	if env.Seq > 0 && env.Seq > m.lastSeq {
+		m.lastSeq = env.Seq
 	}
 	// 运行中任务的事件才更新头部显示；排队任务的事件不能把 id 抢过去。
 	if p.TaskID != "" && (m.runTaskID == "" || p.TaskID == m.runTaskID) {
@@ -507,42 +545,7 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 	case string(domain.EventApprovalRequested):
 		var a domain.ApprovalRequestedPayload
 		if err := json.Unmarshal(p.Payload, &a); err == nil {
-			if a.Kind == domain.ApprovalCommand {
-				m.approval = &approvalView{
-					id:        string(a.ApprovalID),
-					kind:      string(a.Kind),
-					command:   a.Command,
-					cwd:       a.Cwd,
-					backend:   a.Backend,
-					timeoutMS: a.TimeoutMS,
-					reason:    a.Reason,
-				}
-				m.appendLine("⚠ 待审批命令：" + compact(strings.Join(a.Command, " ")))
-				return nil
-			}
-			if a.Kind == domain.ApprovalExternal {
-				m.approval = &approvalView{
-					id:     string(a.ApprovalID),
-					kind:   string(a.Kind),
-					tool:   a.Tool,
-					source: a.Source,
-					args:   a.Args,
-					reason: a.Reason,
-				}
-				m.appendLine(fmt.Sprintf("⚠ 待审批外部工具：%s（%s）", a.Tool, a.Source))
-				return nil
-			}
-			added, removed := patch.Stats(a.Diff)
-			m.approval = &approvalView{
-				id:        string(a.ApprovalID),
-				path:      a.Path,
-				diff:      a.Diff,
-				truncated: a.Truncated,
-				added:     added,
-				removed:   removed,
-			}
-			// 面板占屏，提示行要短：详情在下面几行。
-			m.appendLine("⚠ 待审批：" + a.Path)
+			m.showApprovalRequest(a, true)
 		}
 	case string(domain.EventApprovalResolved):
 		var a domain.ApprovalResolvedPayload
@@ -572,6 +575,53 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 }
 
 // View 渲染状态行、对话与输入行。
+// showApprovalRequest 把一个 approval.requested 载荷变成审批面板状态。
+// 实时事件与重连快照共用；announce=false 时不重复写历史提示行。
+func (m *Model) showApprovalRequest(a domain.ApprovalRequestedPayload, announce bool) {
+	if a.Kind == domain.ApprovalCommand {
+		m.approval = &approvalView{
+			id:        string(a.ApprovalID),
+			kind:      string(a.Kind),
+			command:   a.Command,
+			cwd:       a.Cwd,
+			backend:   a.Backend,
+			timeoutMS: a.TimeoutMS,
+			reason:    a.Reason,
+		}
+		if announce {
+			m.appendLine("⚠ 待审批命令：" + compact(strings.Join(a.Command, " ")))
+		}
+		return
+	}
+	if a.Kind == domain.ApprovalExternal {
+		m.approval = &approvalView{
+			id:     string(a.ApprovalID),
+			kind:   string(a.Kind),
+			tool:   a.Tool,
+			source: a.Source,
+			args:   a.Args,
+			reason: a.Reason,
+		}
+		if announce {
+			m.appendLine(fmt.Sprintf("⚠ 待审批外部工具：%s（%s）", a.Tool, a.Source))
+		}
+		return
+	}
+	added, removed := patch.Stats(a.Diff)
+	m.approval = &approvalView{
+		id:        string(a.ApprovalID),
+		path:      a.Path,
+		diff:      a.Diff,
+		truncated: a.Truncated,
+		added:     added,
+		removed:   removed,
+	}
+	// 面板占屏，提示行要短：详情在下面几行。
+	if announce {
+		m.appendLine("⚠ 待审批：" + a.Path)
+	}
+}
+
 func (m *Model) View() tea.View {
 	var b strings.Builder
 	fmt.Fprintf(&b, "jiaoag %s  %s\n", version.Version, m.status)
@@ -609,10 +659,10 @@ func (m *Model) View() tea.View {
 
 // resetView 清空本地会话视图，只保留 sessionID。
 //
-// 重连后一律 from_seq=0 全量重放，历史、流式文本残余、待审批面板都从事件
-// 重建；先清空才不会把断线前的一帧和重放结果叠在一起。
+// 全量重放前先清空：历史、流式文本残余、待审批面板都从事件与快照重建。
 func (m *Model) resetView() {
 	m.taskID, m.taskStatus, m.stream = "", "", ""
+	m.lastSeq = 0
 	m.runTaskID = ""
 	m.queue = nil
 	m.queuePanel = nil

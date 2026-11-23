@@ -242,7 +242,19 @@ func (s *Server) streamEvents(ctx context.Context, c *clientConn, sub *event.Sub
 		}
 	}
 
-	// 2) 清空回放期间进入缓冲的事件；已发送过的 seq 直接丢弃。
+	// 2) 增量订阅补快照：approval.requested 如果发生在 from 之前，回放永远
+	// 不会补到它。全量回放（from=0）本身就包含待审批，不需要快照。
+	if from > 0 {
+		if err := s.sendSnapshot(ctx, c, sessionID, from); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			c.sendError(ctx, protocol.CodeInternal, err.Error())
+			return
+		}
+	}
+
+	// 3) 清空回放期间进入缓冲的事件；已发送过的 seq 直接丢弃。
 	for {
 		select {
 		case ev, ok := <-sub.C():
@@ -266,7 +278,7 @@ func (s *Server) streamEvents(ctx context.Context, c *clientConn, sub *event.Sub
 	}
 
 live:
-	// 3) 实时推送。缓冲写满意味着客户端跟不上：明确告知，让客户端带
+	// 4) 实时推送。缓冲写满意味着客户端跟不上：明确告知，让客户端带
 	// from_seq 重连；不能静默返回，否则连接还在但事件永远不再到达。
 	for {
 		select {
@@ -291,6 +303,44 @@ live:
 			}
 		}
 	}
+}
+
+// sendSnapshot 给增量订阅补发待审批快照。
+//
+// from 超过服务端 head 说明客户端的 seq 来自另一份日志（数据库被重建、换了
+// 服务端）：此时不猜，直接要求它从 0 全量重放。
+func (s *Server) sendSnapshot(ctx context.Context, c *clientConn, sessionID domain.SessionID, from domain.Seq) error {
+	head, err := s.app.LastSeq(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	payload := protocol.EventSnapshotPayload{HeadSeq: int64(head)}
+	if int64(from) > int64(head) {
+		payload.Reset = true
+	} else {
+		raws, err := s.app.PendingApprovalPayloads(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		payload.Pending = make([]protocol.StreamEventPayload, 0, len(raws))
+		for _, raw := range raws {
+			payload.Pending = append(payload.Pending, protocol.StreamEventPayload{
+				Kind:    string(domain.EventApprovalRequested),
+				Payload: raw,
+			})
+		}
+	}
+	env, err := protocol.New(protocol.TypeEventSnapshot, payload)
+	if err != nil {
+		return err
+	}
+	// 没有待审批也没有要求重置时不发空帧：快照是补缺口，不是每次重连的
+	// 固定握手，否则所有增量订阅都要多处理一个无用帧。
+	if !payload.Reset && len(payload.Pending) == 0 {
+		return nil
+	}
+	env.SessionID = string(sessionID)
+	return c.send(context.WithoutCancel(ctx), env)
 }
 
 // reportOverflow 只在确实是溢出导致通道关闭时发错误帧；正常取消（ctx 结束、
