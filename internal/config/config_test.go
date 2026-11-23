@@ -493,3 +493,36 @@ providers:`, 1)
 		t.Fatalf("非法 skills 应报错，得到 %v", err)
 	}
 }
+
+func TestProjectModeDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Project.Mode != ProjectAsk {
+		t.Fatalf("project.mode 默认应为 %q，实际 %q", ProjectAsk, cfg.Project.Mode)
+	}
+
+	for _, mode := range []string{ProjectAsk, ProjectAuto, ProjectOff} {
+		yaml := strings.Replace(minimalYAML, "providers:", "project:\n  mode: "+mode+"\nproviders:", 1)
+		cfg, err := Load(writeTemp(t, yaml))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Project.Mode != mode {
+			t.Fatalf("project.mode = %q，期望 %q", cfg.Project.Mode, mode)
+		}
+		if err := cfg.ValidateServer(); err != nil {
+			t.Fatalf("mode %q 应合法：%v", mode, err)
+		}
+	}
+
+	bad := strings.Replace(minimalYAML, "providers:", "project:\n  mode: always\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "project.mode") {
+		t.Fatalf("非法项目模式应校验失败，得到 %v", err)
+	}
+}

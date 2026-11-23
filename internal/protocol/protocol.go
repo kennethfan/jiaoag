@@ -32,13 +32,18 @@ const (
 	TypeProviderModelsResult = "provider.models.result" // S→C
 	TypeSkillList            = "skill.list"             // C→S：列出技能库（供 /skill 面板）
 	TypeSkillListResult      = "skill.list.result"      // S→C
-	TypeTaskSubmit           = "task.submit"            // C→S
-	TypeTaskQueued           = "task.queued"            // S→C
-	TypeTaskCancel           = "task.cancel"            // C→S：取消排队中或运行中的任务
-	TypeTaskCanceled         = "task.canceled"          // S→C：取消请求已被接受
-	TypeApprovalResolve      = "approval.resolve"       // C→S：对一次待审批给出裁决
-	TypeEventSubscribe       = "event.subscribe"        // C→S
-	TypeEventSnapshot        = "event.snapshot"         // S→C：增量订阅时补发非事件态（待审批）
+	// TypeProjectTrust 确认当前工作区的项目级扩展（AGENTS.md、.jiaoag/、
+	// .agents/skills）；TypeProjectRevoke 撤销确认。
+	TypeProjectTrust    = "project.trust"    // C→S
+	TypeProjectRevoke   = "project.revoke"   // C→S
+	TypeProjectTrusted  = "project.trusted"  // S→C：确认/撤销后的最新状态
+	TypeTaskSubmit      = "task.submit"      // C→S
+	TypeTaskQueued      = "task.queued"      // S→C
+	TypeTaskCancel      = "task.cancel"      // C→S：取消排队中或运行中的任务
+	TypeTaskCanceled    = "task.canceled"    // S→C：取消请求已被接受
+	TypeApprovalResolve = "approval.resolve" // C→S：对一次待审批给出裁决
+	TypeEventSubscribe  = "event.subscribe"  // C→S
+	TypeEventSnapshot   = "event.snapshot"   // S→C：增量订阅时补发非事件态（待审批）
 )
 
 // 错误码。
@@ -149,6 +154,34 @@ type SessionPayload struct {
 	Title     string `json:"title,omitempty"`
 	CreatedAt int64  `json:"created_at,omitempty"`
 	UpdatedAt int64  `json:"updated_at,omitempty"`
+	// Project 只在 session.created 上出现：工作区里有项目级扩展时带上状态，
+	// 让客户端能提示「发现了但未确认」。
+	Project *ProjectInfo `json:"project,omitempty"`
+}
+
+// ProjectInfo 是项目级扩展的状态与摘要（ADR-0025）。
+type ProjectInfo struct {
+	Mode     string   `json:"mode,omitempty"`
+	Detected bool     `json:"detected"`
+	Trusted  bool     `json:"trusted"`
+	Loaded   bool     `json:"loaded"`
+	Digest   string   `json:"digest,omitempty"`
+	Summary  string   `json:"summary,omitempty"`
+	Prompts  []string `json:"prompts,omitempty"`
+	Skills   []string `json:"skills,omitempty"`
+	Servers  []string `json:"servers,omitempty"`
+	Error    string   `json:"error,omitempty"`
+}
+
+// ProjectActionPayload 是 project.trust / project.revoke 的请求体。
+type ProjectActionPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// ProjectStatusPayload 是 project.trusted 的响应。
+type ProjectStatusPayload struct {
+	SessionID string      `json:"session_id"`
+	Project   ProjectInfo `json:"project"`
 }
 
 // SessionListResultPayload 是 session.list 的响应。

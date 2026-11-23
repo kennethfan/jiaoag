@@ -292,6 +292,9 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 		// 0002 加的列：版本号说升过了就必须真的有，否则后续查询才炸。
 		probes = append(probes, `SELECT skills FROM tasks LIMIT 1`)
 	}
+	if version >= 3 {
+		probes = append(probes, `SELECT workspace, digest FROM project_trust LIMIT 1`)
+	}
 	for _, query := range probes {
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {

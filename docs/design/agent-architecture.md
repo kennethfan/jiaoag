@@ -87,12 +87,13 @@ graph TD
 | `internal/exec` | 执行后端（ADR-0011）：`Plan` 校验、进程组 / Job Object 与超时 / 取消杀组、资源上限、头尾截断与全文日志（`Spec` 三档预算） |
 | `internal/perm` | 按工具副作用分级、默认拒绝；M5 已叠加参数级 argv 白名单与执行约束（ADR-0004） |
 | `internal/agent` | 上下文装配、轮次循环、审批挂起 / 恢复、取消 |
-| `internal/prompt` | 提示词分层装配（纯函数）、`{{var}}` 白名单替换、项目级确认与 hash（ADR-0012） |
+| `internal/prompt` | 提示词分层装配（纯函数）、`{{var}}` 白名单替换、层来源与 hash（ADR-0012、ADR-0025） |
 | `internal/app` | 建会话、提交任务、响应审批、取消、订阅；唯一的事务与广播位置 |
 | `internal/server` | 鉴权、帧编解码、连接注册、订阅桥接；无业务逻辑 |
 | `internal/tui` | 渲染、输入、审批面板；`!命令` 经 `internal/localshell` 在客户端执行（ADR-0022） |
 | `internal/localshell` | 客户端本机命令：`sh -c` / `cmd /c`、按行流式回传、单行裁剪、超时与整组杀进程 |
 | `internal/skills` | 技能包发现与按需加载：扫描 `SKILL.md`、容错解析 frontmatter、只把索引交给提示词、正文由 `skill` 工具取或经用户 `/skill` 指定后直接注入（ADR-0023、ADR-0024） |
+| `internal/project` | 项目级扩展发现：根 `AGENTS.md`、`.jiaoag/prompts/*.md`、`.jiaoag/skills` 与 `.agents/skills`、`.jiaoag/mcp.yaml`；产出内容摘要（ADR-0025） |
 
 ---
 
@@ -364,14 +365,14 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 
 | 扩展点 | 可插？ | 机制 | 时间 |
 |---|---|---|---|
-| 工具 | ✅ | `tools.Source`：builtin / MCP / stdio 插件 | v1 留缝；v2 MCP 已实现（ADR-0014） |
+| 工具 | ✅ | `tools.Source`：builtin / MCP / stdio 插件；MCP 支持全局 `mcp.servers` 与工作区 `.jiaoag/mcp.yaml` 合并 | v1 留缝；v2 MCP 已实现（ADR-0014、ADR-0025） |
 | LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表；多 key 轮询与冷却已实现（ADR-0020），模型列表与运行中切换已实现（ADR-0021），注册表未做 | v2 |
 | UI | ✅ | 协议客户端，Web / 移动端即另一个 WS 客户端 | 已成立 |
 | 事件消费者 / 审计导出 | ✅ | 订阅事件流 | v2 |
 | 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |
 | 跨会话记忆 | ✅ 仅工作区文件 | `MEMORY.md` + `remember` 工具 | v2 已实现（ADR-0018） |
-| 技能包 | ✅ 仅指令文本 | 目录扫描 + 索引注入 + `skill` 工具按需取正文；`disable-model-invocation` 不进索引，用户可 `/skill` 指定并由服务端确定性注入 | v2 已实现（ADR-0023、ADR-0024） |
-| 提示词（系统提示 / 项目知识） | ⚠️ 仅追加 | `prompt.Assemble` + 项目级确认与 hash（ADR-0012） | v1 |
+| 技能包 | ✅ 仅指令文本 | 机器级目录 + 工作区 `.jiaoag/skills` / `.agents/skills` 合并（项目级覆盖同名）；索引注入 + `skill` 工具按需取正文；`disable-model-invocation` 不进索引，用户可 `/skill` 指定并由服务端确定性注入 | v2 已实现（ADR-0023、ADR-0024、ADR-0025） |
+| 提示词（系统提示 / 项目知识） | ✅ 仅追加 | `prompt.Assemble` + 工作区 `AGENTS.md` / `.jiaoag/prompts/*.md`；项目级一次确认覆盖提示、技能与 MCP（ADR-0025） | v2 已实现（ADR-0025） |
 | 工具描述 / 压缩提示 | ❌ | 调用契约与上下文完整性，属代码不属配置 | 不开放 |
 | 权限规则数据 | ⚠️ 只能收紧 | `perm.Loader` + `TightenRule` | v1 本地规则，v2 签名 feed |
 | 执行后端（sandbox / 远程 runner） | ✅ 仅宿主选择 | `ExecBackend`，工具无权指定（ADR-0011） | v1 `direct`；v2 `sandbox` 已实现（ADR-0015），远程未做 |

@@ -495,6 +495,21 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				SessionID: m.sessionID,
 			})
 		}
+		// /trust 确认当前工作区的项目级扩展（AGENTS.md、.jiaoag/、.agents/skills）。
+		if text == "/trust" {
+			m.input = ""
+			m.appendLine("正在确认项目级扩展…")
+			return m, sendCmd(m.conn, protocol.TypeProjectTrust, protocol.ProjectActionPayload{
+				SessionID: m.sessionID,
+			})
+		}
+		if text == "/untrust" {
+			m.input = ""
+			m.appendLine("正在撤销项目级扩展的信任…")
+			return m, sendCmd(m.conn, protocol.TypeProjectRevoke, protocol.ProjectActionPayload{
+				SessionID: m.sessionID,
+			})
+		}
 		// 运行中也可以提交：服务端会把它排到队尾，会话内仍是串行执行。
 		//
 		// 提问不回显在这里：它由 task.queued 事件统一渲染，否则断线重连后的
@@ -556,6 +571,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			if p.Model != "" {
 				m.appendLine("模型：" + modelLabel(p.Provider, p.Model))
 			}
+			m.noteProject(p.Project)
 		}
 		return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
 			SessionID: m.sessionID,
@@ -566,6 +582,24 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		var p protocol.SessionPayload
 		if err := env.Decode(&p); err == nil {
 			m.sessionProvider, m.sessionModel = p.Provider, p.Model
+		}
+		return nil
+
+	case protocol.TypeProjectTrusted:
+		var p protocol.ProjectStatusPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if p.Project.Trusted {
+			m.appendLine("✔ 已信任项目级扩展：" + p.Project.Summary + "（下一条任务生效）")
+			for _, prompt := range p.Project.Prompts {
+				m.appendLine("  · 提示 " + prompt)
+			}
+			for _, srv := range p.Project.Servers {
+				m.appendLine("  · MCP " + srv)
+			}
+		} else {
+			m.appendLine("已撤销项目级扩展信任，下一条任务起不再加载")
 		}
 		return nil
 

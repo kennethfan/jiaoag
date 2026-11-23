@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	execpkg "github.com/kennethfan/jiaoag/internal/exec"
+	"github.com/kennethfan/jiaoag/internal/project"
 	"github.com/kennethfan/jiaoag/internal/skills"
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
@@ -60,6 +61,9 @@ type RuntimeEnv struct {
 	OutputPath func(ctx context.Context, toolCallID string) (string, error)
 	// Skills 是本次任务的技能库；非空时注册 skill 工具。
 	Skills *skills.Catalog
+	// ProjectServers 是工作区里已确认的 MCP server（ADR-0025）；由宿主
+	// 转换成 mcp.Server 后与全局配置一起启动。
+	ProjectServers []project.Server
 }
 
 // NewRunCommand 返回带回正文的命令工具。

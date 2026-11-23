@@ -15,6 +15,15 @@ policy:
   # 本地收紧规则目录；外部规则只能让命令落到审批，不能放宽白名单（ADR-0010）。
   dir: ~/.config/jiaoag/policy.d
 
+project:
+  # 工作区里的项目级扩展（AGENTS.md、.jiaoag/prompts/*.md、.jiaoag/skills、
+  # .agents/skills、.jiaoag/mcp.yaml）怎么处理：
+  #   ask  默认，首次发现时提示，用户 /trust 确认后才加载；内容变化要重新确认
+  #   auto 不确认，直接加载（只在你自己的仓库里用）
+  #   off  完全忽略
+  # 仓库是别人写的代码，所以默认不信任（ADR-0025）。
+  mode: ask
+
 exec:
   # direct：宿主直连（默认）。sandbox：macOS 用 sandbox-exec，Linux 用 bwrap。
   # 降级必须显式，不会静默回退（ADR-0011）：sandbox 探测失败会直接启动报错。

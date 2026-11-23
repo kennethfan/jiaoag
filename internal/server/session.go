@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kennethfan/jiaoag/internal/app"
+	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
 	"github.com/kennethfan/jiaoag/internal/llm"
@@ -34,7 +35,7 @@ func (s *Server) handleSessionCreate(ctx context.Context, c *clientConn, env pro
 		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
 		return
 	}
-	reply, err := protocol.New(protocol.TypeSessionCreated, sessionPayload(sess))
+	reply, err := protocol.New(protocol.TypeSessionCreated, s.sessionPayloadWithProject(ctx, sess))
 	if err != nil {
 		c.sendError(ctx, protocol.CodeInternal, err.Error())
 		return
@@ -202,6 +203,102 @@ func (s *Server) handleSkillList(ctx context.Context, c *clientConn, env protoco
 		})
 	}
 	reply, err := protocol.New(protocol.TypeSkillListResult, protocol.SkillListResultPayload{Skills: out})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
+	_ = c.send(ctx, reply)
+}
+
+func (s *Server) sessionPayloadWithProject(ctx context.Context, sess domain.Session) protocol.SessionPayload {
+	payload := sessionPayload(sess)
+	status, err := s.app.ProjectStatus(ctx, sess.Workspace, s.projectMode())
+	if err != nil {
+		s.log.Warn("读取项目级扩展状态失败", "workspace", sess.Workspace, "error", err)
+		return payload
+	}
+	if !status.Detected {
+		return payload
+	}
+	info := projectInfo(status)
+	payload.Project = &info
+	return payload
+}
+
+func projectInfo(status app.ProjectStatus) protocol.ProjectInfo {
+	return protocol.ProjectInfo{
+		Mode:     status.Mode,
+		Detected: status.Detected,
+		Trusted:  status.Trusted,
+		Loaded:   status.Loaded,
+		Digest:   status.Digest,
+		Summary:  status.Summary,
+		Prompts:  status.Prompts,
+		Skills:   status.Skills,
+		Servers:  status.Servers,
+		Error:    status.Err,
+	}
+}
+
+// projectMode 返回项目级扩展的生效模式；未配置时按 ask 处理。
+func (s *Server) projectMode() string {
+	if s.cfg == nil || s.cfg.Project.Mode == "" {
+		return config.ProjectAsk
+	}
+	return s.cfg.Project.Mode
+}
+
+// handleProjectTrust 确认当前工作区的项目级扩展。
+func (s *Server) handleProjectTrust(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	s.handleProjectAction(ctx, c, env, true)
+}
+
+// handleProjectRevoke 撤销确认。
+func (s *Server) handleProjectRevoke(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	s.handleProjectAction(ctx, c, env, false)
+}
+
+func (s *Server) handleProjectAction(ctx context.Context, c *clientConn, env protocol.Envelope, trust bool) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.ProjectActionPayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	sess, err := s.app.GetSession(ctx, domain.SessionID(id))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	var status app.ProjectStatus
+	if trust {
+		status, err = s.app.TrustProject(ctx, sess.Workspace, s.projectMode())
+	} else {
+		err = s.app.RevokeProjectTrust(ctx, sess.Workspace)
+		if err == nil {
+			status, err = s.app.ProjectStatus(ctx, sess.Workspace, s.projectMode())
+		}
+	}
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	reply, err := protocol.New(protocol.TypeProjectTrusted, protocol.ProjectStatusPayload{
+		SessionID: id,
+		Project:   projectInfo(status),
+	})
 	if err != nil {
 		c.sendError(ctx, protocol.CodeInternal, err.Error())
 		return

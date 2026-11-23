@@ -97,7 +97,10 @@ type Options struct {
 	// SkillBodies 是用户在提交任务时显式点名的技能正文：用户已经说了要哪个，
 	// 就不必再让模型自己去调工具——直接进上下文，省一轮往返且不会挑错。
 	SkillBodies []SkillBody
-	Logger      *slog.Logger
+	// ProjectPrompts 是工作区里的项目提示（AGENTS.md、.jiaoag/prompts/*.md），
+	// 已通过信任确认；排在技能索引之后、点名技能之前，只能追加不能覆盖核心。
+	ProjectPrompts []prompt.Layer
+	Logger         *slog.Logger
 
 	// Ruleset 是命令白名单与收紧规则的不可变快照。
 	Ruleset *perm.Ruleset
@@ -551,6 +554,11 @@ func (a *Agent) system() (prompt.Result, error) {
 			Source: "user:skills",
 			Text:   index,
 		})
+	}
+	for _, layer := range a.opts.ProjectPrompts {
+		// 项目提示排在技能索引之后：它描述「这个仓库怎么工作」，同样只能
+		// 追加在核心之后。来源带文件路径，审计里能看出是哪份文件给的。
+		layers = append(append([]prompt.Layer(nil), layers...), layer)
 	}
 	for _, body := range a.opts.SkillBodies {
 		// 用户点名的技能正文：同样在核心之后，一层一个技能，方便从 hash 与

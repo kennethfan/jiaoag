@@ -59,5 +59,12 @@ type Store interface {
 	// 供增量订阅补快照。
 	PendingApprovalPayloads(ctx context.Context, sessionID domain.SessionID) ([]json.RawMessage, error)
 
+	// ProjectTrust 返回工作区已确认的项目扩展摘要；没有记录时为空串。
+	ProjectTrust(ctx context.Context, workspace string) (string, error)
+	// TrustProject 记录/替换工作区的项目扩展信任。
+	TrustProject(ctx context.Context, workspace, digest string) error
+	// RevokeProjectTrust 撤销工作区的项目扩展信任。
+	RevokeProjectTrust(ctx context.Context, workspace string) error
+
 	Close() error
 }

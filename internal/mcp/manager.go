@@ -69,12 +69,18 @@ type Manager struct {
 
 	mu    sync.Mutex
 	roots map[string]*rootSources
+	// sessions 记录所有起过的会话：项目级配置变化时旧的 root 状态会被替换，
+	// 但进程不能悬着，统一在 Close 里回收。
+	sessions []*sdk.ClientSession
 }
 
 type rootSources struct {
-	once     sync.Once
-	tools    []tools.Tool
-	sessions []*sdk.ClientSession
+	// key 是「全局 server + 本次项目级 server」的指纹。项目里的 mcp.yaml
+	// 改了摘要，key 就变，下一次任务重建进程（ADR-0025）。
+	key   string
+	mu    sync.Mutex
+	ready bool
+	tools []tools.Tool
 }
 
 // NewManager 构造管理器。Manager 不主动连接：第一次 Tools 才启动子进程。
@@ -100,32 +106,74 @@ func NewManager(opts Options) *Manager {
 //
 // 返回的切片是副本，调用方可以安全地追加进自己的 registry。
 func (m *Manager) Tools(ctx context.Context, workspaceRoot string) []tools.Tool {
-	if len(m.servers) == 0 {
+	return m.ToolsWith(ctx, workspaceRoot, nil)
+}
+
+// ToolsWith 在全局 server 之外追加该工作区自己的 server（项目级扩展）。
+//
+// extra 的顺序在后：同名时由它覆盖全局配置——仓库对自己的 MCP 有最终发言权。
+func (m *Manager) ToolsWith(ctx context.Context, workspaceRoot string, extra []Server) []tools.Tool {
+	all := make([]Server, 0, len(m.servers)+len(extra))
+	all = append(all, m.servers...)
+	all = append(all, extra...)
+	if len(all) == 0 {
 		return nil
 	}
+	key := serversKey(all)
+
 	m.mu.Lock()
 	state := m.roots[workspaceRoot]
-	if state == nil {
-		state = &rootSources{}
+	if state == nil || state.key != key {
+		if state != nil {
+			m.log.Info("项目级 MCP 配置已变化，将重建该工作区的 server", "workspace", workspaceRoot)
+		}
+		state = &rootSources{key: key}
 		m.roots[workspaceRoot] = state
 	}
 	m.mu.Unlock()
 
-	state.once.Do(func() {
-		state.tools, state.sessions = m.connectAll(ctx, workspaceRoot)
-	})
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.ready {
+		var sessions []*sdk.ClientSession
+		state.tools, sessions = m.connectAll(ctx, workspaceRoot, all)
+		state.ready = true
+		if len(sessions) > 0 {
+			m.mu.Lock()
+			m.sessions = append(m.sessions, sessions...)
+			m.mu.Unlock()
+		}
+	}
 	out := make([]tools.Tool, len(state.tools))
 	copy(out, state.tools)
 	return out
 }
 
-func (m *Manager) connectAll(ctx context.Context, root string) ([]tools.Tool, []*sdk.ClientSession) {
+// serversKey 生成一组 server 的指纹。argv/env/dir/trust 都影响行为，全部入
+// 摘要：改了命令却复用旧进程，等于配置没生效还不报错。
+func serversKey(servers []Server) string {
+	lines := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		lines = append(lines, strings.Join([]string{
+			srv.Name,
+			strings.Join(srv.Argv, "\x00"),
+			strings.Join(srv.Env, "\x00"),
+			srv.Dir,
+			srv.Timeout.String(),
+			fmt.Sprint(srv.Trust),
+		}, "\x00"))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+func (m *Manager) connectAll(ctx context.Context, root string, servers []Server) ([]tools.Tool, []*sdk.ClientSession) {
 	var (
 		out      []tools.Tool
 		sessions []*sdk.ClientSession
-		seen     = make(map[string]string, len(m.servers))
+		seen     = make(map[string]string, len(servers))
 	)
-	for _, srv := range m.servers {
+	for _, srv := range servers {
 		if len(srv.Argv) == 0 && m.connect == nil {
 			m.log.Warn("MCP server 缺少启动命令，已跳过", "server", srv.Name)
 			continue
@@ -214,19 +262,15 @@ func (m *Manager) listTools(ctx context.Context, sess *sdk.ClientSession, srv Se
 // Close 关闭所有已连接的子进程。可以重复调用。
 func (m *Manager) Close() error {
 	m.mu.Lock()
-	states := make([]*rootSources, 0, len(m.roots))
-	for _, s := range m.roots {
-		states = append(states, s)
-	}
+	sessions := m.sessions
+	m.sessions = nil
 	m.roots = make(map[string]*rootSources)
 	m.mu.Unlock()
 
 	var first error
-	for _, st := range states {
-		for _, sess := range st.sessions {
-			if err := sess.Close(); err != nil && first == nil {
-				first = err
-			}
+	for _, sess := range sessions {
+		if err := sess.Close(); err != nil && first == nil {
+			first = err
 		}
 	}
 	return first

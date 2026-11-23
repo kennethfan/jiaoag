@@ -31,7 +31,24 @@ type Config struct {
 	Exec      Exec       `yaml:"exec"`
 	Providers []Provider `yaml:"providers"`
 	MCP       MCP        `yaml:"mcp"`
+	Project   Project    `yaml:"project"`
 }
+
+// Project 控制工作区里的项目级扩展（AGENTS.md、.jiaoag/、.agents/skills）。
+//
+// 这些内容来自仓库，可能不是自己写的，所以默认 ask：检出项目内容后先确认
+// 一次（按 workspace + 内容摘要记录），确认前整体跳过。auto 用于自己的
+// 仓库或 CI，off 用于批量巡检不可信仓库。
+type Project struct {
+	Mode string `yaml:"mode"`
+}
+
+// 项目级扩展的生效模式。
+const (
+	ProjectAsk  = "ask"
+	ProjectAuto = "auto"
+	ProjectOff  = "off"
+)
 
 // MCP 是外部工具来源的启动配置（ADR-0014）。只支持 stdio。
 type MCP struct {
@@ -408,6 +425,9 @@ func (c *Config) applyDefaults() {
 	if c.Agent.Skills == "" {
 		c.Agent.Skills = SkillAuto
 	}
+	if c.Project.Mode == "" {
+		c.Project.Mode = ProjectAsk
+	}
 	for i, dir := range c.Agent.SkillsDirs {
 		// 技能目录允许 ~，展开后再落进运行时；相对路径保持原样，
 		// 由各会话按自己的工作区根解析。
@@ -573,6 +593,11 @@ func (c *Config) validateCommon() error {
 		if strings.TrimSpace(dir) == "" {
 			return fmt.Errorf("agent.skills_dirs[%d] 不能为空", i)
 		}
+	}
+	switch c.Project.Mode {
+	case "", ProjectAsk, ProjectAuto, ProjectOff:
+	default:
+		return fmt.Errorf("project.mode 只支持 %q / %q / %q，当前为 %q", ProjectAsk, ProjectAuto, ProjectOff, c.Project.Mode)
 	}
 	if _, err := c.Server.Token.Resolve(); err != nil {
 		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)

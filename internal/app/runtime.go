@@ -51,7 +51,10 @@ type RuntimeDeps struct {
 	// SkillDirs 是技能包目录（`~` 已展开的写法或工作区相对路径）；非空时
 	// 把索引注入系统提示并注册 skill 工具。
 	SkillDirs []string
-	Logger    *slog.Logger
+	// ProjectMode 控制工作区级扩展（AGENTS.md、.jiaoag/、.agents/skills）：
+	// ask 需确认（默认）、auto 直接生效、off 完全忽略。
+	ProjectMode string
+	Logger      *slog.Logger
 }
 
 // taskRun 是一个运行中任务的句柄。
@@ -141,10 +144,12 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 	if err != nil {
 		return nil, "", "", err
 	}
+	// 项目级扩展来自仓库，可能不是自己写的：未确认时整体跳过（ADR-0025）。
+	proj := a.loadProject(ws.Root(), deps)
 	// 技能是增强不是前提：目录读不了就只是没有技能可用。
 	var catalog *skills.Catalog
-	if len(deps.SkillDirs) > 0 {
-		loaded, errs := skills.Load(deps.SkillDirs, ws.Root())
+	if dirs := joinProjectSkillDirs(deps.SkillDirs, proj); len(dirs) > 0 {
+		loaded, errs := skills.Load(dirs, ws.Root())
 		for _, err := range errs {
 			deps.Logger.Warn("加载技能失败，已跳过", "error", err)
 		}
@@ -158,13 +163,14 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		return nil, "", "", err
 	}
 	registry, err := deps.Tools(ws, tools.RuntimeEnv{
-		Skills:     catalog,
-		Backend:    deps.Backend,
-		OutputDir:  deps.OutputDir,
-		SessionID:  string(sess.ID),
-		Timeout:    deps.ExecTimeout,
-		Limits:     deps.Limits,
-		OutputPath: a.outputPath,
+		Skills:         catalog,
+		ProjectServers: projectServers(proj),
+		Backend:        deps.Backend,
+		OutputDir:      deps.OutputDir,
+		SessionID:      string(sess.ID),
+		Timeout:        deps.ExecTimeout,
+		Limits:         deps.Limits,
+		OutputPath:     a.outputPath,
 	})
 	if err != nil {
 		return nil, "", "", err
@@ -187,20 +193,21 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		}
 	}
 	ag, err := agent.New(agent.Options{
-		Provider:      provider,
-		Tools:         registry,
-		Workspace:     ws,
-		Recorder:      a,
-		Model:         model,
-		Memory:        memoryText,
-		SkillsIndex:   catalog.Section(),
-		SkillBodies:   bodies,
-		MaxRounds:     deps.MaxRounds,
-		ContextBudget: deps.ContextBudget,
-		Compact:       deps.ContextCompact,
-		Logger:        deps.Logger,
-		Ruleset:       deps.Ruleset,
-		OutputDir:     deps.OutputDir,
+		Provider:       provider,
+		Tools:          registry,
+		Workspace:      ws,
+		Recorder:       a,
+		Model:          model,
+		Memory:         memoryText,
+		SkillsIndex:    catalog.Section(),
+		SkillBodies:    bodies,
+		ProjectPrompts: projectLayers(proj),
+		MaxRounds:      deps.MaxRounds,
+		ContextBudget:  deps.ContextBudget,
+		Compact:        deps.ContextCompact,
+		Logger:         deps.Logger,
+		Ruleset:        deps.Ruleset,
+		OutputDir:      deps.OutputDir,
 	})
 	if err != nil {
 		return nil, "", "", err

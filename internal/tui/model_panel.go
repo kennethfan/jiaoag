@@ -30,6 +30,24 @@ func newModelPanel(models []string, current, source string) *modelPanelView {
 	return v
 }
 
+// noteProject 在会话创建时提示项目级扩展的状态。
+//
+// 未确认时刻意说得具体一点：用户需要知道「为什么 AGENTS.md 没生效」，
+// 否则只会以为功能坏了。
+func (m *Model) noteProject(info *protocol.ProjectInfo) {
+	if info == nil || !info.Detected {
+		return
+	}
+	if info.Loaded {
+		m.appendLine("⋯ 项目级扩展已生效：" + info.Summary)
+		return
+	}
+	if info.Mode == "off" {
+		return
+	}
+	m.appendLine("⚠ 检测到项目级扩展（" + info.Summary + "），未确认已跳过；输入 /trust 查看并启用")
+}
+
 // modelLabel 用于状态行：供应商为空时只显示模型名。
 func modelLabel(provider, model string) string {
 	if provider == "" {

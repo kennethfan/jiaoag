@@ -56,14 +56,15 @@ type Catalog struct {
 
 // Load 扫描 dirs 下的每个子目录，找出带 SKILL.md 的技能。
 //
-// root 用来解析相对目录（相对工作区根）。同名的技能以先出现的为准——
-// 顺序由调用方决定，通常是「机器级在前、项目级在后」，这样机器级不会被
-// 某个仓库里的同名文件顶掉。读不了或格式坏掉的目录只记进 errors，不中断
-// 加载：技能是增强，不是运行前提。
+// root 用来解析相对目录（相对工作区根）。同名的技能以**后出现的**为准——
+// 顺序由调用方决定，通常是「机器级在前、项目级在后」，越近的仓库越具体，
+// 仓库里的同名技能应当覆盖机器级。读不了或格式坏掉的目录只记进 errors，
+// 不中断加载：技能是增强，不是运行前提。
 func Load(dirs []string, root string) (*Catalog, []error) {
 	cat := &Catalog{index: make(map[string]Skill)}
 	var errs []error
 	seen := make(map[string]bool)
+	positions := make(map[string]int)
 	for _, raw := range dirs {
 		dir, err := resolveDir(raw, root)
 		if err != nil {
@@ -98,9 +99,6 @@ func Load(dirs []string, root string) (*Catalog, []error) {
 			if !validName(name) {
 				name = entry.Name()
 			}
-			if _, dup := cat.index[name]; dup {
-				continue
-			}
 			skill := Skill{
 				Name:        name,
 				Description: clip(strings.Join(strings.Fields(meta.Description), " "), maxIndexRunes),
@@ -108,6 +106,14 @@ func Load(dirs []string, root string) (*Catalog, []error) {
 				Dir:         skillDir,
 				Source:      raw,
 			}
+			if pos, dup := positions[name]; dup {
+				// 后出现的目录覆盖先出现的：调用方按「机器级 → 项目级」排序，
+				// 这样仓库里的同名技能才是生效的那份。
+				cat.skills[pos] = skill
+				cat.index[name] = skill
+				continue
+			}
+			positions[name] = len(cat.skills)
 			cat.skills = append(cat.skills, skill)
 			cat.index[name] = skill
 		}

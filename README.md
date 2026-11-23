@@ -58,7 +58,7 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [/skill] 技能  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [/skill] 技能  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
@@ -82,6 +82,18 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 ```
 
 只影响下一条任务。详见 [`docs/skills.md`](docs/skills.md)。
+
+仓库也可以自带扩展：根目录 `AGENTS.md`、`.jiaoag/prompts/*.md` 是提示，`.jiaoag/skills` 与 `.agents/skills` 是技能，`.jiaoag/mcp.yaml` 是 MCP server。这些属于**仓库内容**，默认不信任——首次发现时只提示不加载，`/trust` 确认后才生效；内容一改就要重新确认（`/untrust` 撤销，`project.mode: auto` 可跳过确认）：
+
+```text
+⚠ 检测到项目级扩展（提示 1 个、MCP 1 台），未确认已跳过；输入 /trust 查看并启用
+› /trust
+✔ 已信任项目级扩展：提示 1 个、MCP 1 台（下一条任务生效）
+  · 提示 AGENTS.md
+  · MCP repo-db: ./scripts/mcp-db --readonly
+```
+
+详见 [`docs/project-extensions.md`](docs/project-extensions.md)。
 
 无终端环境下自检两端是否互通：
 
@@ -141,6 +153,7 @@ make demo-mcp
 | v2.8 | MCP 信任模型：写进配置即放行（`trust` 默认 `allow`），需要把关的 server 显式 `trust: ask` | ✅ |
 | v2.9 | 技能包：扫 `~/.agents/skills`，索引常驻、`skill` 工具按需加载正文（ADR-0023） | ✅ |
 | v2.10 | 主动调起技能：`disable-model-invocation` 不进索引，`/skill` 指定后正文直接进该任务系统提示（ADR-0024） | ✅ |
+| v2.11 | 项目级扩展：工作区 `AGENTS.md` / `.jiaoag/{prompts,skills,mcp.yaml}` / `.agents/skills`，一次确认覆盖三者、内容变化重新确认（ADR-0025） | ✅ |
 
 ## 安全边界
 

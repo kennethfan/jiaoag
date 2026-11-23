@@ -93,7 +93,7 @@ func TestLoadMissingDirIsSilent(t *testing.T) {
 	}
 }
 
-func TestLoadRelativeDirUsesWorkspaceAndDedupesByName(t *testing.T) {
+func TestLoadRelativeDirUsesWorkspaceAndLaterWins(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, ".jiaoag/skills/local", "---\nname: alpha\ndescription: 项目版\n---\n", "")
 	other := t.TempDir()
@@ -106,8 +106,8 @@ func TestLoadRelativeDirUsesWorkspaceAndDedupesByName(t *testing.T) {
 	if cat.Len() != 1 {
 		t.Fatalf("同名应去重，得到 %v", cat.Names())
 	}
-	if got, _ := cat.Get("alpha"); got.Description != "机器版" {
-		t.Fatalf("先出现的目录应优先，得到 %q", got.Description)
+	if got, _ := cat.Get("alpha"); got.Description != "项目版" {
+		t.Fatalf("后出现的目录（项目级）应覆盖机器级，得到 %q", got.Description)
 	}
 }
 

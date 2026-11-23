@@ -247,3 +247,58 @@ func specsOf(ts []tools.Tool) []string {
 	}
 	return out
 }
+
+// 项目级 server 与全局 server 合并：同一个 registry 里两套工具。
+func TestManagerMergesProjectServers(t *testing.T) {
+	m, connects := managerWith(t, mcppkg.Server{Name: "fs", Timeout: time.Second})
+	extra := []mcppkg.Server{{Name: "repo", Timeout: time.Second}}
+
+	list := m.ToolsWith(context.Background(), "/repo", extra)
+	names := specsOf(list)
+	if len(names) != 2 {
+		t.Fatalf("应有两台 server 的工具，实际 %v", names)
+	}
+	for _, want := range []string{"mcp__fs__echo", "mcp__repo__echo"} {
+		if !contains(names, want) {
+			t.Fatalf("缺少 %s：%v", want, names)
+		}
+	}
+	if got := atomic.LoadInt32(connects); got != 2 {
+		t.Fatalf("connect 次数 = %d，期望 2", got)
+	}
+}
+
+// 项目级清单变了（增删 server 或改 argv）必须重建，否则仓库里改配置要重启才生效。
+func TestManagerRebuildsWhenProjectServersChange(t *testing.T) {
+	m, connects := managerWith(t, mcppkg.Server{Name: "fs", Timeout: time.Second})
+	ctx := context.Background()
+
+	_ = m.ToolsWith(ctx, "/repo", []mcppkg.Server{{Name: "repo", Timeout: time.Second}})
+	if got := atomic.LoadInt32(connects); got != 2 {
+		t.Fatalf("首轮 connect 次数 = %d，期望 2", got)
+	}
+
+	// 同样的清单：沿用缓存，不重连。
+	_ = m.ToolsWith(ctx, "/repo", []mcppkg.Server{{Name: "repo", Timeout: time.Second}})
+	if got := atomic.LoadInt32(connects); got != 2 {
+		t.Fatalf("清单未变不该重连，实际 %d", got)
+	}
+
+	// 清单变化：重建该工作区的全部 server。
+	list := m.ToolsWith(ctx, "/repo", nil)
+	if got := atomic.LoadInt32(connects); got != 3 {
+		t.Fatalf("清单变化后应重建（只连全局那台），实际 %d", got)
+	}
+	if names := specsOf(list); len(names) != 1 || names[0] != "mcp__fs__echo" {
+		t.Fatalf("重建后只应剩全局工具，实际 %v", names)
+	}
+}
+
+func contains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
