@@ -20,6 +20,7 @@ import (
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
+	"github.com/kennethfan/jiaoag/internal/localshell"
 	"github.com/kennethfan/jiaoag/internal/patch"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 	"github.com/kennethfan/jiaoag/internal/version"
@@ -44,6 +45,8 @@ type (
 	connectErrMsg struct{ err error }
 	envelopeMsg   struct{ env protocol.Envelope }
 	closedMsg     struct{ err error }
+	// localMsg 是 !命令 的一行输出或结束态。
+	localMsg struct{ ev localshell.Event }
 )
 
 // Model 是 bubbletea 的顶层模型。
@@ -72,6 +75,13 @@ type Model struct {
 	taskStatus      string
 	round           int
 	tokens          int
+
+	// local 非空表示有 !命令 在本机执行中。它不经过服务端、不进审计、
+	// 不受 exec.backend 沙箱约束；输出只留在对话区，模型看不到。
+	local *localshell.Run
+	// localLines/localOmitted 统计本次本地命令已渲染/被省略的显示行数。
+	localLines   int
+	localOmitted int
 
 	dialog   []string
 	stream   string
@@ -120,6 +130,14 @@ const panelWidth = 72
 // maxOutputPreviewLines 是命令输出在界面上最多占多少行。全文在日志里，
 // 界面只负责让人看懂这次调用发生了什么（失败诊断、超时文案）。
 const maxOutputPreviewLines = 12
+
+// outputIndent 是命令类输出在对话区的缩进：工具结果与本地命令共用一套，
+// 让人一眼分出「agent 干了什么」和「我敲的东西」。
+const outputIndent = "  │ "
+
+// localCommandLines 是一次 !命令 最多占多少显示行（折行后计）。超出后仍
+// 继续消费事件但不再渲染，否则子进程会卡在写管道上。
+const localCommandLines = 400
 
 // New 构造客户端模型。
 func New(opts Options) *Model {
@@ -228,6 +246,90 @@ func sendCmd(conn *websocket.Conn, typ string, payload any) tea.Cmd {
 	}
 }
 
+// startLocalCommand 在客户端本机执行 !命令。
+//
+// cwd 是 TUI 的工作区，环境变量原样继承：这条路径等价于用户在自己的终端
+// 里敲命令，所以不审批、不审计，也不受 exec.backend 沙箱限制。
+func (m *Model) startLocalCommand(text string) tea.Cmd {
+	command := strings.TrimSpace(strings.TrimPrefix(text, "!"))
+	if command == "" {
+		m.appendLine("! 后面要跟命令，例如 !go test ./...")
+		return nil
+	}
+	if m.local != nil {
+		m.appendLine("上一个本地命令还在跑（ctrl+x 终止）")
+		return nil
+	}
+	run := localshell.Start(localshell.Options{Workdir: m.opts.Workspace}, command)
+	m.local = run
+	m.localLines, m.localOmitted = 0, 0
+	m.appendLine("! " + command)
+	return waitLocalCommand(run)
+}
+
+// waitLocalCommand 取一条本地输出。每收到一条都要重新发起，直到 Done：
+// 读端停下子进程就会阻塞在写管道上。
+func waitLocalCommand(run *localshell.Run) tea.Cmd {
+	return func() tea.Msg {
+		if run == nil {
+			return localMsg{ev: localshell.Event{Done: true}}
+		}
+		ev, ok := <-run.Events()
+		if !ok {
+			return localMsg{ev: localshell.Event{Done: true}}
+		}
+		return localMsg{ev: ev}
+	}
+}
+
+// handleLocalCommand 把一行输出或结束态写进对话区。
+func (m *Model) handleLocalCommand(ev localshell.Event) (tea.Model, tea.Cmd) {
+	if !ev.Done {
+		if m.localLines < localCommandLines {
+			width := panelWidth - len([]rune(outputIndent))
+			for _, chunk := range wrapText(ev.Text, width) {
+				m.appendLine(outputIndent + chunk)
+			}
+			m.localLines++
+		} else {
+			// 超出展示上限后只计数、不渲染，但事件照读不误。
+			m.localOmitted++
+		}
+		if m.local == nil {
+			return m, nil
+		}
+		return m, waitLocalCommand(m.local)
+	}
+
+	m.local = nil
+	omitted := m.localOmitted
+	m.localLines, m.localOmitted = 0, 0
+
+	var line string
+	switch {
+	case ev.TimedOut:
+		line = fmt.Sprintf("  ↳ 超时 %s，已终止", shortDuration(ev.Duration))
+	case ev.Stopped:
+		line = fmt.Sprintf("  ↳ 已终止（%s）", shortDuration(ev.Duration))
+	case ev.ExitCode < 0:
+		line = fmt.Sprintf("  ↳ 未能执行（%s）", errText(ev.Err))
+	default:
+		line = fmt.Sprintf("  ↳ 退出码 %d（%s）", ev.ExitCode, shortDuration(ev.Duration))
+	}
+	if omitted > 0 {
+		line += fmt.Sprintf(" · 省略 %d 行", omitted)
+	}
+	m.appendLine(line)
+	return m, nil
+}
+
+func shortDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%d ms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
 // Update 处理按键、连接结果与后续帧。
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -278,6 +380,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(next, waitForEnvelope(m.conn))
 
+	case localMsg:
+		return m.handleLocalCommand(msg.ev)
+
 	case closedMsg:
 		// 连接已死，留着指针只会让后续 sendCmd 往一条废连接上写。
 		m.conn = nil
@@ -299,6 +404,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key == "ctrl+c" {
 		m.close()
 		return m, tea.Quit
+	}
+	// ctrl+x 只终止本机命令：它是用户自己敲的，随时可以叫停，不该被
+	// 审批面板或会话状态挡住。
+	if key == "ctrl+x" {
+		if m.local == nil {
+			return m, nil
+		}
+		m.local.Stop()
+		m.appendLine("正在终止本地命令…")
+		return m, nil
 	}
 	if m.approval != nil {
 		return m.handleApprovalKey(key)
@@ -334,7 +449,15 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.connectCmd()
 	case "enter":
 		text := strings.TrimSpace(m.input)
-		if text == "" || m.sessionID == "" {
+		if text == "" {
+			return m, nil
+		}
+		// !命令 在客户端本机执行：不需要会话，服务端没连上也能用。
+		if strings.HasPrefix(text, "!") {
+			m.input = ""
+			return m, m.startLocalCommand(text)
+		}
+		if m.sessionID == "" {
 			return m, nil
 		}
 		if text == "/models" {
@@ -717,7 +840,11 @@ func (m *Model) View() tea.View {
 		b.WriteString("▏\n")
 	}
 	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil {
-		b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [ctrl+c] 退出\n")
+		if m.local != nil {
+			b.WriteString("[enter] 发送  [ctrl+x] 终止本机命令  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
+		} else {
+			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [!] 本机命令  [ctrl+c] 退出\n")
+		}
 	}
 	return tea.NewView(b.String())
 }
@@ -733,6 +860,7 @@ func (m *Model) resetView() {
 	m.queuePanel = nil
 	m.modelPanel = nil
 	m.round, m.tokens = 0, 0
+	m.localLines, m.localOmitted = 0, 0
 	m.dialog = nil
 	m.approval = nil
 }
@@ -977,8 +1105,7 @@ func outputPreview(t domain.ToolResultPayload) []string {
 		return nil
 	}
 	raw := strings.Split(strings.TrimRight(t.Output, "\n"), "\n")
-	const indent = "  │ "
-	width := panelWidth - len([]rune(indent))
+	width := panelWidth - len([]rune(outputIndent))
 
 	var out []string
 	for i, line := range raw {
@@ -989,7 +1116,7 @@ func outputPreview(t domain.ToolResultPayload) []string {
 			return out
 		}
 		for _, chunk := range chunks {
-			out = append(out, indent+chunk)
+			out = append(out, outputIndent+chunk)
 		}
 	}
 	return out
@@ -1003,6 +1130,11 @@ func outputTailHint(t domain.ToolResultPayload) string {
 }
 
 func (m *Model) close() {
+	if m.local != nil {
+		// 退出客户端不该把 !命令 的进程组留在后台。
+		m.local.Stop()
+		m.local = nil
+	}
 	if m.conn != nil {
 		_ = m.conn.Close(websocket.StatusNormalClosure, "bye")
 		m.conn = nil

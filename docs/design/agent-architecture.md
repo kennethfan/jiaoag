@@ -90,7 +90,8 @@ graph TD
 | `internal/prompt` | 提示词分层装配（纯函数）、`{{var}}` 白名单替换、项目级确认与 hash（ADR-0012） |
 | `internal/app` | 建会话、提交任务、响应审批、取消、订阅；唯一的事务与广播位置 |
 | `internal/server` | 鉴权、帧编解码、连接注册、订阅桥接；无业务逻辑 |
-| `internal/tui` | 渲染、输入、审批面板 |
+| `internal/tui` | 渲染、输入、审批面板；`!命令` 经 `internal/localshell` 在客户端执行（ADR-0022） |
+| `internal/localshell` | 客户端本机命令：`sh -c` / `cmd /c`、按行流式回传、单行裁剪、超时与整组杀进程 |
 
 ---
 
@@ -306,6 +307,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 崩溃兜底 | 每个任务 goroutine `recover`：先收尾该任务未完成的 tool_call / 提案，再写终态（已取消则 `canceled`，否则 `failed{internal_error}`）；堆栈只进服务端日志 |
 | 同仓并发 | 只警告不拒绝：`session.created.shared_workspace` 列出同一 workspace（`Clean`+`EvalSymlinks` 归一）里还有未终态任务的会话 |
 | 界面队列 | TUI 从 `task.queued` / `task.status` 事件重建有序队列（重连全量回放同样成立），不新增协议帧；取消复用 `task.cancel`，队列面板与审批面板互斥 |
+| 本机命令 | TUI 里 `!命令` 由客户端进程执行（`sh -c` / `cmd /c`），不经服务端、不审批、不写审计/事件、不受执行后端约束，输出不进模型上下文；超时与 `ctrl+x` 整组杀进程（ADR-0022） |
 | 跨会话并发上限 | 全局 `slots`（默认 4）：拿不到槽的任务回队首，槽释放后 `pumpLocked` 补位；会话内 FIFO 不变 |
 | provider 速率 | 令牌桶装饰器，链为 `retry(rate(timeout(adapter)))`：重试也计入配额；`rpm` / `tpm` 为 0 时不包装 |
 | 重启恢复 | 关闭时 `queued` 保持 `queued`；启动收尾跳过它们，按 `created_at,id` 重建每会话 FIFO 并重新拉起；`running` / `waiting_approval` 仍标 `canceled`（ADR-0017） |
