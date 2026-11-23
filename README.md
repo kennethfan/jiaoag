@@ -39,9 +39,23 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时跑两个 job�
 
 ## 运行
 
+首次仍需要一份配置（见上）。之后进到想让它改的项目目录，直接启动 TUI：
+
 ```bash
-export JIAOAG_TOKEN=...
-./bin/jiaoag-server            # 默认监听 127.0.0.1:8787
+cd ~/agent/code/some-project
+/Users/kenneth/agent/code/jiaoag/bin/jiaoag-tui
+```
+
+TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。拉起时会给服务端传 `-exit-when-idle=30s`：最后一个客户端断开后 30 秒内没有新连接、也没有排队或运行中的任务，服务端自行优雅退出。所以多开 TUI 时，某一个退出不会踢掉其他人；如果已有服务端在跑则直接复用，也不会误杀。
+
+- `-no-spawn`：不自动拉起，连不上就报错（脚本/CI 用）。
+- `-server-bin`：指定 `jiaoag-server` 路径，默认依次找 PATH 与 TUI 同目录。
+- `-url` 指向远端地址时不会拉起本地进程。
+
+也可以手工分开跑（手工启动默认常驻，不会空闲退出）：
+
+```bash
+./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
 ./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出
 ```
 

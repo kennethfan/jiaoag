@@ -24,6 +24,8 @@ func main() {
 		url     = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
 		check   = flag.Bool("check", false, "只做一次连接与心跳验证后退出（用于自检/脚本）")
 		sesID   = flag.String("session", "", "恢复指定会话（进程重启后用 --session <id> 回到原会话）")
+		noSpawn = flag.Bool("no-spawn", false, "连不上时也不自动拉起本地服务端")
+		srvBin  = flag.String("server-bin", "", "jiaoag-server 路径（默认同目录或 PATH）")
 	)
 	flag.Parse()
 
@@ -48,6 +50,15 @@ func main() {
 	if *check {
 		runCheck(opts)
 		return
+	}
+
+	// 本地没有服务端时自动拉起一个，退出时再收掉；远端地址与 -no-spawn 不碰进程。
+	if !*noSpawn {
+		cleanup, err := ensureServer(context.Background(), cfg, *cfgPath, *srvBin, target)
+		if err != nil {
+			fatal(err)
+		}
+		defer cleanup()
 	}
 
 	if _, err := tea.NewProgram(tui.New(opts)).Run(); err != nil {

@@ -1,0 +1,80 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestTargetAddr(t *testing.T) {
+	cases := []struct {
+		target   string
+		host     string
+		port     string
+		hostport string
+	}{
+		{"ws://127.0.0.1:8787/ws", "127.0.0.1", "8787", "127.0.0.1:8787"},
+		{"ws://[::1]:9000/ws", "::1", "9000", "[::1]:9000"},
+		{"ws://localhost/ws", "localhost", "80", "localhost:80"},
+		{"wss://example.com/ws", "example.com", "443", "example.com:443"},
+	}
+	for _, c := range cases {
+		got, err := targetAddr(c.target)
+		if err != nil {
+			t.Fatalf("targetAddr(%q): %v", c.target, err)
+		}
+		if got.host != c.host || got.port != c.port || got.hostport != c.hostport {
+			t.Fatalf("targetAddr(%q) = %+v，期望 %s/%s/%s", c.target, got, c.host, c.port, c.hostport)
+		}
+	}
+
+	if _, err := targetAddr("ws:///ws"); err == nil {
+		t.Fatal("缺少主机名应报错")
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	loops := []string{"localhost", "LOCALHOST", "127.0.0.1", "127.1.2.3", "::1"}
+	for _, host := range loops {
+		if !isLoopbackHost(host) {
+			t.Fatalf("%q 应判定为回环", host)
+		}
+	}
+	for _, host := range []string{"example.com", "10.0.0.2", "0.0.0.0"} {
+		if isLoopbackHost(host) {
+			t.Fatalf("%q 不应判定为回环", host)
+		}
+	}
+}
+
+func TestResolveServerBinaryExplicit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "custom-server")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveServerBinary(path)
+	if err != nil {
+		t.Fatalf("显式路径: %v", err)
+	}
+	if got != path {
+		t.Fatalf("got %q，期望 %q", got, path)
+	}
+}
+
+func TestResolveServerBinaryFromPath(t *testing.T) {
+	dir := t.TempDir()
+	name := "jiaoag-server"
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := resolveServerBinary("")
+	if err != nil {
+		t.Fatalf("PATH 查找: %v", err)
+	}
+	if got != path {
+		t.Fatalf("got %q，期望 %q", got, path)
+	}
+}
