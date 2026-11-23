@@ -54,6 +54,25 @@ export JIAOAG_TOKEN=...
 curl -s 127.0.0.1:8787/healthz
 ```
 
+## 真实 provider 冒烟
+
+```bash
+make demo
+```
+
+一条命令起真实 server，在临时小项目上跑完整一轮「读代码 → 定位 bug → diff 审批 → 落盘 → 跑测试」，最后独立核验磁盘内容、重跑测试并打印审计。审批由脚本按 `allow_once` 裁决，等价于 TUI 里按 `y`。
+
+需要三个环境变量（也可写进 `~/.config/jiaoag/demo.env`，该文件不进仓库）：
+
+```bash
+export JIAOAG_DEMO_BASE_URL=https://apihub.agnes-ai.com/v1
+export JIAOAG_DEMO_MODEL=agnes-3.0-flash
+export JIAOAG_DEMO_API_KEY_FILE=~/.config/agnes/key
+make demo
+```
+
+可选：`JIAOAG_DEMO_PROVIDER_TYPE`（`openai` 默认 / `anthropic`）、`JIAOAG_DEMO_PORT`（默认 18787）、`JIAOAG_DEMO_KEEP=1`（成功也保留临时目录）。失败时现场自动保留并打印 `server.log` 尾部。
+
 ## 进度
 
 | 里程碑 | 内容 | 状态 |
