@@ -129,6 +129,9 @@ type ApprovalKind string
 const (
 	ApprovalDiff    ApprovalKind = "diff"
 	ApprovalCommand ApprovalKind = "command"
+	// ApprovalExternal 是外部工具（MCP / 插件）的调用审批：既没有 diff 也
+	// 没有 argv，宿主只能展示工具名、来源与参数摘要。
+	ApprovalExternal ApprovalKind = "external"
 )
 
 // Decision 是审批结论；空值表示尚未裁决。

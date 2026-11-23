@@ -89,6 +89,10 @@ type approvalView struct {
 	backend   string
 	timeoutMS int64
 	reason    string
+	// 外部工具（MCP）没有 diff / argv：面板展示来源、工具名与参数摘要。
+	tool   string
+	source string
+	args   string
 	// added/removed 是 diff 的规模，来自 patch.Stats：面板头上一行就能
 	// 让人知道这次改动有多大，不必先翻到底。
 	added   int
@@ -516,6 +520,18 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 				m.appendLine("⚠ 待审批命令：" + compact(strings.Join(a.Command, " ")))
 				return nil
 			}
+			if a.Kind == domain.ApprovalExternal {
+				m.approval = &approvalView{
+					id:     string(a.ApprovalID),
+					kind:   string(a.Kind),
+					tool:   a.Tool,
+					source: a.Source,
+					args:   a.Args,
+					reason: a.Reason,
+				}
+				m.appendLine(fmt.Sprintf("⚠ 待审批外部工具：%s（%s）", a.Tool, a.Source))
+				return nil
+			}
 			added, removed := patch.Stats(a.Diff)
 			m.approval = &approvalView{
 				id:        string(a.ApprovalID),
@@ -697,6 +713,9 @@ func (m *Model) renderApprovalPanel() string {
 	if v.kind == string(domain.ApprovalCommand) {
 		return m.renderCommandPanel()
 	}
+	if v.kind == string(domain.ApprovalExternal) {
+		return m.renderExternalPanel()
+	}
 	var b strings.Builder
 	// 截断时 +N −M 只是前 256 KB 的统计，必须写在脸上。
 	suffix := ""
@@ -755,6 +774,33 @@ func (m *Model) renderCommandPanel() string {
 	}
 	if v.reason != "" {
 		fmt.Fprintf(&b, "  判定      %s\n", v.reason)
+	}
+	b.WriteString(strings.Repeat("─", 72))
+	b.WriteByte('\n')
+	b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝\n")
+	b.WriteString("[ctrl+r] 重连  [ctrl+c] 退出\n")
+	return b.String()
+}
+
+// renderExternalPanel 展示一次外部工具调用。用户看不到 argv/diff，能判断的
+// 只有「哪个来源的哪个工具、要带什么参数」——这三项必须完整可读。
+func (m *Model) renderExternalPanel() string {
+	v := m.approval
+	var b strings.Builder
+	b.WriteString("⇄ 待审批外部工具\n")
+	b.WriteString(strings.Repeat("─", panelWidth))
+	b.WriteByte('\n')
+	fmt.Fprintf(&b, "  tool      %s\n", orDash(v.tool))
+	fmt.Fprintf(&b, "  source    %s\n", orDash(v.source))
+	if v.args != "" {
+		chunks := wrapText(v.args, panelWidth-12)
+		b.WriteString("  args      " + chunks[0] + "\n")
+		for _, chunk := range chunks[1:] {
+			b.WriteString("            " + chunk + "\n")
+		}
+	}
+	if v.reason != "" {
+		fmt.Fprintf(&b, "  判定      %s\n", wrapOne(v.reason, panelWidth-12))
 	}
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')

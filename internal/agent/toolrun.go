@@ -38,6 +38,12 @@ func (a *Agent) recordPrepared(ctx context.Context, task domain.Task, toolCall *
 		// 之后这条记录会永远停在 running，看上去像是跑过。真正的
 		// waiting_approval / running 由判定之后的分支产生。
 		toolCall.Status = domain.ToolPrepared
+	case prepared.External != nil:
+		// 外部工具没有可展示的 argv / diff，但来源必须进事件：事后要能回答
+		// 「这一轮调用了哪个 MCP server」。
+		payload.SideEffect = "external:" + prepared.External.Source
+		payload.Risk = domain.RiskHigh
+		toolCall.Status = domain.ToolPrepared
 	default:
 		payload.SideEffect = perm.Describe(prepared.Spec)
 		toolCall.Status = domain.ToolRunning
@@ -140,6 +146,10 @@ func (a *Agent) abortTool(ctx context.Context, task domain.Task, toolCall *domai
 		// 命令没有跑到「有退出码」这一步：审计里记执行失败，而不是策略放行。
 		audits = append(audits, execAudit(auditExecFailed, "system", prepared,
 			tools.Result{IsError: true}, decision))
+	}
+	if prepared.External != nil {
+		audits = append(audits, externalAudit(auditExternalFailed, "system", prepared,
+			decision, tools.Result{IsError: true}))
 	}
 	if _, err := a.finishTool(ctx, task, toolCall, tools.Result{Content: text, IsError: true}, started, audits); err != nil {
 		return llm.Block{}, err

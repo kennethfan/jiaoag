@@ -365,23 +365,32 @@ func (a *Agent) runTool(ctx context.Context, task domain.Task, round int, block 
 		// 用户离开十分钟再批准，tool.result 会写一个 600000 ms。
 		started = started.Add(time.Since(waitStart))
 	case decision.Verdict == perm.Allow:
-		if prepared.Command != nil {
+		if prepared.Command != nil || prepared.External != nil {
 			prepared.LogPath = a.logPath(task, toolCall.ID)
-			// 免审批的命令同样要显式进入 running：执行可能跑很久，投影不能
-			// 停在 prepared（那会被读成「还没人要它跑」）。
+			// 免审批的命令 / 外部工具同样要显式进入 running：执行可能跑很久，
+			// 投影不能停在 prepared（那会被读成「还没人要它跑」）。
 			if rerr := a.markCommandRunning(ctx, task, toolCall); rerr != nil {
 				err = rerr
 				break
 			}
 		}
 		result, err = a.opts.Tools.Execute(ctx, prepared)
-		if err == nil && prepared.Command != nil {
+		switch {
+		case err != nil:
+		case prepared.Command != nil:
 			audits = append(audits, execAudit(auditExecAllow, "policy", prepared, result, decision))
+		case prepared.External != nil:
+			audits = append(audits, externalAudit(auditExternalAllow, "policy", prepared, decision, result))
 		}
 	case prepared.Command != nil:
 		// 命令：先落审批请求，等用户看到真实 argv 与 cwd 再决定。
 		waitStart := time.Now()
 		result, audits, err = a.proposeCommand(ctx, task, toolCall, prepared, decision)
+		started = started.Add(time.Since(waitStart))
+	case prepared.External != nil:
+		// 外部工具：没有 diff / argv 可审，用户看的是来源、工具名与参数。
+		waitStart := time.Now()
+		result, audits, err = a.proposeExternal(ctx, task, toolCall, prepared, decision)
 		started = started.Add(time.Since(waitStart))
 	default:
 		// 判定要求审批，但工具没给出可审的东西（没有 diff、没有命令）：

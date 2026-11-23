@@ -60,13 +60,16 @@ type Prepared struct {
 	// Command 非空表示这是一次命令执行。工具只填 argv/cwd/env，执行后端由
 	// 宿主注入（ADR-0011），工具无权指定。
 	Command *Command
+	// External 非空表示工具在宿主进程之外执行（MCP / 插件）：宿主既拿不到
+	// diff，也拿不到 argv，只能在调用前后做审批与审计。它是 ADR-0001 信任
+	// 模型的一部分——外部工具是受信代码，不是沙箱。
+	External *External
 	// LogPath 由 agent 填入：它知道 session/task/tool_call 三元组，工具不需要
 	// 知道会话标识。为空表示不落全文日志。
 	LogPath string
 }
 
 // Change 是一次「将要发生的写入」。
-//
 // 它在 Prepare 阶段就算好（旧内容、旧摘要、新内容、diff），审批通过后才由
 // agent 调 workspace.Write 落盘。写入工具的 Execute 不碰磁盘，因此「谁写的」
 // 只有一条路径，CAS 也只需要在一处实现。
@@ -81,6 +84,18 @@ type Change struct {
 	// Truncated 表示 diff 超过 patch.MaxDiffBytes 被截断：审批面板要提示用户
 	// 「你看到的不是全部」，不能让人盲批一份没看全的改动。
 	Truncated bool
+}
+
+// External 描述一次由宿主之外执行的工具调用。
+//
+// 与 Change / Command 的区别：宿主无法在准备阶段算清后果，也无法代劳写盘；
+// 能提供的只有「来源可追溯 + 审批门控 + 结果审计」。因此它不参与
+// propose_write 的中介路径，永远走独立的审批分支。
+type External struct {
+	// Source 是工具来源，如 mcp:filesystem。审计与审批面板都靠它定位。
+	Source string
+	// Trusted 表示本地配置显式放行了这个来源；只有配置能给出，工具不能自称。
+	Trusted bool
 }
 
 // Result 是工具执行结果。IsError 表示「这次调用失败」，不是「任务失败」：

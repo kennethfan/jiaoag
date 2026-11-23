@@ -182,6 +182,11 @@ type ApprovalRequestedPayload struct {
 	Backend   string `json:"backend,omitempty"`
 	TimeoutMS int64  `json:"timeout_ms,omitempty"`
 	Reason    string `json:"reason,omitempty"`
+	// 以下字段只对 kind=external 有值：外部工具没有 diff / argv 可审，
+	// 用户至少要看见「哪个来源的哪个工具、带了什么参数」。
+	Tool   string `json:"tool,omitempty"`
+	Source string `json:"source,omitempty"`
+	Args   string `json:"args,omitempty"`
 }
 
 type ApprovalResolvedPayload struct {

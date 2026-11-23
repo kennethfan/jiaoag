@@ -30,7 +30,36 @@ type Config struct {
 	Policy    Policy     `yaml:"policy"`
 	Exec      Exec       `yaml:"exec"`
 	Providers []Provider `yaml:"providers"`
+	MCP       MCP        `yaml:"mcp"`
 }
+
+// MCP 是外部工具来源的启动配置（ADR-0014）。只支持 stdio。
+type MCP struct {
+	Servers []MCPServer `yaml:"servers"`
+}
+
+// MCPServer 是一台 stdio MCP server。
+type MCPServer struct {
+	// Name 是工具前缀与审计来源，只允许 [A-Za-z0-9_-]。
+	Name string `yaml:"name"`
+	// Command 与 Args 拼接成 argv，不经过 shell。
+	Command string   `yaml:"command"`
+	Args    []string `yaml:"args"`
+	// Env 是追加到宿主环境之上的变量（明文）；密钥建议用 ${VAR} 由调用方
+	// 启动 server 前注入，而不是写进配置文件。
+	Env map[string]string `yaml:"env"`
+	// Dir 是子进程工作目录；支持 ~ 展开。
+	Dir string `yaml:"dir"`
+	// TimeoutSeconds 是单次 tools/call 的上限，默认 60，范围 1–600。
+	TimeoutSeconds int `yaml:"timeout_s"`
+	// Trust 取 ask（默认，每次审批）或 allow（本地配置放行，仍记审计）。
+	Trust string `yaml:"trust"`
+	// Enabled 默认 true；显式 false 用于临时停用而不删配置。
+	Enabled *bool `yaml:"enabled"`
+}
+
+// IsEnabled 返回是否启用，未配置视为启用。
+func (s MCPServer) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
 
 // Policy 是本地权限规则的位置。外部规则只能收紧（ADR-0010）。
 type Policy struct {
@@ -304,11 +333,73 @@ func (c *Config) applyDefaults() {
 	if c.Exec.LogLimit <= 0 {
 		c.Exec.LogLimit = DefaultExecLogLimit
 	}
+	for i := range c.MCP.Servers {
+		s := &c.MCP.Servers[i]
+		if s.TimeoutSeconds <= 0 {
+			s.TimeoutSeconds = 60
+		}
+		if s.Trust == "" {
+			s.Trust = "ask"
+		}
+	}
+}
+
+// validateMCP 校验外部工具配置。工具名会进入系统提示与审计，非法名必须
+// 在启动时挡住，而不是等到模型调用时才失败。
+func (c *Config) validateMCP() error {
+	seen := make(map[string]bool, len(c.MCP.Servers))
+	for i, s := range c.MCP.Servers {
+		prefix := fmt.Sprintf("mcp.servers[%d]", i)
+		if s.Name == "" {
+			return fmt.Errorf("%s.name 不能为空", prefix)
+		}
+		if !validMCPName(s.Name) {
+			return fmt.Errorf("%s.name 只允许字母、数字、'_'、'-'，当前为 %q", prefix, s.Name)
+		}
+		if seen[s.Name] {
+			return fmt.Errorf("%s.name 重复：%s", prefix, s.Name)
+		}
+		seen[s.Name] = true
+		if s.Command == "" {
+			return fmt.Errorf("%s.command 不能为空", prefix)
+		}
+		switch s.Trust {
+		case "ask", "allow":
+		default:
+			return fmt.Errorf("%s.trust 必须是 ask 或 allow，当前为 %q", prefix, s.Trust)
+		}
+		if s.TimeoutSeconds < 0 || s.TimeoutSeconds > 600 {
+			return fmt.Errorf("%s.timeout_s 必须在 0–600 之间，当前为 %d", prefix, s.TimeoutSeconds)
+		}
+		if s.Dir != "" {
+			if _, err := ExpandHome(s.Dir); err != nil {
+				return fmt.Errorf("%s.dir: %w", prefix, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validMCPName(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateServer 校验服务端启动所需的全部字段。
 func (c *Config) ValidateServer() error {
 	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	if err := c.validateMCP(); err != nil {
 		return err
 	}
 	if len(c.Providers) == 0 {

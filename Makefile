@@ -2,7 +2,7 @@ GO ?= go
 STATICCHECK_VERSION ?= v0.8.2
 STATICCHECK = $(GO) run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 
-.PHONY: check fmt vet staticcheck tidy-check test build demo
+.PHONY: check fmt vet staticcheck tidy-check test build demo demo-mcp
 
 # 本地与 CI 共用的静态检查入口。
 check: fmt vet staticcheck tidy-check test
@@ -35,3 +35,8 @@ build:
 # 需要 JIAOAG_DEMO_* 环境变量（或 ~/.config/jiaoag/demo.env），见 scripts/demo.sh。
 demo:
 	@scripts/demo.sh
+
+# MCP 冒烟：官方 filesystem server（stdio）+ 真实 provider，只走外部工具读文件。
+# 需要 npx/node 与 JIAOAG_DEMO_* 环境变量，见 scripts/demo-mcp.sh。
+demo-mcp:
+	@scripts/demo-mcp.sh

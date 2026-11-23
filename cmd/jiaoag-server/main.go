@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"syscall"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/event"
 	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	mcppkg "github.com/kennethfan/jiaoag/internal/mcp"
 	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/server"
 	"github.com/kennethfan/jiaoag/internal/store"
@@ -91,7 +93,10 @@ func run(cfgPath, listen string) error {
 	}
 	application := app.New(db, event.NewHub())
 	defer application.Close()
-	if err := application.ConfigureRuntime(runtimeDeps(cfg, log, backend, ruleset)); err != nil {
+
+	mcpManager := mcppkg.NewManager(mcppkg.Options{Servers: mcpServers(cfg), Logger: log})
+	defer mcpManager.Close()
+	if err := application.ConfigureRuntime(runtimeDeps(cfg, log, backend, ruleset, mcpManager)); err != nil {
 		return err
 	}
 	log.Info("数据已就绪", "db", cfg.Storage.DBPath)
@@ -107,7 +112,7 @@ func run(cfgPath, listen string) error {
 }
 
 // runtimeDeps 把配置翻译成执行依赖：app 不认识 config，这里做唯一的接线。
-func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset) app.RuntimeDeps {
+func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset, mcpManager *mcppkg.Manager) app.RuntimeDeps {
 	outputDir, err := config.ExpandHome(cfg.Storage.OutputDir)
 	if err != nil {
 		outputDir = cfg.Storage.OutputDir
@@ -134,13 +139,15 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		Tools: func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error) {
 			env.EventLimit = cfg.Exec.EventLimit
 			env.LogLimit = cfg.Exec.LogLimit
-			return tools.NewRegistry(
+			base := []tools.Tool{
 				tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws),
 				tools.NewWriteFile(ws), tools.NewEditFile(ws),
 				tools.NewRunCommand(ws, env), tools.NewCheckCommand(ws, env),
 				tools.NewReadOutput(env),
 				tools.NewGitStatus(ws, env), tools.NewGitDiff(ws, env), tools.NewGitLog(ws, env),
-			)
+			}
+			// MCP 是增强不是前提：server 起不来时 Tools 返回空列表，内置工具照常。
+			return tools.NewRegistry(append(base, mcpManager.Tools(context.Background(), ws.Root())...)...)
 		},
 		Backend:     backend,
 		Ruleset:     ruleset,
@@ -157,6 +164,44 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		ContextBudget:      cfg.Agent.ContextBudgetChars,
 		Logger:             log,
 	}
+}
+
+// mcpServers 把配置翻译成 Manager 的启动描述。禁用的条目直接不出现：
+// 停用不该是「启动后再关」，那会白起一个进程。
+func mcpServers(cfg *config.Config) []mcppkg.Server {
+	out := make([]mcppkg.Server, 0, len(cfg.MCP.Servers))
+	for _, s := range cfg.MCP.Servers {
+		if !s.IsEnabled() {
+			continue
+		}
+		argv := make([]string, 0, 1+len(s.Args))
+		argv = append(argv, s.Command)
+		argv = append(argv, s.Args...)
+		dir := s.Dir
+		if dir != "" {
+			if expanded, err := config.ExpandHome(dir); err == nil {
+				dir = expanded
+			}
+		}
+		env := make([]string, 0, len(s.Env))
+		keys := make([]string, 0, len(s.Env))
+		for k := range s.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			env = append(env, k+"="+s.Env[k])
+		}
+		out = append(out, mcppkg.Server{
+			Name:    s.Name,
+			Argv:    argv,
+			Env:     env,
+			Dir:     dir,
+			Timeout: time.Duration(s.TimeoutSeconds) * time.Second,
+			Trust:   s.Trust == "allow",
+		})
+	}
+	return out
 }
 
 func exit(err error) {

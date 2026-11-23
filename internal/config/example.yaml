@@ -69,3 +69,23 @@ providers:
     # 每分钟请求数 / token 数上限；0 = 不限。超出配额的请求会等待，不会失败。
     # rpm: 60
     # tpm: 200000
+
+# MCP：以 stdio 启动的外部工具服务器（ADR-0014）。
+# 每台 server 一个子进程，工具暴露为 mcp__<name>__<tool>；外部工具与 server
+# 同权限，不是沙箱。默认每次调用都要审批，trust: allow 才会整台免审并记审计。
+# 启动失败只跳过该 server，不会让任务构造失败。
+mcp:
+  servers: []
+  # - name: filesystem
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/me/code"]
+  #   # 传给子进程的环境变量（在继承当前环境的基础上追加）。
+  #   env:
+  #     LOG_LEVEL: info
+  #   # 子进程工作目录；默认继承 server 的 cwd。
+  #   dir: ~/code
+  #   # 单次 tools/call 的超时秒数，默认 60，范围 1-600。
+  #   timeout_s: 60
+  #   # ask（默认，每次审批）或 allow（本地配置放行，仍记 external.allow 审计）。
+  #   trust: ask
+  #   enabled: true

@@ -221,7 +221,8 @@ type TightenRule interface {
 //  1. 写入提案 → 必审批（M4 的 diff 审批）；
 //  2. 只读 → 放行（read_output 与三个 git 只读工具走这里）；
 //  3. 命令 → 元字符 + 白名单；不做任何「清洗后匹配」；
-//  4. 其余 → 必审批。
+//  4. 外部工具 → 只有本地配置的 trust 能放行，其余必审批；
+//  5. 其余 → 必审批。
 func (r *Ruleset) Evaluate(ctx context.Context, p tools.Prepared) Decision {
 	if err := ctx.Err(); err != nil {
 		return Decision{Verdict: RequireUser, Reason: "context_canceled: " + err.Error()}
@@ -232,6 +233,23 @@ func (r *Ruleset) Evaluate(ctx context.Context, p tools.Prepared) Decision {
 	// 收紧规则先于只读短路：本地策略必须能让 git 只读工具也落到审批。
 	if d := r.tighten(p.Call.Name, p.Command); d != nil {
 		return *d
+	}
+	// 外部工具不能靠 spec.Effects 自证安全：声明 read 不等于真的只读。
+	// 唯一能放行的是本地配置的 trust=allow，且必须留审计。
+	if p.External != nil {
+		if p.External.Trusted {
+			return Decision{
+				Verdict:       Allow,
+				Reason:        "external_trusted: 本地配置放行了该外部工具",
+				PolicyVersion: r.version(),
+				RuleID:        "external_trusted",
+			}
+		}
+		return Decision{
+			Verdict:       RequireUser,
+			Reason:        "external_tool: 外部工具调用必须经用户批准",
+			PolicyVersion: r.version(),
+		}
 	}
 	writes, onlyRead := effectsClass(p.Spec)
 	if writes {

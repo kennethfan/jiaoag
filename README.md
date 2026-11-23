@@ -73,6 +73,14 @@ make demo
 
 可选：`JIAOAG_DEMO_PROVIDER_TYPE`（`openai` 默认 / `anthropic`）、`JIAOAG_DEMO_PORT`（默认 18787）、`JIAOAG_DEMO_KEEP=1`（成功也保留临时目录）。失败时现场自动保留并打印 `server.log` 尾部。
 
+MCP 另有一条冒烟入口：
+
+```bash
+make demo-mcp
+```
+
+它用官方 `@modelcontextprotocol/server-filesystem`（stdio，经 `npx` 启动）作为外部工具源，prompt 要求「只用 `mcp__fs__read_text_file` 读文件」，脚本据此核验：模型确实选了外部工具、结果回填到对话、`external.approved` 进了审计。可选 `JIAOAG_DEMO_MCP_PORT`（默认 18788）、`JIAOAG_DEMO_MCP_SERVER`（换一个现成 server，跳过 npx 检查）。
+
 ## 进度
 
 | 里程碑 | 内容 | 状态 |
@@ -85,6 +93,7 @@ make demo
 | M5 | `run_command` + 参数级权限策略 + 输出落文件 + git 只读 + 审计 | ✅ |
 | M6 | 多会话并行、同仓警告、会话内 FIFO 排队、panic 兜底、断连全量回放 | ✅ |
 | 加固 | 命令资源限制（Unix rlimit / Windows Job Object）、并发与配额（全局槽 + 队列深度 + provider 令牌桶）、TUI 队列面板、CI 双 job | ✅ |
+| v2.0 | MCP stdio 工具源：外部工具审批（默认逐次）、`trust: allow`、`external.*` 审计、失败隔离 | ✅ |
 
 ## 安全边界
 
