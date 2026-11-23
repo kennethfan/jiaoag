@@ -67,7 +67,7 @@ func retryable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrAuth) || errors.Is(err, ErrBadRequest) || errors.Is(err, ErrContextOverflow) {
+	if errors.Is(err, ErrAuth) || errors.Is(err, ErrQuotaExhausted) || errors.Is(err, ErrBadRequest) || errors.Is(err, ErrContextOverflow) {
 		return false
 	}
 	return errors.Is(err, ErrRateLimited) || errors.Is(err, ErrTransient)

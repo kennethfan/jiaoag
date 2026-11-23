@@ -362,7 +362,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 扩展点 | 可插？ | 机制 | 时间 |
 |---|---|---|---|
 | 工具 | ✅ | `tools.Source`：builtin / MCP / stdio 插件 | v1 留缝；v2 MCP 已实现（ADR-0014） |
-| LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表 | v2 |
+| LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表；多 key 轮询与冷却已实现（ADR-0020），注册表未做 | v2 |
 | UI | ✅ | 协议客户端，Web / 移动端即另一个 WS 客户端 | 已成立 |
 | 事件消费者 / 审计导出 | ✅ | 订阅事件流 | v2 |
 | 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |

@@ -31,11 +31,13 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时跑两个 job�
 
 随后编辑该文件：`server.token` 与各 `providers[].api_key` 支持三种写法——明文、`$ENV_NAME`、`file:/abs/path`。
 
+一个 provider 可以配多把 key：把 `api_key` 换成 `api_keys` 列表（写法同上，优先于 `api_key`）。请求在这些 key 之间轮询；鉴权失败、额度不足或限流时该 key 进入冷却，后续请求自动跳过，全部 key 都不可用时才报错。单 key 配置行为不变。
+
 执行类工具的资源上限配在 `exec.limits`（`cpu_seconds` / `memory_mb` / `max_files`，0 表示不限制）：Unix 通过 `sh` 包装的 `ulimit` 施加；Windows 用 Job Object 施加 `cpu_seconds` 与 `memory_mb`，并置 `KILL_ON_JOB_CLOSE`，句柄关闭时连带回收整棵进程树（`max_files` 在 Windows 没有对应机制）。命令结束（正常退出、取消、超时）都会统一收掉整棵进程树——Unix 杀进程组、Windows 用 `taskkill /T`——不留孤儿进程。
 
 请求了限制却施加失败（创建 Job、设置限额、把子进程放进 Job 任一环节不成立）会直接报错，而不是静默按无限制运行；不支持的平台（如 32 位 Windows）在审计里标记 `limits_degraded`。
 
-并发与配额：`agent.max_concurrent_tasks`（默认 4）限制跨会话同时执行的任务数，槽满时任务回队首等待；`agent.max_queue_depth`（默认 16）限制单会话排队深度，超出时 `task.submit` 返回 `queue_full`；`providers[].rpm` / `tpm` 是每分钟请求数与 token 数上限（0 = 不限），超出配额的调用会等待而不是失败。
+并发与配额：`agent.max_concurrent_tasks`（默认 4）限制跨会话同时执行的任务数，槽满时任务回队首等待；`agent.max_queue_depth`（默认 16）限制单会话排队深度，超出时 `task.submit` 返回 `queue_full`；`agent.max_rounds` 是单任务轮数上限（默认 24，设为 `0` 表示不限制）；`providers[].rpm` / `tpm` 是每分钟请求数与 token 数上限（0 = 不限），超出配额的调用会等待而不是失败。
 
 ## 运行
 
@@ -113,6 +115,7 @@ make demo-mcp
 | v2.2 | 上下文压缩：超预算 80% 把较早轮次摘成 `context.compacted` 事件，保留最近 2 轮，失败降级 | ✅ |
 | v2.3 | 重启续跑：`queued` 任务重启后自动恢复（`agent.resume_queued`，默认开），执行中任务仍 canceled | ✅ |
 | v2.4 | 跨会话记忆：工作区 `MEMORY.md` 注入 + `remember` 工具（追加走 diff 审批），`agent.memory` 默认开 | ✅ |
+| v2.5 | 单 provider 多 key：`api_keys` 轮询，鉴权 / 额度 / 限流失败冷却剔除（ADR-0020） | ✅ |
 
 ## 安全边界
 

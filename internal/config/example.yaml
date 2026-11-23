@@ -34,7 +34,7 @@ exec:
 
 agent:
   # 单个任务的最大轮次，兜底防止失控循环。
-  max_rounds: 24
+  max_rounds: 24          # 单任务轮数上限；0 表示不限制
   # 单条命令的超时秒数（exec.timeout_s 未配置时沿用）。
   command_timeout_seconds: 120
   # 上下文预算（UTF-8 字符数）。超出时从最旧一轮开始丢弃，system 与
@@ -60,7 +60,12 @@ providers:
     type: openai
     base_url: https://api.deepseek.com/v1
     model: deepseek-chat
+    # 单 key 写法；多 key 用 api_keys（优先于 api_key）。多 key 时请求轮询，
+    # 鉴权 / 额度 / 限流失败的 key 冷却一段时间后自动跳过。
     api_key: $DEEPSEEK_API_KEY
+    # api_keys:
+    #   - $DEEPSEEK_API_KEY_1
+    #   - $DEEPSEEK_API_KEY_2
     # 单次尝试的首块超时（秒），默认 120。流式收到首块后改为空闲超时。
     timeout_seconds: 120
     # 只对限流与暂时性失败生效，默认 2；写 0 表示不重试。

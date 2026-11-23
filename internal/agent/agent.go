@@ -116,7 +116,7 @@ func New(opts Options) (*Agent, error) {
 	case opts.Recorder == nil:
 		return nil, errors.New("agent: 缺少 Recorder")
 	}
-	if opts.MaxRounds <= 0 {
+	if opts.MaxRounds == 0 {
 		opts.MaxRounds = DefaultMaxRounds
 	}
 	if opts.ContextBudget <= 0 {
@@ -170,7 +170,12 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 	overflowRetried := false
 	lastCompact := 0
 
-	for round := 1; round <= a.opts.MaxRounds; round++ {
+	for round := 1; ; round++ {
+		// 负数是「不限制」的显式标记：只有正数才在轮次用尽时收尾。
+		if a.opts.MaxRounds > 0 && round > a.opts.MaxRounds {
+			return a.finish(ctx, task, domain.TaskFailed, "max_rounds",
+				fmt.Sprintf("超过最大轮数 %d，任务未完成", a.opts.MaxRounds), usage)
+		}
 		if ctx.Err() != nil {
 			return a.finish(ctx, task, domain.TaskCanceled, "canceled", "", usage)
 		}
@@ -237,9 +242,6 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 		}
 		history = append(history, llm.ToolResultMessage(results...))
 	}
-
-	return a.finish(ctx, task, domain.TaskFailed, "max_rounds",
-		fmt.Sprintf("超过最大轮数 %d，任务未完成", a.opts.MaxRounds), usage)
 }
 
 // callModel 发起一轮模型调用，记录 assistant.start / 增量 / assistant.message。

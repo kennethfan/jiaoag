@@ -15,6 +15,7 @@ import (
 var (
 	ErrRateLimited       = errors.New("llm: 触发限流")
 	ErrAuth              = errors.New("llm: 鉴权失败")
+	ErrQuotaExhausted    = errors.New("llm: 额度不足")
 	ErrBadRequest        = errors.New("llm: 请求被拒绝")
 	ErrTransient         = errors.New("llm: 暂时性失败")
 	ErrContextOverflow   = errors.New("llm: 上下文超限")
@@ -45,6 +46,10 @@ func classifyError(provider string, status int, retryAfter string, body []byte) 
 	switch {
 	case status == http.StatusTooManyRequests:
 		return &RateLimitError{Provider: provider, RetryAfter: after, Message: message}
+	case status == http.StatusPaymentRequired || isQuotaExhausted(body):
+		// 额度耗尽也常被包成 400/403，识别要排在鉴权与通用 4xx 之前，
+		// 否则会被当成永久失败而白白放弃换 key。
+		return fmt.Errorf("llm: %s 额度不足（HTTP %d）：%s: %w", provider, status, message, ErrQuotaExhausted)
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		return fmt.Errorf("llm: %s 鉴权失败（HTTP %d）：%s: %w", provider, status, message, ErrAuth)
 	case status == http.StatusRequestTimeout || status == http.StatusTooEarly:
@@ -90,6 +95,23 @@ func isContextOverflow(body []byte) bool {
 		"context window",
 		"prompt is too long",
 		"input is too long",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isQuotaExhausted 识别两家与聚合网关各自的额度耗尽信号。
+func isQuotaExhausted(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	for _, marker := range []string{
+		"insufficient_quota",
+		"insufficient credits",
+		"credit balance is too low",
+		"exceeded your current quota",
+		"billing hard limit",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

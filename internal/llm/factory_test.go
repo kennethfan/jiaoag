@@ -42,6 +42,56 @@ func TestNewResolvesAPIKey(t *testing.T) {
 	}
 }
 
+func TestNewWiresKeyedProvider(t *testing.T) {
+	p, err := New(config.Provider{
+		Name:    "p",
+		Type:    "openai",
+		BaseURL: "https://example.com/v1",
+		Model:   "m",
+		APIKeys: []config.Secret{"k1", "k2", "k1"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	kp, ok := p.(*retryProvider).next.(*timeoutProvider).next.(*keyedProvider)
+	if !ok {
+		t.Fatalf("多 key 最内层应为 *keyedProvider，实际 %T", p.(*retryProvider).next.(*timeoutProvider).next)
+	}
+	if len(kp.keys) != 2 {
+		t.Fatalf("重复 key 应去重，实际 %d 把", len(kp.keys))
+	}
+	for i, want := range []string{"k1", "k2"} {
+		if got := kp.keys[i].(*openaiAdapter).apiKey; got != want {
+			t.Fatalf("第 %d 把 key = %q，期望 %q", i, got, want)
+		}
+	}
+	if _, ok := p.(Streamer); !ok {
+		t.Fatal("多 key 组合后必须仍实现 Streamer")
+	}
+}
+
+func TestNewSingleKeyStaysUnwrapped(t *testing.T) {
+	p, err := New(config.Provider{
+		Name: "p", Type: "openai", BaseURL: "https://example.com", Model: "m", APIKey: "only",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := p.(*retryProvider).next.(*timeoutProvider).next.(*openaiAdapter); !ok {
+		t.Fatalf("单 key 不应被 keyedProvider 包住：%T", p.(*retryProvider).next.(*timeoutProvider).next)
+	}
+}
+
+func TestNewReportsAPIKeysIndex(t *testing.T) {
+	_, err := New(config.Provider{
+		Name: "p", Type: "openai", BaseURL: "https://example.com", Model: "m",
+		APIKeys: []config.Secret{"ok", "$JIAOAG_NO_SUCH_KEY"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "api_keys[1]") {
+		t.Fatalf("应指出第几把 key 解析失败：%v", err)
+	}
+}
+
 func TestNewWiresDecoratorChain(t *testing.T) {
 	t.Setenv("JIAOAG_TEST_KEY", "sk-env")
 	timeoutSeconds, retries := 20, 0

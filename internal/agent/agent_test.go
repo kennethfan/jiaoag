@@ -288,6 +288,35 @@ func TestRunStopsAtMaxRounds(t *testing.T) {
 	}
 }
 
+func TestRunUnlimitedRoundsWhenNegativeMax(t *testing.T) {
+	toolRound := streamScript{chunks: []llm.Chunk{
+		{ToolCallDelta: &llm.ToolCallDelta{Index: 0, ID: "call_x", Name: "glob"}},
+		{ToolCallDelta: &llm.ToolCallDelta{Index: 0, ArgsFragment: `{"pattern":"*.txt"}`}},
+		{Done: true, StopReason: llm.StopToolUse},
+	}}
+	scripts := make([]streamScript, 0, 26)
+	for i := 0; i < 25; i++ {
+		scripts = append(scripts, toolRound)
+	}
+	scripts = append(scripts, streamScript{chunks: []llm.Chunk{
+		{TextDelta: "做完了"},
+		{Done: true, StopReason: llm.StopEnd},
+	}})
+	provider := &scriptedProvider{scripts: scripts}
+	rec := &fakeRecorder{}
+	ag, task := newTestAgent(t, provider, rec, -1)
+
+	if err := ag.Run(context.Background(), task); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if status := rec.lastStatus(); status.To != domain.TaskCompleted {
+		t.Fatalf("负数 max_rounds 应表示不限制，得到 %+v", status)
+	}
+	if provider.calls != 26 {
+		t.Fatalf("调用次数 = %d，期望 26", provider.calls)
+	}
+}
+
 func TestRunCanceledRecordsTerminalState(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	provider := &scriptedProvider{scripts: []streamScript{{

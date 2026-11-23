@@ -121,8 +121,9 @@ type Storage struct {
 
 // Agent 是自主循环的执行约束。
 type Agent struct {
-	MaxRounds             int `yaml:"max_rounds"`
-	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
+	// MaxRounds 是单任务最多轮数；0 表示不限制，留空用默认值 24。
+	MaxRounds             *int `yaml:"max_rounds"`
+	CommandTimeoutSeconds int  `yaml:"command_timeout_seconds"`
 	// ContextBudgetChars 是上下文预算（UTF-8 字符数），超出的最旧轮次会被丢弃。
 	ContextBudgetChars int `yaml:"context_budget_chars"`
 	// ContextCompact 控制上下文压缩：auto（默认）超出预算 80% 时把最旧轮次
@@ -160,6 +161,17 @@ const (
 	MemoryOff  = "off"
 )
 
+// DefaultMaxRounds 是未配置 agent.max_rounds 时的轮数上限。
+const DefaultMaxRounds = 24
+
+// MaxRoundsValue 返回生效的轮数上限；0 表示不限制。
+func (a Agent) MaxRoundsValue() int {
+	if a.MaxRounds == nil {
+		return DefaultMaxRounds
+	}
+	return *a.MaxRounds
+}
+
 // DefaultMaxConcurrentTasks 是跨会话同时执行的任务数默认上限。
 const DefaultMaxConcurrentTasks = 4
 
@@ -172,7 +184,12 @@ type Provider struct {
 	Type    string `yaml:"type"` // openai | anthropic
 	BaseURL string `yaml:"base_url"`
 	Model   string `yaml:"model"`
-	APIKey  Secret `yaml:"api_key"`
+	// APIKey 是单 key 写法，保留兼容。APIKeys 非空时优先用列表。
+	APIKey Secret `yaml:"api_key"`
+	// APIKeys 是同一供应商的多把 key：请求轮询取用，遇到鉴权 / 额度 /
+	// 限流失败时把该 key 冷却一段时间并换下一把。元素写法与 api_key 相同
+	// （明文 / $ENV_NAME / file:/path）。
+	APIKeys []Secret `yaml:"api_keys"`
 
 	// TimeoutSeconds 与 MaxRetries 用指针区分「未配置」与「显式 0」：
 	// 未配置走默认值，显式 0 表示不重试（合法），所以不能让零值等价于缺省。
@@ -329,8 +346,9 @@ func (c *Config) applyDefaults() {
 	if c.Storage.OutputDir == "" {
 		c.Storage.OutputDir = filepath.Join(DataDir(), "outputs")
 	}
-	if c.Agent.MaxRounds <= 0 {
-		c.Agent.MaxRounds = 24
+	if c.Agent.MaxRounds == nil {
+		rounds := DefaultMaxRounds
+		c.Agent.MaxRounds = &rounds
 	}
 	if c.Agent.CommandTimeoutSeconds <= 0 {
 		c.Agent.CommandTimeoutSeconds = 120
@@ -463,8 +481,16 @@ func (c *Config) ValidateServer() error {
 		if p.Model == "" {
 			return fmt.Errorf("%s.model 不能为空", prefix)
 		}
-		if _, err := p.APIKey.Resolve(); err != nil {
+		if _, err := p.APIKey.Resolve(); p.APIKey != "" && err != nil {
 			return fmt.Errorf("%s.api_key: %w（支持明文 / $ENV_NAME / file:/path）", prefix, err)
+		}
+		if len(p.APIKeys) == 0 && p.APIKey == "" {
+			return fmt.Errorf("%s.api_key 或 api_keys 至少要配置一个", prefix)
+		}
+		for j, key := range p.APIKeys {
+			if _, err := key.Resolve(); err != nil {
+				return fmt.Errorf("%s.api_keys[%d]: %w（支持明文 / $ENV_NAME / file:/path）", prefix, j, err)
+			}
 		}
 		if p.TimeoutSeconds != nil && *p.TimeoutSeconds <= 0 {
 			return fmt.Errorf("%s.timeout_seconds 必须大于 0，当前为 %d", prefix, *p.TimeoutSeconds)
@@ -503,6 +529,21 @@ func (c *Config) validateCommon() error {
 		if p == "" {
 			return fmt.Errorf("%s 不能为空", name)
 		}
+	}
+	// 配置里的 ~ 必须在启动时展开：否则相对当前目录会建出一个字面量
+	// 「~」目录，数据库看着像丢了，其实落在启动目录下。
+	if p, err := ExpandHome(c.Storage.DBPath); err != nil {
+		return fmt.Errorf("storage.db_path: %w", err)
+	} else {
+		c.Storage.DBPath = p
+	}
+	if p, err := ExpandHome(c.Storage.OutputDir); err != nil {
+		return fmt.Errorf("storage.output_dir: %w", err)
+	} else {
+		c.Storage.OutputDir = p
+	}
+	if c.Agent.MaxRounds != nil && *c.Agent.MaxRounds < 0 {
+		return fmt.Errorf("agent.max_rounds 不能为负数（0 表示不限制），当前为 %d", *c.Agent.MaxRounds)
 	}
 	switch c.Exec.Backend {
 	case DefaultExecBackend, SandboxExecBackend:

@@ -184,13 +184,21 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		},
 		MaxConcurrentTasks: cfg.Agent.MaxConcurrentTasks,
 		MaxQueueDepth:      cfg.Agent.MaxQueueDepth,
-		MaxRounds:          cfg.Agent.MaxRounds,
+		MaxRounds:          agentMaxRounds(cfg.Agent.MaxRoundsValue()),
 		ContextBudget:      cfg.Agent.ContextBudgetChars,
 		ContextCompact:     cfg.Agent.ContextCompact == config.ContextCompactAuto,
 		ResumeQueued:       cfg.Agent.ResumeQueuedEnabled(),
 		Memory:             cfg.Agent.MemoryEnabled(),
 		Logger:             log,
 	}
+}
+
+// agentMaxRounds 把配置的轮数翻译成 agent 的约定：0 表示不限制，用 -1 表示。
+func agentMaxRounds(rounds int) int {
+	if rounds == 0 {
+		return -1
+	}
+	return rounds
 }
 
 // mcpServers 把配置翻译成 Manager 的启动描述。禁用的条目直接不出现：

@@ -38,13 +38,55 @@ func TestLoadMissingFileIsActionable(t *testing.T) {
 	}
 }
 
+func TestMaxRoundsZeroMeansUnlimited(t *testing.T) {
+	cfg, err := Load(writeTemp(t, strings.Replace(minimalYAML, "providers:", "agent:\n  max_rounds: 0\nproviders:", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agent.MaxRoundsValue(); got != 0 {
+		t.Fatalf("显式 0 应保留为「不限制」，实际 %d", got)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("0 应通过校验：%v", err)
+	}
+
+	cfg, err = Load(writeTemp(t, strings.Replace(minimalYAML, "providers:", "agent:\n  max_rounds: -1\nproviders:", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	err = cfg.ValidateServer()
+	if err == nil || !strings.Contains(err.Error(), "不能为负数") {
+		t.Fatalf("负数应报错，得到 %v", err)
+	}
+}
+
+func TestStoragePathsExpandHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	yaml := strings.Replace(minimalYAML, "providers:",
+		"storage:\n  db_path: ~/data/jiaoag.db\n  output_dir: ~/out\nproviders:", 1)
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+	if want := filepath.Join(home, "data", "jiaoag.db"); cfg.Storage.DBPath != want {
+		t.Fatalf("db_path = %q，期望 %q", cfg.Storage.DBPath, want)
+	}
+	if want := filepath.Join(home, "out"); cfg.Storage.OutputDir != want {
+		t.Fatalf("output_dir = %q，期望 %q", cfg.Storage.OutputDir, want)
+	}
+}
+
 func TestLoadAppliesDefaults(t *testing.T) {
 	cfg, err := Load(writeTemp(t, minimalYAML))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Agent.MaxRounds != 24 {
-		t.Errorf("MaxRounds = %d，期望 24", cfg.Agent.MaxRounds)
+	if cfg.Agent.MaxRoundsValue() != 24 {
+		t.Errorf("MaxRounds = %d，期望 24", cfg.Agent.MaxRoundsValue())
 	}
 	if cfg.Agent.CommandTimeoutSeconds != 120 {
 		t.Errorf("CommandTimeoutSeconds = %d，期望 120", cfg.Agent.CommandTimeoutSeconds)
@@ -92,6 +134,39 @@ func TestValidateServerRejectsUnresolvableKey(t *testing.T) {
 	err = cfg.ValidateServer()
 	if err == nil || !strings.Contains(err.Error(), "环境变量 JIAOAG_DEFINITELY_UNSET 未设置") {
 		t.Fatalf("期望环境变量错误，得到 %v", err)
+	}
+}
+
+func TestValidateServerAPIKeys(t *testing.T) {
+	cfg, err := Load(writeTemp(t, strings.Replace(minimalYAML, "api_key: k", "api_keys:\n      - k1\n      - k2", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("多 key 配置应通过校验：%v", err)
+	}
+	if len(cfg.Providers[0].APIKeys) != 2 {
+		t.Fatalf("api_keys 未解析：%+v", cfg.Providers[0].APIKeys)
+	}
+
+	// 列表里任何一个 key 解析失败都要指出下标，且不回显明文。
+	cfg, err = Load(writeTemp(t, strings.Replace(minimalYAML, "api_key: k", "api_keys:\n      - k1\n      - $JIAOAG_NO_SUCH_KEY", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	err = cfg.ValidateServer()
+	if err == nil || !strings.Contains(err.Error(), "api_keys[1]") {
+		t.Fatalf("期望指出 api_keys[1] 的错误，得到 %v", err)
+	}
+
+	// api_key 与 api_keys 都不配是配置错误，不能等到第一次请求才暴露。
+	cfg, err = Load(writeTemp(t, strings.Replace(minimalYAML, "    api_key: k\n", "", 1)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	err = cfg.ValidateServer()
+	if err == nil || !strings.Contains(err.Error(), "至少要配置一个") {
+		t.Fatalf("期望缺少 key 的校验错误，得到 %v", err)
 	}
 }
 
