@@ -363,7 +363,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表 | v2 |
 | UI | ✅ | 协议客户端，Web / 移动端即另一个 WS 客户端 | 已成立 |
 | 事件消费者 / 审计导出 | ✅ | 订阅事件流 | v2 |
-| 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v1 接口 + `TruncateOldest` |
+| 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |
 | 提示词（系统提示 / 项目知识） | ⚠️ 仅追加 | `prompt.Assemble` + 项目级确认与 hash（ADR-0012） | v1 |
 | 工具描述 / 压缩提示 | ❌ | 调用契约与上下文完整性，属代码不属配置 | 不开放 |
 | 权限规则数据 | ⚠️ 只能收紧 | `perm.Loader` + `TightenRule` | v1 本地规则，v2 签名 feed |
@@ -396,31 +396,26 @@ MCP 不是独立特性，而是 `Source` 的一个实现（v2 已落地：只做
 
 **宿主中介写盘**：`propose_write` 只返回 `{path, content}`，diff / hash / 审批 / CAS 落盘全由宿主做；`process` / `network` 必审批并回报 argv / 目标。审计行必须带 `source`。插件是受信代码，不是沙箱（ADR-0001），一插件一进程，崩溃只影响该 Source。
 
-### 12.2 压缩策略
+### 12.2 上下文压缩
 
 ```go
 type Compactor interface {
-	Name() string
-	Compact(ctx context.Context, in CompactInput) (CompactOutput, error)
+	Compact(ctx context.Context, history []llm.Message) (CompactSummary, error)
 }
 
-type CompactInput struct {
-	System  []Message
-	History []Message // 时间正序，含本轮 user
-	Budget  int       // UTF-8 字符数（v1）
-	LLM     llm.Provider
-	Audit   func(CompactionAudit)
-}
-
-type CompactOutput struct {
-	History []Message
-	Summary string
+type CompactSummary struct {
+	Text                         string
+	Model                        string
+	PromptTokens, CompletionTokens int
+	Duration                     time.Duration
 }
 ```
 
-宿主保留三条硬约束：返回后**二次校验预算**（超限回退 `TruncateOldest` 并记 `strategy_fallback`）；**保留项不可丢**（system、最近一条 user、本轮工具结果）；**结果只缓存不入库**——`compactions(session_id, from_seq, to_seq, strategy, version, summary, created_at)`，按 seq 区间复用，避免同一段历史出现两个摘要版本。
+v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过 `context_budget_chars` 的 80% 时，把「保留最近 2 轮」之前的消息交给当前 provider 非流式摘要（独立 90s 超时、`max_tokens=1024`、输入截到 48KB）。切点按用户提问找，没有新提问时退到助手边界，不拆开 `tool_use` / `tool_result`；旧内容不足 2000 字符不压；成功后冷却 3 轮。
 
-摘要策略的两个坑：摘要本身是 LLM 调用，必须带 `noCompact` 标记防止递归，并有独立超时（20s），失败回退丢弃；它不属于会话事实，只写审计（`kind=context.compact`，带策略名、节省字符数、耗时），不产生 `assistant.message` 事件。
+摘要**作为 `context.compacted` 事件入库**（`summary` / `covered_messages` / `before_chars` / `summary_chars` / 模型 / token / 耗时），回放时用摘要替换被覆盖的前缀，再接上保留的近期消息——压缩后的上下文可重建，不需要第二份缓存状态。摘要位于历史首条时被 `Build` 钉住，不参与按预算的丢弃。
+
+失败（模型报错、超时、空摘要）只写 `context.compact_failed` 审计，历史保持原样，任务继续；压缩调用的 token 通过同一条 Transition 累加进任务用量。摘要提示属于代码，不开放配置（§12.5）。
 
 ### 12.3 权限规则热更新
 
@@ -438,7 +433,7 @@ type CompactOutput struct {
 | 命令后果判断 | argv 白名单只判「长什么样」，判不了「会发生什么」：`make` 里的 `curl \| sh`、npm postinstall、git hooks | 规则数据 + 命令重写器 + 执行包装器 |
 | 执行隔离 | 无容器（ADR-0001），命令与 server 同权限 | `ExecBackend`（ADR-0011），仅宿主选择；v2 已实现 `sandbox-exec` / `bwrap`（ADR-0015） |
 | 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（与 ADR-0010 同一管道） |
-| 上下文与长期记忆 | 截断只是止血；语义压缩、跨会话项目记忆做不好 | `Compactor` + 记忆检索插件 |
+| 上下文与长期记忆 | 单任务压缩已落地（ADR-0016）；跨会话项目记忆仍未做 | `Compactor` + 记忆检索插件 |
 | 模型能力 | 只适配两家协议；没有按任务选模型、本地推理、token 精算 | 供应商适配器 + 路由策略 + tokenizer |
 | 多仓库 / monorepo | 单 workspace 边界，跨仓库重构做不深 | workspace provider（多根、worktree 池） |
 | 呈现与人机协作 | TUI 只有文本；无 hunk 级局部批准、无移动端审批 | 协议客户端 + 审批呈现层 |
@@ -452,7 +447,7 @@ type CompactOutput struct {
 | P0 | 代码理解（LSP / tree-sitter） | 直接决定 agent 好不好用；工具类风险最低 | ~3–5 天 |
 | P1 | 执行后端（sandbox-exec / bwrap） | 唯一能实质降低 ADR-0001 风险的办法 | ~2–3 天 |
 | P2 | 供应链 feed | 复用 ADR-0010 的签名管道，边际成本最低 | ~1 天 |
-| P3 | 记忆 / 压缩策略 | 缝已留，等真实上下文压力再上 | ~2–3 天 |
+| P3 | ~~记忆 / 压缩策略~~ | 单任务压缩已落地（ADR-0016）；跨会话记忆按需再上 | — |
 | P4 | UI / 通知 | 协议已定，零架构成本 | 各自独立 |
 
 三条不许破：插件的输出必须可被宿主验证；插件不得成为运行前提（缺失时核心功能照常）；插件的身份（`source` / `backend` / feed `version`）必须进审计。

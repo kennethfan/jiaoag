@@ -125,6 +125,9 @@ type Agent struct {
 	CommandTimeoutSeconds int `yaml:"command_timeout_seconds"`
 	// ContextBudgetChars 是上下文预算（UTF-8 字符数），超出的最旧轮次会被丢弃。
 	ContextBudgetChars int `yaml:"context_budget_chars"`
+	// ContextCompact 控制上下文压缩：auto（默认）超出预算 80% 时把最旧轮次
+	// 压成摘要并保留最近 2 轮；off 关闭，只做丢弃。
+	ContextCompact string `yaml:"context_compact"`
 	// MaxConcurrentTasks 是跨会话同时执行的任务数上限；0 表示不限。
 	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"`
 	// MaxQueueDepth 是单会话排队任务数上限；0 表示不限。
@@ -133,6 +136,9 @@ type Agent struct {
 
 // DefaultContextBudgetChars 与 agent.DefaultContextBudget 保持一致。
 const DefaultContextBudgetChars = 60000
+
+// ContextCompactAuto 是上下文压缩的默认模式。
+const ContextCompactAuto = "auto"
 
 // DefaultMaxConcurrentTasks 是跨会话同时执行的任务数默认上限。
 const DefaultMaxConcurrentTasks = 4
@@ -312,6 +318,9 @@ func (c *Config) applyDefaults() {
 	if c.Agent.ContextBudgetChars <= 0 {
 		c.Agent.ContextBudgetChars = DefaultContextBudgetChars
 	}
+	if c.Agent.ContextCompact == "" {
+		c.Agent.ContextCompact = ContextCompactAuto
+	}
 	// 0 表示「用默认值」，不提供真正的无限；确需放开就填一个很大的数。
 	if c.Agent.MaxConcurrentTasks <= 0 {
 		c.Agent.MaxConcurrentTasks = DefaultMaxConcurrentTasks
@@ -449,6 +458,11 @@ func (c *Config) validateCommon() error {
 	}
 	if c.Agent.ContextBudgetChars > 0 && c.Agent.ContextBudgetChars <= 1000 {
 		return fmt.Errorf("agent.context_budget_chars 必须大于 1000，当前为 %d", c.Agent.ContextBudgetChars)
+	}
+	switch c.Agent.ContextCompact {
+	case "", ContextCompactAuto, "off":
+	default:
+		return fmt.Errorf("agent.context_compact 只支持 %q 或 %q，当前为 %q", ContextCompactAuto, "off", c.Agent.ContextCompact)
 	}
 	if _, err := c.Server.Token.Resolve(); err != nil {
 		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)

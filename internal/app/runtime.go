@@ -39,7 +39,9 @@ type RuntimeDeps struct {
 	MaxQueueDepth int
 	MaxRounds     int
 	ContextBudget int
-	Logger        *slog.Logger
+	// ContextCompact 开启自动上下文压缩（agent.context_compact: auto）。
+	ContextCompact bool
+	Logger         *slog.Logger
 }
 
 // taskRun 是一个运行中任务的句柄。
@@ -140,6 +142,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 		Model:         model,
 		MaxRounds:     deps.MaxRounds,
 		ContextBudget: deps.ContextBudget,
+		Compact:       deps.ContextCompact,
 		Logger:        deps.Logger,
 		Ruleset:       deps.Ruleset,
 		OutputDir:     deps.OutputDir,

@@ -87,6 +87,13 @@ type Options struct {
 	Ruleset *perm.Ruleset
 	// OutputDir 是命令全文日志的根目录；空表示不落全文。
 	OutputDir string
+
+	// Compact 开启上下文压缩：历史超出预算 80% 时，把较早轮次压成摘要。
+	Compact bool
+	// CompactKeepRounds 是压缩后保留的最近轮次数；0 用默认值 2。
+	CompactKeepRounds int
+	// Compactor 是摘要实现；为空且 Compact 为真时用当前 provider 构造。
+	Compactor Compactor
 }
 
 // Agent 执行单个任务。多个任务可以并发使用同一个 Agent（无可变状态）。
@@ -121,6 +128,12 @@ func New(opts Options) (*Agent, error) {
 	if opts.Ruleset == nil {
 		opts.Ruleset = perm.DefaultRuleset()
 	}
+	if opts.CompactKeepRounds <= 0 {
+		opts.CompactKeepRounds = DefaultCompactKeepRounds
+	}
+	if opts.Compact && opts.Compactor == nil {
+		opts.Compactor = providerCompactor{provider: opts.Provider, model: opts.Model}
+	}
 	return &Agent{opts: opts}, nil
 }
 
@@ -152,11 +165,14 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 	var usage domain.TokenUsage
 	budget := a.opts.ContextBudget
 	overflowRetried := false
+	lastCompact := 0
 
 	for round := 1; round <= a.opts.MaxRounds; round++ {
 		if ctx.Err() != nil {
 			return a.finish(ctx, task, domain.TaskCanceled, "canceled", "", usage)
 		}
+		// 压缩发生在轮次开始之前：这一轮的请求就能用上摘要。
+		a.maybeCompact(ctx, task, &history, &usage, budget, round, &lastCompact)
 		started, err := domain.NewEvent(domain.EventRoundStarted, task.SessionID, task.ID,
 			domain.RoundStartedPayload{Round: round})
 		if err != nil {

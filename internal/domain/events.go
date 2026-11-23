@@ -38,6 +38,10 @@ const (
 	EventProposalRejected EventKind = "proposal.rejected"
 	EventToolResult       EventKind = "tool.result"
 	EventError            EventKind = "error"
+
+	// EventContextCompacted 记录一次上下文压缩：Summary 替换掉它之前的
+	// CoveredMessages 条消息。它只影响上下文重建，不改变任务状态。
+	EventContextCompacted EventKind = "context.compacted"
 )
 
 // Event 是事件日志里的一个不可变事实。
@@ -122,6 +126,21 @@ type TaskStatusPayload struct {
 
 type RoundStartedPayload struct {
 	Round int `json:"round"`
+}
+
+// ContextCompactedPayload 是一次上下文压缩的结果。
+//
+// Summary 会替换掉本事件之前的 CoveredMessages 条消息；token 数是压缩调用
+// 自身的开销，计入任务总用量（它确实是花掉的钱）。
+type ContextCompactedPayload struct {
+	Summary          string `json:"summary"`
+	CoveredMessages  int    `json:"covered_messages"`
+	BeforeChars      int    `json:"before_chars"`
+	SummaryChars     int    `json:"summary_chars"`
+	Model            string `json:"model,omitempty"`
+	PromptTokens     int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int    `json:"completion_tokens,omitempty"`
+	DurationMS       int64  `json:"duration_ms,omitempty"`
 }
 
 type AssistantStartPayload struct {

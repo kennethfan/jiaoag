@@ -236,3 +236,31 @@ func TestContextBudgetDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("过小的预算应校验失败，得到 %v", err)
 	}
 }
+
+func TestContextCompactDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.ContextCompact != ContextCompactAuto {
+		t.Fatalf("默认压缩模式 = %q，期望 %q", cfg.Agent.ContextCompact, ContextCompactAuto)
+	}
+
+	off := strings.Replace(minimalYAML, "providers:", "agent:\n  context_compact: off\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, off))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("context_compact=off 应合法：%v", err)
+	}
+
+	bad := strings.Replace(minimalYAML, "providers:", "agent:\n  context_compact: always\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "context_compact") {
+		t.Fatalf("非法压缩模式应校验失败，得到 %v", err)
+	}
+}

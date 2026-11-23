@@ -18,22 +18,30 @@ const (
 
 // Build 是纯函数：把完整历史压进预算，返回可直接发给供应商的消息。
 //
-// 裁剪单位是「轮」——从最旧的一条 user 消息丢到下一个 user 消息之前，
-// 这样不会留下孤立的 tool_result（供应商会直接拒绝）。system 与最后一条
-// user 消息永不丢：预算不够时宁可超一点，也不能丢用户当下的问题。
+// 裁剪单位是「用户轮」——从最旧的一条用户提问丢到下一个提问之前，这样不会
+// 留下孤立的 tool_result（供应商会直接拒绝）。压缩摘要永远保留：它代表已经
+// 被丢弃的历史，丢掉它等于把上下文清空。system 与最后一条 user 消息同理：
+// 预算不够时宁可超一点，也不能丢用户当下的问题。
 func Build(history []llm.Message, budget int) []llm.Message {
 	msgs := trimToolResults(history)
-	if budget <= 0 {
+	var pinned []llm.Message
+	if len(msgs) > 0 && isCompactedMessage(msgs[0]) {
+		pinned = msgs[:1:1]
+		msgs = msgs[1:]
+	}
+	if budget > 0 {
+		for countChars(msgs)+countChars(pinned) > budget {
+			starts := promptStarts(msgs)
+			if len(starts) < 2 {
+				break
+			}
+			msgs = msgs[starts[1]:]
+		}
+	}
+	if len(pinned) == 0 {
 		return msgs
 	}
-	for countChars(msgs) > budget {
-		starts := userStarts(msgs)
-		if len(starts) < 2 {
-			break
-		}
-		msgs = msgs[starts[1]:]
-	}
-	return msgs
+	return append(pinned, msgs...)
 }
 
 // trimToolResults 截断过长工具结果，不改动入参。
@@ -52,10 +60,10 @@ func trimToolResults(history []llm.Message) []llm.Message {
 	return out
 }
 
-func userStarts(msgs []llm.Message) []int {
+func promptStarts(msgs []llm.Message) []int {
 	var out []int
 	for i, msg := range msgs {
-		if msg.Role == llm.RoleUser {
+		if isPromptMessage(msg) {
 			out = append(out, i)
 		}
 	}

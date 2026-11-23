@@ -513,6 +513,11 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 		if err := json.Unmarshal(p.Payload, &r); err == nil {
 			m.round = r.Round
 		}
+	case string(domain.EventContextCompacted):
+		var c domain.ContextCompactedPayload
+		if err := json.Unmarshal(p.Payload, &c); err == nil {
+			m.appendLine(fmt.Sprintf("⋯ 上下文已压缩：%d 条较早消息 → %d 字摘要", c.CoveredMessages, c.SummaryChars))
+		}
 	case string(domain.EventAssistantMessage):
 		var a domain.AssistantMessagePayload
 		if err := json.Unmarshal(p.Payload, &a); err == nil {
