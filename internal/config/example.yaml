@@ -16,7 +16,8 @@ policy:
   dir: ~/.config/jiaoag/policy.d
 
 exec:
-  # v1 只有 direct（宿主直连）。降级必须显式，不会静默回退（ADR-0011）。
+  # direct：宿主直连（默认）。sandbox：macOS 用 sandbox-exec，Linux 用 bwrap。
+  # 降级必须显式，不会静默回退（ADR-0011）：sandbox 探测失败会直接启动报错。
   backend: direct
   # 单条命令的默认超时秒数；单次调用可在 1-600 之间覆盖。
   timeout_s: 120

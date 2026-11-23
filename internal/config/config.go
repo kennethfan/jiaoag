@@ -98,6 +98,7 @@ type ExecLimits struct {
 // 截断成 6 KB，等于白留一份没用的中段。
 const (
 	DefaultExecBackend  = "direct"
+	SandboxExecBackend  = "sandbox"
 	DefaultEventLimit   = 8 << 10
 	DefaultExecLogLimit = 4 << 20
 	// MaxExecEventLimit 对齐 agent 的 8 KB 工具结果阈值：再大也会被二次
@@ -457,8 +458,10 @@ func (c *Config) validateCommon() error {
 			return fmt.Errorf("%s 不能为空", name)
 		}
 	}
-	if c.Exec.Backend != DefaultExecBackend {
-		return fmt.Errorf("exec.backend 目前只支持 %q，当前为 %q", DefaultExecBackend, c.Exec.Backend)
+	switch c.Exec.Backend {
+	case DefaultExecBackend, SandboxExecBackend:
+	default:
+		return fmt.Errorf("exec.backend 只支持 %q 或 %q，当前为 %q", DefaultExecBackend, SandboxExecBackend, c.Exec.Backend)
 	}
 	if c.Exec.TimeoutSeconds <= 0 || c.Exec.TimeoutSeconds > MaxExecTimeoutSeconds {
 		return fmt.Errorf("exec.timeout_s 必须在 1-%d 之间，当前为 %d", MaxExecTimeoutSeconds, c.Exec.TimeoutSeconds)

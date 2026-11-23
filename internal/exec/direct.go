@@ -3,7 +3,6 @@ package exec
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"runtime"
 	"time"
@@ -24,24 +23,8 @@ func (b *Direct) version() string { return "direct/" + runtime.GOOS }
 
 // Prepare 校验命令形状并返回最终计划，不执行任何东西。
 func (b *Direct) Prepare(ctx context.Context, cmd Command) (Plan, error) {
-	if err := ctx.Err(); err != nil {
+	if err := validateCommand(ctx, cmd); err != nil {
 		return Plan{}, err
-	}
-	switch {
-	case len(cmd.Argv) == 0:
-		return Plan{}, fmt.Errorf("exec: argv 为空")
-	case cmd.Cwd == "":
-		return Plan{}, fmt.Errorf("exec: cwd 为空")
-	case cmd.Timeout <= 0:
-		return Plan{}, fmt.Errorf("exec: 超时必须为正")
-	case cmd.Env == nil:
-		// 空切片表示「清洗后没有可保留的变量」；nil 会继承父进程环境，
-		// 对命令工具来说就是密钥泄漏的暗门，因此要求调用方显式给出。
-		return Plan{}, fmt.Errorf("exec: env 必须显式给出（空切片表示不继承）")
-	}
-	// 限制写错会在执行时才炸（ulimit 失败或参数越界），提前在这里挡住。
-	if err := cmd.Limits.Validate(); err != nil {
-		return Plan{}, fmt.Errorf("exec: %w", err)
 	}
 	return Plan{
 		Backend:      b.Name(),
@@ -57,6 +40,13 @@ func (b *Direct) Prepare(ctx context.Context, cmd Command) (Plan, error) {
 
 // Run 执行计划。ctx 取消返回 ctx.Err()，超时返回带 TimedOut 的结果。
 func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) {
+	// 资源限制通过 shell 包装施加；Plan.Argv 保持原始形状供审批与审计展示。
+	return runPlan(ctx, plan, spec, wrapLimits(plan.Argv, plan.Limits))
+}
+
+// runPlan 是各后端共用的执行循环：起进程、收敛输出、按超时与取消杀进程组。
+// argv 已经是最终要交给内核的形状（后端包装 + 资源限制包装）。
+func runPlan(ctx context.Context, plan Plan, spec Spec, argv []string) (Result, error) {
 	started := time.Now()
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
@@ -74,8 +64,6 @@ func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) 
 		defer cancel()
 	}
 
-	// 资源限制通过 shell 包装施加；Plan.Argv 保持原始形状供审批与审计展示。
-	argv := wrapLimits(plan.Argv, plan.Limits)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = plan.Cwd
 	// nil 表示沿用父进程环境；显式空切片表示「清洗后没有可保留的变量」。

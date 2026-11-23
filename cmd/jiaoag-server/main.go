@@ -82,7 +82,10 @@ func run(cfgPath, listen string) error {
 	if err != nil {
 		return err
 	}
-	backend := execpkg.NewDirect()
+	backend, err := newExecBackend(cfg.Exec.Backend)
+	if err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -109,6 +112,23 @@ func run(cfgPath, listen string) error {
 	srv.WithApp(application)
 
 	return srv.ListenAndServe(ctx)
+}
+
+// newExecBackend 按配置选执行后端。sandbox 不可用时直接报错：降级必须
+// 显式（ADR-0011），不能悄悄回退到 direct。
+func newExecBackend(name string) (execpkg.Backend, error) {
+	switch name {
+	case config.DefaultExecBackend:
+		return execpkg.NewDirect(), nil
+	case config.SandboxExecBackend:
+		b, err := execpkg.NewSandbox()
+		if err != nil {
+			return nil, fmt.Errorf("exec.backend=sandbox 不可用: %w", err)
+		}
+		return b, nil
+	default:
+		return nil, fmt.Errorf("未知执行后端 %q", name)
+	}
 }
 
 // runtimeDeps 把配置翻译成执行依赖：app 不认识 config，这里做唯一的接线。

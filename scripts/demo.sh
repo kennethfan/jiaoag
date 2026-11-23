@@ -148,6 +148,7 @@ policy:
   dir: ${WORK}/data/policy.d
 
 exec:
+  backend: ${JIAOAG_DEMO_EXEC_BACKEND:-direct}
   timeout_s: 60
 
 agent:

@@ -41,6 +41,10 @@ type Plan struct {
 	// 这样审批与审计看到的仍是用户真正要跑的命令。
 	Limits       Limits
 	LimitSupport Support
+
+	// wrapped 是后端自己的最终 argv（例如 sandbox 的包装器参数）。它只在
+	// Run 里使用，不改变 Argv 的展示语义——审批看到的仍是逻辑命令。
+	wrapped []string
 }
 
 // LimitsDegraded 报告「请求了限制但当前平台做不到全部」。
@@ -126,6 +130,30 @@ func (s Spec) normalize() Spec {
 		s.TailBytes = s.EventCap / 4
 	}
 	return s
+}
+
+// validateCommand 校验命令形状。Direct 与 Sandbox 共用，避免两边漏掉同一项。
+func validateCommand(ctx context.Context, cmd Command) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	switch {
+	case len(cmd.Argv) == 0:
+		return fmt.Errorf("exec: argv 为空")
+	case cmd.Cwd == "":
+		return fmt.Errorf("exec: cwd 为空")
+	case cmd.Timeout <= 0:
+		return fmt.Errorf("exec: 超时必须为正")
+	case cmd.Env == nil:
+		// 空切片表示「清洗后没有可保留的变量」；nil 会继承父进程环境，
+		// 对命令工具来说就是密钥泄漏的暗门，因此要求调用方显式给出。
+		return fmt.Errorf("exec: env 必须显式给出（空切片表示不继承）")
+	}
+	// 限制写错会在执行时才炸（ulimit 失败或参数越界），提前在这里挡住。
+	if err := cmd.Limits.Validate(); err != nil {
+		return fmt.Errorf("exec: %w", err)
+	}
+	return nil
 }
 
 // wrap 给底层错误加上命令形状，便于工具结果与审计定位。
