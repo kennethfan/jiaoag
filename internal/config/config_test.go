@@ -3,10 +3,27 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// setHome 把用户主目录指到临时目录，让 ~ 展开可断言。
+//
+// Windows 上 os.UserHomeDir 读的是 USERPROFILE 而不是 HOME，只设 HOME 时
+// 测试会拿真实主目录去比较，CI 里必挂。
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	if runtime.GOOS != "windows" {
+		return
+	}
+	t.Setenv("USERPROFILE", dir)
+	volume := filepath.VolumeName(dir)
+	t.Setenv("HOMEDRIVE", volume)
+	t.Setenv("HOMEPATH", strings.TrimPrefix(dir, volume))
+}
 
 const minimalYAML = `server:
   listen: 127.0.0.1:9999
@@ -62,7 +79,7 @@ func TestMaxRoundsZeroMeansUnlimited(t *testing.T) {
 
 func TestStoragePathsExpandHome(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	yaml := strings.Replace(minimalYAML, "providers:",
 		"storage:\n  db_path: ~/data/jiaoag.db\n  output_dir: ~/out\nproviders:", 1)
 	cfg, err := Load(writeTemp(t, yaml))
@@ -460,7 +477,7 @@ func TestSkillsDefaultsAndValidation(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	yaml := strings.Replace(minimalYAML, "providers:", `agent:
   skills: off
   skills_dirs:

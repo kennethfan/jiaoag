@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -63,7 +64,11 @@ func TestResolveServerBinaryExplicit(t *testing.T) {
 
 func TestResolveServerBinaryFromPath(t *testing.T) {
 	dir := t.TempDir()
+	// Windows 的 LookPath 只认带 PATHEXT 后缀的文件，测试里的假二进制也得带 .exe。
 	name := "jiaoag-server"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)

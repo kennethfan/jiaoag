@@ -3,9 +3,23 @@ package skills
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// setHome 同 config 里的同名辅助：Windows 的 os.UserHomeDir 认 USERPROFILE。
+func setHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	if runtime.GOOS != "windows" {
+		return
+	}
+	t.Setenv("USERPROFILE", dir)
+	volume := filepath.VolumeName(dir)
+	t.Setenv("HOMEDRIVE", volume)
+	t.Setenv("HOMEPATH", strings.TrimPrefix(dir, volume))
+}
 
 func writeSkill(t *testing.T, root, dir, front, body string) {
 	t.Helper()
@@ -182,7 +196,7 @@ func TestManualSkillsStayOutOfModelIndex(t *testing.T) {
 
 func TestResolveDirExpandsHome(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setHome(t, home)
 	got, err := resolveDir("~/skills", "")
 	if err != nil {
 		t.Fatal(err)

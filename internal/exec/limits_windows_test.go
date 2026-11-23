@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -99,14 +100,16 @@ func TestJobObjectMemoryLimit(t *testing.T) {
 // 通过 Direct.Run 走完整接线：Prepare 不应再把 Windows 上的内存/CPU 报成降级，
 // 带限制的普通命令要能正常跑完。
 func TestWindowsLimitsNotDegraded(t *testing.T) {
-	ps, err := exec.LookPath("powershell")
-	if err != nil {
-		t.Skip("没有 powershell，跳过完整接线用例")
+	// 用 cmd /c 而不是 powershell：这里验的是「带限制的命令能跑完」，
+	// powershell 在 CI 上会因为模块自动加载路径缺失而偶发失败，与限制无关。
+	comspec := os.Getenv("ComSpec")
+	if comspec == "" {
+		t.Skip("没有 ComSpec，跳过完整接线用例")
 	}
 
 	b := NewDirect()
 	cmd := Command{
-		Argv:    []string{ps, "-NoProfile", "-Command", `Write-Output ok`},
+		Argv:    []string{comspec, "/c", "echo ok"},
 		Cwd:     t.TempDir(),
 		Timeout: 30 * time.Second,
 		Env:     []string{},

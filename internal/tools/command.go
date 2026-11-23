@@ -357,12 +357,21 @@ func commandEnv(environ []string) []string {
 	return out
 }
 
+// execEnvAllow 是允许传给子进程的变量。键统一大写：Windows 的环境变量名
+// 大小写不敏感，父进程给的常常是 "Path" 这种写法，按原样查表会把 PATH 整条
+// 丢掉，子进程连命令都找不到。
 var execEnvAllow = map[string]bool{
 	"PATH": true, "HOME": true, "LANG": true, "TMPDIR": true, "TMP": true, "TEMP": true,
 	"TZ": true, "USER": true, "LOGNAME": true, "SHELL": true, "TERM": true,
 	"GOPATH": true, "GOCACHE": true, "GOMODCACHE": true, "GOROOT": true,
 	"GOFLAGS": true, "GOTOOLCHAIN": true, "GONOSUMDB": true, "GOPRIVATE": true,
-	"GONOSUMCHECK": true, "GOSUMDB": true, "SystemRoot": true, "PATHEXT": true,
+	"GONOSUMCHECK": true, "GOSUMDB": true,
+	// Windows 上缺了这些，cmd / powershell 找不到解释器与自己的模块：
+	// 没有 USERPROFILE，go 连构建缓存目录都定不下来。
+	"SYSTEMROOT": true, "WINDIR": true, "SYSTEMDRIVE": true, "PATHEXT": true,
+	"COMSPEC": true, "USERPROFILE": true, "APPDATA": true, "LOCALAPPDATA": true,
+	"PROGRAMDATA": true, "PROGRAMFILES": true, "PSMODULEPATH": true,
+	"NUMBER_OF_PROCESSORS": true, "PROCESSOR_ARCHITECTURE": true,
 }
 
 var sensitiveEnvParts = []string{"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"}
@@ -374,8 +383,8 @@ func envAllowed(key string) bool {
 			return false
 		}
 	}
-	if execEnvAllow[key] {
+	if execEnvAllow[upper] {
 		return true
 	}
-	return strings.HasPrefix(key, "LC_")
+	return strings.HasPrefix(upper, "LC_")
 }
