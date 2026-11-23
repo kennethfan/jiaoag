@@ -298,8 +298,7 @@ sequenceDiagram
 |---|---|
 | 任务状态迁移 | 只由 `agent` 决定，经 `Recorder` 落库 |
 | 事务 / seq / 广播 | 只在 `app`（唯一写者） |
-| 会话内并发 | **一个会话最多一个 running 任务，其余 `queued` 排队**（内存 FIFO，当前任务收尾后自动拉起队首；上下文不交错，seq 单写者） |
-| 跨会话并发 | 不设上限；provider 限流放装饰器 |
+| 会话内并发 | **一个会话最多一个 running 任务，其余 `queued` 排队**（内存 FIFO，当前任务收尾后自动拉起队首；上下文不交错，seq 单写者）；队列深度上限 `max_queue_depth`（默认 16），超出时 `task.submit` 返回 `queue_full` |
 | 取消 | ctx 树：server → task → round → tool；`select` 覆盖审批等待与流式读；排队任务先从 FIFO 摘除再转 `canceled` |
 | 崩溃兜底 | 每个任务 goroutine `recover`：先收尾该任务未完成的 tool_call / 提案，再写终态（已取消则 `canceled`，否则 `failed{internal_error}`）；堆栈只进服务端日志 |
 | 同仓并发 | 只警告不拒绝：`session.created.shared_workspace` 列出同一 workspace（`Clean`+`EvalSymlinks` 归一）里还有未终态任务的会话 |

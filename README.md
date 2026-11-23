@@ -65,6 +65,7 @@ curl -s 127.0.0.1:8787/healthz
 | M4 | 变更提案与审批（diff + hash CAS） | ✅ |
 | M5 | `run_command` + 参数级权限策略 + 输出落文件 + git 只读 + 审计 | ✅ |
 | M6 | 多会话并行、同仓警告、会话内 FIFO 排队、panic 兜底、断连全量回放 | ✅ |
+| 加固 | 命令资源限制（Unix rlimit / Windows Job Object）、并发与配额（全局槽 + 队列深度 + provider 令牌桶）、TUI 队列面板、CI 双 job | ✅ |
 
 ## 安全边界
 
