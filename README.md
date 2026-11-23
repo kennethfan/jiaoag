@@ -97,9 +97,12 @@ make demo-mcp
 | v2.0 | MCP stdio 工具源：外部工具审批（默认逐次）、`trust: allow`、`external.*` 审计、失败隔离 | ✅ |
 | v2.1 | 执行隔离：`exec.backend: sandbox`（macOS seatbelt / Linux bwrap），写白名单 + 密钥禁读，不可用即启动报错 | ✅ |
 | v2.2 | 上下文压缩：超预算 80% 把较早轮次摘成 `context.compacted` 事件，保留最近 2 轮，失败降级 | ✅ |
+| v2.3 | 重启续跑：`queued` 任务重启后自动恢复（`agent.resume_queued`，默认开），执行中任务仍 canceled | ✅ |
 
 ## 安全边界
 
 首版不使用容器，agent 直接作用于真实文件系统。安全边界只有一层：权限策略（工作区路径约束、工具分级、命令默认需审批 + 参数级 argv 白名单）加客户端审批；命令执行与拒绝决定写入 `audit` 表。详见 `docs/adr/0001`、`docs/adr/0004` 与 `docs/adr/0011`。
 
 可选的 `sandbox` 执行后端（`exec.backend: sandbox`）在此之上再加一层进程级隔离：命令只能写工作区、临时目录与工具链缓存，读不到 `~/.ssh` 等密钥目录。它默认关闭，不可用时启动报错而不会静默退回直连；见 [`docs/sandbox.md`](docs/sandbox.md)。
+
+重启行为：排队中的任务默认在服务端重启后自动继续，执行中或等审批的任务不会自动重跑；见 [`docs/restart-resume.md`](docs/restart-resume.md)。

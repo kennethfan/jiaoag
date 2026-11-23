@@ -59,6 +59,9 @@ type App struct {
 	// closed 表示 Close 已经开始：之后提交的任务一律拒绝。它与「接受提交」
 	// 共用一把锁，因此不存在「已经通过忙检查、在关库之后才落库」的提交。
 	closed bool
+	// resumeQueued 表示重启后继续执行库里的 queued 任务：关闭时不再把它们
+	// 标成 canceled，启动收尾也跳过它们。
+	resumeQueued bool
 
 	// approvals 保存审批等待者与会话级白名单，见 approval.go。它有自己的锁：
 	// 等待裁决是长时间阻塞的，不能占用 runtimeMu（否则取消与提交都会被卡住）。
@@ -124,15 +127,19 @@ func (a *App) close(grace time.Duration) error {
 		return nil
 	}
 	a.closed = true
-	// 队列里的任务还没起协程：必须在关库前标掉，不能留给下个进程的启动清理。
+	// 队列里的任务还没起协程：默认必须在关库前标掉，不能留给下个进程的
+	// 启动清理；开启续跑时它们保持 queued，由下次启动重建队列。
 	queued := a.queue
+	resumeQueued := a.resumeQueued
 	a.queue = make(map[domain.SessionID][]pendingTask)
 	a.runtimeMu.Unlock()
 
 	if a.baseCancel != nil {
 		a.baseCancel()
 	}
-	a.cancelQueuedOnClose(queued)
+	if !resumeQueued {
+		a.cancelQueuedOnClose(queued)
+	}
 	// 窗口用完还没收尾的任务必须在这里补写终态：下面的关库之后它们再也写不
 	// 进去，库里就会留下一条永远 running 的任务。
 	a.abandonRuns(a.waitRuns(grace))

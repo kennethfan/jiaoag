@@ -19,7 +19,8 @@ const (
 // 会话内同一时刻最多一个 running 任务由应用层保证；这里只保证单个任务的
 // 状态不会走到不存在的分支。
 var taskTransitions = map[TaskStatus][]TaskStatus{
-	TaskQueued:          {TaskRunning, TaskCanceled},
+	// queued → failed：任务还没开始就被判死（例如重启恢复时工作区已不存在）。
+	TaskQueued:          {TaskRunning, TaskFailed, TaskCanceled},
 	TaskRunning:         {TaskWaitingApproval, TaskCompleted, TaskFailed, TaskCanceled},
 	TaskWaitingApproval: {TaskRunning, TaskFailed, TaskCanceled},
 	TaskCompleted:       {},

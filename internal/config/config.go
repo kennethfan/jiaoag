@@ -132,6 +132,14 @@ type Agent struct {
 	MaxConcurrentTasks int `yaml:"max_concurrent_tasks"`
 	// MaxQueueDepth 是单会话排队任务数上限；0 表示不限。
 	MaxQueueDepth int `yaml:"max_queue_depth"`
+	// ResumeQueued 控制服务端重启后是否继续执行排队中的任务。
+	// 默认开启；执行中/等审批的任务仍按失败收尾，不会自动重跑。
+	ResumeQueued *bool `yaml:"resume_queued"`
+}
+
+// ResumeQueuedEnabled 报告重启后是否续跑排队任务；未配置时默认开启。
+func (a Agent) ResumeQueuedEnabled() bool {
+	return a.ResumeQueued == nil || *a.ResumeQueued
 }
 
 // DefaultContextBudgetChars 与 agent.DefaultContextBudget 保持一致。
@@ -327,6 +335,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Agent.MaxQueueDepth <= 0 {
 		c.Agent.MaxQueueDepth = DefaultMaxQueueDepth
+	}
+	if c.Agent.ResumeQueued == nil {
+		enabled := true
+		c.Agent.ResumeQueued = &enabled
 	}
 	if c.Policy.Dir == "" {
 		c.Policy.Dir = filepath.Join(ConfigDir(), "policy.d")

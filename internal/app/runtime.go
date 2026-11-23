@@ -41,7 +41,9 @@ type RuntimeDeps struct {
 	ContextBudget int
 	// ContextCompact 开启自动上下文压缩（agent.context_compact: auto）。
 	ContextCompact bool
-	Logger         *slog.Logger
+	// ResumeQueued 开启重启后续跑排队任务（agent.resume_queued，默认开）。
+	ResumeQueued bool
+	Logger       *slog.Logger
 }
 
 // taskRun 是一个运行中任务的句柄。
@@ -69,21 +71,24 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 		deps.Ruleset = perm.DefaultRuleset()
 	}
 	a.runtimeMu.Lock()
-	defer a.runtimeMu.Unlock()
 	a.runtime = &deps
 	// 全局限流与队列上限随运行时配置一起生效。slots 为 nil 表示不限并发。
 	a.maxQueueDepth = deps.MaxQueueDepth
 	if deps.MaxConcurrentTasks > 0 {
 		a.slots = make(chan struct{}, deps.MaxConcurrentTasks)
 	}
+	a.resumeQueued = deps.ResumeQueued
 	// 上一次进程留下的待审批永远等不到裁决（v1 不自动续跑），启动时先清掉。
 	// 放在这里而不是 New：清理要写库，而 New 返回不了错误。
 	if err := a.ExpirePendingApprovals(context.Background()); err != nil {
+		a.runtimeMu.Unlock()
 		return fmt.Errorf("app: 清理遗留审批: %w", err)
 	}
 	// 没有审批行的遗留状态（崩溃时正在跑的只读工具、刚 prepared 就断掉的调用、
-	// 等模型输出的任务）上一步清理不到，必须单独收尾。
+	// 等模型输出的任务）上一步清理不到，必须单独收尾。开启续跑时，其中的
+	// queued 任务会被跳过，留给下面的 resumeQueuedTasks 重新拉起。
 	if err := a.ReapUnfinished(context.Background(), deps.Logger); err != nil {
+		a.runtimeMu.Unlock()
 		return fmt.Errorf("app: 收尾遗留状态: %w", err)
 	}
 	// 清理之后再查一致性：ReapUnfinished 已把「已裁决但缺结果」的调用补成
@@ -92,12 +97,20 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	// 只会把问题藏起来，而这是审计最不能接受的。
 	gaps, err := a.CheckApprovalConsistency(context.Background())
 	if err != nil {
+		a.runtimeMu.Unlock()
 		return fmt.Errorf("app: 检查审批一致性: %w", err)
 	}
 	for _, ap := range gaps {
 		deps.Logger.Warn("审批已裁决但缺少工具结果",
 			"approval", ap.ID, "task", ap.TaskID, "tool_call", ap.ToolCallID,
 			"decision", ap.Decision, "source", ap.Source)
+	}
+	a.runtimeMu.Unlock()
+
+	// 恢复要在锁外做：newAgent 会读工作区、构造供应商（可能读密钥文件），
+	// 不能占着 runtimeMu 让所有会话一起等启动。
+	if deps.ResumeQueued {
+		return a.resumeQueuedTasks(context.Background(), &deps)
 	}
 	return nil
 }

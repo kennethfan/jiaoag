@@ -218,7 +218,7 @@ case <-ctx.Done():       // 取消 / 服务端关闭
 
 审批**不设超时**，只能人工取消。取消时 agent 用 `context.WithoutCancel` 把审批收尾成 `expired`（`source=system`）、提案转 `stale` 并补一条 `proposal.rejected`、工具调用标 `canceled` 并补一条 `status=canceled` 的 `tool.result`——不能留下永远等不到裁决的 `pending`，也不能让回放看到一条永远 pending 的提案、停在 `waiting_approval` 的调用，或没有回填的 `tool_use`（那会让下一次请求被供应商拒绝）。
 
-`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。v1 没有「会话结束」事件，因此白名单的实际生命周期是**进程内**：退出即清空，不落盘、不跨连接继承（ADR-0007 的运行时与连接解耦不改变这一点）。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`（v1 不自动续跑）。紧接着 `ReapUnfinished` 兜住其余没有 `tool.result` 的调用：停在 `requested|prepared|waiting_approval|running` 的一律标 `canceled` 并补一条结果；**已经裁决过审批的那批也补**，文案写成「执行中进程重启，结果未知」——它们大概率已经开始执行，但结果无从判断。不补的话回放出的历史带着孤立的 `tool_use`，下一次请求会被供应商拒绝，会话直接不可用。`CheckApprovalConsistency` 只留作补写失败时的安全网。
+`allow_session` 只是内存里的会话白名单，键为 `sha256(tool + "\x00" + args)`；命中仍记 `approval.resolved{source: policy}`。v1 没有「会话结束」事件，因此白名单的实际生命周期是**进程内**：退出即清空，不落盘、不跨连接继承（ADR-0007 的运行时与连接解耦不改变这一点）。进程重启时 `app.ConfigureRuntime` 调用 `ExpirePendingApprovals`：遗留审批标 `expired`、提案标 `stale` 并记 `proposal.rejected`、对应的工具调用标 `canceled`、没有协程在跑的任务标 `canceled`；**`queued` 任务例外**：`agent.resume_queued`（默认开启）下它们保持 `queued`，重启后由 `resumeQueuedTasks` 重建队列继续跑（ADR-0017）。执行中/等审批的任务不自动重跑——它们可能已经产生副作用，重跑会重复执行工具。紧接着 `ReapUnfinished` 兜住其余没有 `tool.result` 的调用：停在 `requested|prepared|waiting_approval|running` 的一律标 `canceled` 并补一条结果；**已经裁决过审批的那批也补**，文案写成「执行中进程重启，结果未知」——它们大概率已经开始执行，但结果无从判断。不补的话回放出的历史带着孤立的 `tool_use`，下一次请求会被供应商拒绝，会话直接不可用。`CheckApprovalConsistency` 只留作补写失败时的安全网。
 
 ### 5.4 权限是纯函数（ADR-0004）
 
@@ -308,6 +308,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 界面队列 | TUI 从 `task.queued` / `task.status` 事件重建有序队列（重连全量回放同样成立），不新增协议帧；取消复用 `task.cancel`，队列面板与审批面板互斥 |
 | 跨会话并发上限 | 全局 `slots`（默认 4）：拿不到槽的任务回队首，槽释放后 `pumpLocked` 补位；会话内 FIFO 不变 |
 | provider 速率 | 令牌桶装饰器，链为 `retry(rate(timeout(adapter)))`：重试也计入配额；`rpm` / `tpm` 为 0 时不包装 |
+| 重启恢复 | 关闭时 `queued` 保持 `queued`；启动收尾跳过它们，按 `created_at,id` 重建每会话 FIFO 并重新拉起；`running` / `waiting_approval` 仍标 `canceled`（ADR-0017） |
 
 ---
 
@@ -434,6 +435,7 @@ v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过 `context_b
 | 执行隔离 | 无容器（ADR-0001），命令与 server 同权限 | `ExecBackend`（ADR-0011），仅宿主选择；v2 已实现 `sandbox-exec` / `bwrap`（ADR-0015） |
 | 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（与 ADR-0010 同一管道） |
 | 上下文与长期记忆 | 单任务压缩已落地（ADR-0016）；跨会话项目记忆仍未做 | `Compactor` + 记忆检索插件 |
+| 重启恢复 | `queued` 续跑已落地（ADR-0017）；执行中任务不重跑，审批等待不可恢复 | 工作流持久化（事件回放） |
 | 模型能力 | 只适配两家协议；没有按任务选模型、本地推理、token 精算 | 供应商适配器 + 路由策略 + tokenizer |
 | 多仓库 / monorepo | 单 workspace 边界，跨仓库重构做不深 | workspace provider（多根、worktree 池） |
 | 呈现与人机协作 | TUI 只有文本；无 hunk 级局部批准、无移动端审批 | 协议客户端 + 审批呈现层 |
@@ -445,7 +447,7 @@ v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过 `context_b
 | 优先 | 缺口 | 理由 | 成本 |
 |---|---|---|---|
 | P0 | 代码理解（LSP / tree-sitter） | 直接决定 agent 好不好用；工具类风险最低 | ~3–5 天 |
-| P1 | 执行后端（sandbox-exec / bwrap） | 唯一能实质降低 ADR-0001 风险的办法 | ~2–3 天 |
+| P1 | ~~执行后端（sandbox-exec / bwrap）~~ | 已落地（ADR-0015）；远程 runner 未做 | — |
 | P2 | 供应链 feed | 复用 ADR-0010 的签名管道，边际成本最低 | ~1 天 |
 | P3 | ~~记忆 / 压缩策略~~ | 单任务压缩已落地（ADR-0016）；跨会话记忆按需再上 | — |
 | P4 | UI / 通知 | 协议已定，零架构成本 | 各自独立 |

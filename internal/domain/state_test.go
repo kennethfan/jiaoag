@@ -16,6 +16,7 @@ func TestTaskTransitions(t *testing.T) {
 		ok   bool
 	}{
 		{"排队到运行", domain.TaskQueued, domain.TaskRunning, true},
+		{"排队到失败（重启恢复失败）", domain.TaskQueued, domain.TaskFailed, true},
 		{"排队到取消", domain.TaskQueued, domain.TaskCanceled, true},
 		{"排队不能直接完成", domain.TaskQueued, domain.TaskCompleted, false},
 		{"排队不能等审批", domain.TaskQueued, domain.TaskWaitingApproval, false},

@@ -183,6 +183,7 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		MaxRounds:          cfg.Agent.MaxRounds,
 		ContextBudget:      cfg.Agent.ContextBudgetChars,
 		ContextCompact:     cfg.Agent.ContextCompact == config.ContextCompactAuto,
+		ResumeQueued:       cfg.Agent.ResumeQueuedEnabled(),
 		Logger:             log,
 	}
 }

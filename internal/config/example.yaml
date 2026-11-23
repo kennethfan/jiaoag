@@ -47,6 +47,9 @@ agent:
   max_concurrent_tasks: 4
   # 单会话排队任务数上限；0 = 用默认（16）。超出时 task.submit 返回 queue_full。
   max_queue_depth: 16
+  # 重启后继续执行排队中的任务（默认 true）。执行中/等审批的任务仍按失败收尾，
+  # 不会自动重跑；设为 false 则关闭时把排队任务一并取消（v1 行为）。
+  resume_queued: true
 
 # type 取 openai（OpenAI 兼容协议）或 anthropic（Messages API）。
 providers:

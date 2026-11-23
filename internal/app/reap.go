@@ -88,6 +88,12 @@ func (a *App) ReapUnfinished(ctx context.Context, logger *slog.Logger) error {
 		if task.Status.Terminal() {
 			continue
 		}
+		// 开启续跑时，排队任务没有产生任何副作用，重启后可以安全重拉；
+		// 它们由 resumeQueuedTasks 接手，这里不能标成 canceled。
+		if a.resumeQueued && task.Status == domain.TaskQueued {
+			logger.Info("保留排队任务，等待重启续跑", "task", task.ID, "session", task.SessionID)
+			continue
+		}
 		// 没有审批行的幽灵任务（崩溃时在等模型流式输出、或在跑只读工具）
 		// 同样要收尾，否则会话里永远挂着一条 running。
 		if err := a.cancelGhost(ctx, task, "进程重启，任务已失效"); err != nil {

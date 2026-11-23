@@ -264,3 +264,25 @@ func TestContextCompactDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("非法压缩模式应校验失败，得到 %v", err)
 	}
 }
+
+func TestResumeQueuedDefaultsAndOverride(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Agent.ResumeQueuedEnabled() {
+		t.Fatal("resume_queued 默认应开启")
+	}
+
+	off := strings.Replace(minimalYAML, "providers:", "agent:\n  resume_queued: false\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, off))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.ResumeQueuedEnabled() {
+		t.Fatal("resume_queued: false 应关闭续跑")
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("resume_queued: false 应合法：%v", err)
+	}
+}
