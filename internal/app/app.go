@@ -112,6 +112,24 @@ const closeGrace = 5 * time.Second
 // 直接关库会让这些写入失败，任务永远停在 running。
 func (a *App) Close() error { return a.close(closeGrace) }
 
+// HasBusyTasks 报告是否还有排队或执行中的任务。空闲退出用它判断现在关
+// 服务端会不会打断工作。
+//
+// 等待审批的任务不算：客户端已经全部断开，没有人能裁决它，再等下去只会
+// 让服务端永不退出。执行中的任务算，等它跑完再走。
+func (a *App) HasBusyTasks(ctx context.Context) (bool, error) {
+	tasks, err := a.store.UnfinishedTasks(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, task := range tasks {
+		if task.Status == domain.TaskQueued || task.Status == domain.TaskRunning {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // close 是 Close 的实现，窗口可注入：测试用短窗口覆盖「窗口用完仍没收尾」的分支。
 func (a *App) close(grace time.Duration) error {
 	// 在 runtimeMu 内置位，与 SubmitTask 的登记互斥：置位时要么没有任何

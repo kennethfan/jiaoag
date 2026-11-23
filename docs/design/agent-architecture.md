@@ -309,6 +309,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 跨会话并发上限 | 全局 `slots`（默认 4）：拿不到槽的任务回队首，槽释放后 `pumpLocked` 补位；会话内 FIFO 不变 |
 | provider 速率 | 令牌桶装饰器，链为 `retry(rate(timeout(adapter)))`：重试也计入配额；`rpm` / `tpm` 为 0 时不包装 |
 | 重启恢复 | 关闭时 `queued` 保持 `queued`；启动收尾跳过它们，按 `created_at,id` 重建每会话 FIFO 并重新拉起；`running` / `waiting_approval` 仍标 `canceled`（ADR-0017） |
+| server 生命周期 | 默认常驻；自动拉起时带 `-exit-when-idle=30s`：连接数归零后倒计时，仍无连接且无 `queued` / `running` 任务则优雅退出。`waiting_approval` 不算忙——已经没有客户端能裁决。生命周期按「还有没有人用」而不是「谁拉起的」判定（ADR-0019） |
 
 ---
 

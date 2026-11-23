@@ -33,6 +33,7 @@ func main() {
 		listen      = flag.String("listen", "", "覆盖配置里的 server.listen")
 		initConfig  = flag.Bool("init", false, "把样例配置写到默认路径后退出")
 		showVersion = flag.Bool("version", false, "打印版本后退出")
+		idleExit    = flag.Duration("exit-when-idle", 0, "最后一个连接断开且无排队/执行中任务后退出（0 表示常驻）")
 	)
 	flag.Parse()
 
@@ -53,14 +54,14 @@ func main() {
 		return
 	}
 
-	if err := run(*cfgPath, *listen); err != nil {
+	if err := run(*cfgPath, *listen, *idleExit); err != nil {
 		exit(err)
 	}
 }
 
 // run 承载启动流程：所有失败都以 error 返回，不用 os.Exit 打断，
 // 这样 defer 里的 application.Close() 一定会执行（WAL 正常 checkpoint）。
-func run(cfgPath, listen string) error {
+func run(cfgPath, listen string, idleExit time.Duration) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
@@ -109,7 +110,7 @@ func run(cfgPath, listen string) error {
 	if err != nil {
 		return err
 	}
-	srv.WithApp(application)
+	srv.WithApp(application).SetIdleExit(idleExit)
 
 	return srv.ListenAndServe(ctx)
 }

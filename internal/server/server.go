@@ -36,6 +36,13 @@ type Server struct {
 
 	mu    sync.Mutex
 	conns map[*clientConn]struct{}
+
+	// idleExit 是「最后一个连接断开后等多久退出」；0 表示常驻。
+	// idleC 只关闭一次，作为 ListenAndServe 的退出信号。
+	idleExit   time.Duration
+	idleC      chan struct{}
+	idleTimer  *time.Timer
+	idleClosed bool
 }
 
 // clientConn 包一层写锁：websocket 的连接允许并发读，但写必须串行。
@@ -132,6 +139,21 @@ func (s *Server) WithApp(a *app.App) *Server {
 	return s
 }
 
+// SetIdleExit 设置空闲退出时长：最后一个 WS 连接断开后开始倒计时，期间
+// 有新连接则取消；超时且没有排队/执行中的任务时关闭服务端。
+//
+// 0 表示常驻。自动拉起的 TUI 会传 30s，手动启动的 server 不传，行为不变。
+func (s *Server) SetIdleExit(d time.Duration) *Server {
+	if d < 0 {
+		d = 0
+	}
+	s.idleExit = d
+	if d > 0 {
+		s.idleC = make(chan struct{})
+	}
+	return s
+}
+
 // ListenAndServe 阻塞运行直到 ctx 取消或监听失败。
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Server.Listen)
@@ -147,8 +169,15 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	errc := make(chan error, 1)
 	go func() { errc <- s.httpSrv.Serve(ln) }()
 
-	select {
-	case <-ctx.Done():
+	// 启动即开始空闲倒计时：TUI 拉起 server 后如果自己先崩了，没人连接时
+	// 不应该留下一个孤儿进程。TUI 正常连接会立刻取消定时器。
+	s.mu.Lock()
+	if s.connCountLocked() == 0 {
+		s.armIdleLocked()
+	}
+	s.mu.Unlock()
+
+	shutdown := func() error {
 		s.log.Info("正在关闭服务端")
 		s.closeAll()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -157,6 +186,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 			return err
 		}
 		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return shutdown()
+	case <-s.idleC:
+		s.log.Info("空闲超时，服务端退出", "idle", s.idleExit)
+		return shutdown()
 	case err := <-errc:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -288,12 +325,19 @@ func (s *Server) authorized(r *http.Request) bool {
 func (s *Server) addConn(c *clientConn) {
 	s.mu.Lock()
 	s.conns[c] = struct{}{}
+	if s.idleTimer != nil {
+		s.idleTimer.Stop()
+		s.idleTimer = nil
+	}
 	s.mu.Unlock()
 }
 
 func (s *Server) removeConn(c *clientConn) {
 	s.mu.Lock()
 	delete(s.conns, c)
+	if len(s.conns) == 0 {
+		s.armIdleLocked()
+	}
 	s.mu.Unlock()
 }
 
@@ -301,6 +345,54 @@ func (s *Server) connCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.conns)
+}
+
+func (s *Server) connCountLocked() int { return len(s.conns) }
+
+// armIdleLocked 在「没有连接」时启动空闲倒计时。调用方必须持有 s.mu。
+func (s *Server) armIdleLocked() {
+	if s.idleExit <= 0 || s.idleTimer != nil || s.idleClosed {
+		return
+	}
+	s.idleTimer = time.AfterFunc(s.idleExit, s.checkIdle)
+}
+
+// checkIdle 是倒计时回调：有新连接就放弃；仍有排队或执行中的任务就再等
+// 一轮；否则关闭 idleC，让 ListenAndServe 走正常关闭路径。
+func (s *Server) checkIdle() {
+	s.mu.Lock()
+	s.idleTimer = nil
+	if len(s.conns) > 0 || s.idleClosed {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	busy := false
+	if s.app != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if b, err := s.app.HasBusyTasks(ctx); err != nil {
+			s.log.Warn("空闲退出前检查任务失败，暂不退出", "err", err)
+			busy = true
+		} else {
+			busy = b
+		}
+		cancel()
+	}
+	if busy {
+		s.mu.Lock()
+		s.armIdleLocked()
+		s.mu.Unlock()
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.conns) > 0 || s.idleClosed {
+		return
+	}
+	s.idleClosed = true
+	close(s.idleC)
 }
 
 func (s *Server) closeAll() {
