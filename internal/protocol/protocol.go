@@ -32,6 +32,8 @@ const (
 	TypeProviderModelsResult = "provider.models.result" // S→C
 	TypeSkillList            = "skill.list"             // C→S：列出技能库（供 /skill 面板）
 	TypeSkillListResult      = "skill.list.result"      // S→C
+	TypeMCPList              = "mcp.list"               // C→S：列出 MCP server 与运行状态（供 /mcp 面板）
+	TypeMCPListResult        = "mcp.list.result"        // S→C
 	// TypeProjectTrust 确认当前工作区的项目级扩展（AGENTS.md、.jiaoag/、
 	// .agents/skills）；TypeProjectRevoke 撤销确认。
 	TypeProjectTrust    = "project.trust"    // C→S
@@ -215,6 +217,33 @@ type SkillInfo struct {
 // SkillListResultPayload 是 skill.list 的响应。
 type SkillListResultPayload struct {
 	Skills []SkillInfo `json:"skills"`
+}
+
+// MCPListPayload 请求当前工作区的 MCP server 列表。
+type MCPListPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// MCPServerInfo 是一台 MCP server 的线上表示。只读：面板据此展示，不能改。
+type MCPServerInfo struct {
+	Name string `json:"name"`
+	// Command 是完整启动命令（argv 拼一行），方便认出这台 server 是什么。
+	Command string `json:"command"`
+	Dir     string `json:"dir,omitempty"`
+	// Trust 为真表示配置即信任、调用免审批（仍记审计）；为假则逐次审批。
+	Trust bool `json:"trust"`
+	// Source 是来源：config（全局配置）或 project（工作区的 .jiaoag/mcp.yaml）。
+	Source string `json:"source"`
+	// Connected 表示该工作区里它的子进程已经连上过；未用到时是 false。
+	Connected bool   `json:"connected"`
+	Version   string `json:"version,omitempty"`
+	Tools     int    `json:"tools"`
+	TimeoutMS int    `json:"timeout_ms,omitempty"`
+}
+
+// MCPListResultPayload 是 mcp.list 的响应。
+type MCPListResultPayload struct {
+	Servers []MCPServerInfo `json:"servers"`
 }
 
 // TaskCancelPayload 请求取消一个任务。任务已终止时是幂等的空操作。

@@ -71,6 +71,8 @@ type Model struct {
 	modelPanel *modelPanelView
 	// skillPanel 非空表示 /skill 的技能选择面板打开。
 	skillPanel *skillPanelView
+	// mcpPanel 非空表示 /mcp 的 MCP server 面板打开（只读）。
+	mcpPanel *mcpPanelView
 	// forcedSkills 是用户点名、要随下一条任务提交的技能；提交后清空。
 	forcedSkills    []string
 	sessionProvider string
@@ -440,6 +442,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.skillPanel != nil {
 		return m.handleSkillKey(key)
 	}
+	if m.mcpPanel != nil {
+		return m.handleMCPKey(key)
+	}
 	switch key {
 	case "ctrl+q":
 		if len(m.queue) == 0 {
@@ -492,6 +497,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.appendLine("正在获取技能列表…")
 			return m, sendCmd(m.conn, protocol.TypeSkillList, protocol.SkillListPayload{
+				SessionID: m.sessionID,
+			})
+		}
+		// /mcp 只读展示当前工作区的 MCP server：起了哪些、各几个工具、什么信任级别。
+		if text == "/mcp" {
+			m.input = ""
+			m.appendLine("正在获取 MCP server 列表…")
+			return m, sendCmd(m.conn, protocol.TypeMCPList, protocol.MCPListPayload{
 				SessionID: m.sessionID,
 			})
 		}
@@ -629,6 +642,18 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			armed = m.forcedSkills[0]
 		}
 		m.skillPanel = newSkillPanel(p.Skills, armed)
+		return nil
+
+	case protocol.TypeMCPListResult:
+		var p protocol.MCPListResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if len(p.Servers) == 0 {
+			m.appendLine("没有配置 MCP server：检查 mcp.servers 或工作区的 .jiaoag/mcp.yaml")
+			return nil
+		}
+		m.mcpPanel = newMCPPanel(p.Servers)
 		return nil
 
 	case protocol.TypeTaskQueued:
@@ -927,16 +952,19 @@ func (m *Model) View() tea.View {
 	case m.skillPanel != nil:
 		b.WriteByte('\n')
 		b.WriteString(m.renderSkillPanel())
+	case m.mcpPanel != nil:
+		b.WriteByte('\n')
+		b.WriteString(m.renderMCPPanel())
 	case m.sessionID != "":
 		b.WriteString("\n› ")
 		b.WriteString(m.input)
 		b.WriteString("▏\n")
 	}
-	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil && m.skillPanel == nil {
+	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil && m.skillPanel == nil && m.mcpPanel == nil {
 		if m.local != nil {
 			b.WriteString("[enter] 发送  [ctrl+x] 终止本机命令  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
 		} else {
-			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [/skill] 技能  [!] 本机命令  [ctrl+c] 退出\n")
+			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [/skill] 技能  [/mcp] MCP  [!] 本机命令  [ctrl+c] 退出\n")
 		}
 	}
 	return tea.NewView(b.String())
@@ -953,6 +981,7 @@ func (m *Model) resetView() {
 	m.queuePanel = nil
 	m.modelPanel = nil
 	m.skillPanel = nil
+	m.mcpPanel = nil
 	m.round, m.tokens = 0, 0
 	m.localLines, m.localOmitted = 0, 0
 	m.dialog = nil

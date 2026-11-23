@@ -58,7 +58,7 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [/skill] 技能  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [/skill] 技能  [/mcp] MCP  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
@@ -154,6 +154,7 @@ make demo-mcp
 | v2.9 | 技能包：扫 `~/.agents/skills`，索引常驻、`skill` 工具按需加载正文（ADR-0023） | ✅ |
 | v2.10 | 主动调起技能：`disable-model-invocation` 不进索引，`/skill` 指定后正文直接进该任务系统提示（ADR-0024） | ✅ |
 | v2.11 | 项目级扩展：工作区 `AGENTS.md` / `.jiaoag/{prompts,skills,mcp.yaml}` / `.agents/skills`，一次确认覆盖三者、内容变化重新确认（ADR-0025） | ✅ |
+| v2.12 | MCP 可观测性：`/mcp` 面板（只读，服务器 / 工具数 / 信任 / 版本），提示词申明外部工具返回内容只当数据 | ✅ |
 
 ## 安全边界
 

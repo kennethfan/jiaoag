@@ -15,6 +15,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/domain"
 	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	mcppkg "github.com/kennethfan/jiaoag/internal/mcp"
 	"github.com/kennethfan/jiaoag/internal/memory"
 	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/skills"
@@ -54,7 +55,10 @@ type RuntimeDeps struct {
 	// ProjectMode 控制工作区级扩展（AGENTS.md、.jiaoag/、.agents/skills）：
 	// ask 需确认（默认）、auto 直接生效、off 完全忽略。
 	ProjectMode string
-	Logger      *slog.Logger
+	// MCPServers 报告该工作区配置的 MCP server 与运行状态；不主动启动进程。
+	// 未配置 MCP 时可以为 nil，/mcp 面板据此显示空列表。
+	MCPServers func(root string, extra []mcppkg.Server) []mcppkg.ServerStatus
+	Logger     *slog.Logger
 }
 
 // taskRun 是一个运行中任务的句柄。

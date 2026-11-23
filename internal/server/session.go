@@ -164,6 +164,54 @@ func (s *Server) handleProviderModels(ctx context.Context, c *clientConn, env pr
 	_ = c.send(ctx, reply)
 }
 
+func (s *Server) handleMCPList(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入运行时")
+		return
+	}
+	var p protocol.MCPListPayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	sess, err := s.app.GetSession(ctx, domain.SessionID(id))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	// 只读快照：会话当前工作区里会用到的那几台，不启动任何进程。
+	status := s.app.MCPServers(sess.Workspace)
+	out := make([]protocol.MCPServerInfo, 0, len(status))
+	for _, st := range status {
+		out = append(out, protocol.MCPServerInfo{
+			Name:      st.Name,
+			Command:   strings.Join(st.Argv, " "),
+			Dir:       st.Dir,
+			Trust:     st.Trust,
+			Source:    st.Source,
+			Connected: st.Connected,
+			Version:   st.Version,
+			Tools:     st.Tools,
+			TimeoutMS: int(st.Timeout / time.Millisecond),
+		})
+	}
+	reply, err := protocol.New(protocol.TypeMCPListResult, protocol.MCPListResultPayload{Servers: out})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
+	_ = c.send(ctx, reply)
+}
+
 func (s *Server) handleSkillList(ctx context.Context, c *clientConn, env protocol.Envelope) {
 	if s.app == nil || s.cfg == nil {
 		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入运行时")

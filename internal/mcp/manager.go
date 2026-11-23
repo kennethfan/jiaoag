@@ -81,6 +81,9 @@ type rootSources struct {
 	mu    sync.Mutex
 	ready bool
 	tools []tools.Tool
+	// status 与 tools 同源：/mcp 面板要显示「起了哪些、各几个工具」，
+	// 这些信息只有连过之后才有。
+	status []ServerStatus
 }
 
 // NewManager 构造管理器。Manager 不主动连接：第一次 Tools 才启动子进程。
@@ -113,9 +116,7 @@ func (m *Manager) Tools(ctx context.Context, workspaceRoot string) []tools.Tool 
 //
 // extra 的顺序在后：同名时由它覆盖全局配置——仓库对自己的 MCP 有最终发言权。
 func (m *Manager) ToolsWith(ctx context.Context, workspaceRoot string, extra []Server) []tools.Tool {
-	all := make([]Server, 0, len(m.servers)+len(extra))
-	all = append(all, m.servers...)
-	all = append(all, extra...)
+	all := mergeServers(m.servers, extra)
 	if len(all) == 0 {
 		return nil
 	}
@@ -136,7 +137,7 @@ func (m *Manager) ToolsWith(ctx context.Context, workspaceRoot string, extra []S
 	defer state.mu.Unlock()
 	if !state.ready {
 		var sessions []*sdk.ClientSession
-		state.tools, sessions = m.connectAll(ctx, workspaceRoot, all)
+		state.tools, state.status, sessions = m.connectAll(ctx, workspaceRoot, all)
 		state.ready = true
 		if len(sessions) > 0 {
 			m.mu.Lock()
@@ -167,23 +168,17 @@ func serversKey(servers []Server) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (m *Manager) connectAll(ctx context.Context, root string, servers []Server) ([]tools.Tool, []*sdk.ClientSession) {
+func (m *Manager) connectAll(ctx context.Context, root string, servers []Server) ([]tools.Tool, []ServerStatus, []*sdk.ClientSession) {
 	var (
 		out      []tools.Tool
+		status   []ServerStatus
 		sessions []*sdk.ClientSession
-		seen     = make(map[string]string, len(servers))
 	)
 	for _, srv := range servers {
 		if len(srv.Argv) == 0 && m.connect == nil {
 			m.log.Warn("MCP server 缺少启动命令，已跳过", "server", srv.Name)
 			continue
 		}
-		if prev, ok := seen[srv.Name]; ok {
-			m.log.Error("MCP server 名称重复，已跳过", "server", srv.Name, "first_command", prev)
-			continue
-		}
-		seen[srv.Name] = strings.Join(srv.Argv, " ")
-
 		startCtx, cancel := context.WithTimeout(ctx, defaultStartupTimeout)
 		sess, err := m.connect(startCtx, srv)
 		cancel()
@@ -199,9 +194,27 @@ func (m *Manager) connectAll(ctx context.Context, root string, servers []Server)
 			continue
 		}
 		out = append(out, toolsForServer...)
+		status = append(status, serverStatus(srv, toolsForServer))
 		m.log.Info("MCP server 已就绪", "server", srv.Name, "tools", len(toolsForServer))
 	}
-	return out, sessions
+	return out, status, sessions
+}
+
+// serverStatus 从已连上的详情反推面板要显示的状态。
+func serverStatus(srv Server, list []tools.Tool) ServerStatus {
+	st := ServerStatus{
+		Name:      srv.Name,
+		Argv:      srv.Argv,
+		Dir:       srv.Dir,
+		Trust:     srv.Trust,
+		Timeout:   srv.Timeout,
+		Connected: true,
+		Tools:     len(list),
+	}
+	if len(list) > 0 {
+		st.Version = parseVersion(list[0].Spec().Version)
+	}
+	return st
 }
 
 func (m *Manager) listTools(ctx context.Context, sess *sdk.ClientSession, srv Server, root string) ([]tools.Tool, error) {

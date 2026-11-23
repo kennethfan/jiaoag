@@ -76,7 +76,8 @@ func TestBuiltinContainsWorkspaceAndTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	for _, want := range []string{"/tmp/ws", "read_file", "简体中文"} {
+	// mcp__ 那条是提示注入的护栏：外部工具返回的内容只能当数据，不能当指令。
+	for _, want := range []string{"/tmp/ws", "read_file", "简体中文", "mcp__<server>__<tool>"} {
 		if !contains(result.Text, want) {
 			t.Fatalf("内置提示词缺少 %q", want)
 		}

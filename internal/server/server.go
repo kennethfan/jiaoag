@@ -295,6 +295,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			s.handleProviderModels(ctx, c, env)
 		case protocol.TypeSkillList:
 			s.handleSkillList(ctx, c, env)
+		case protocol.TypeMCPList:
+			s.handleMCPList(ctx, c, env)
 		case protocol.TypeProjectTrust:
 			s.handleProjectTrust(ctx, c, env)
 		case protocol.TypeProjectRevoke:

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/kennethfan/jiaoag/internal/config"
+	mcppkg "github.com/kennethfan/jiaoag/internal/mcp"
 	"github.com/kennethfan/jiaoag/internal/project"
 	"github.com/kennethfan/jiaoag/internal/prompt"
 )
@@ -165,6 +166,20 @@ func projectServers(p *project.Project) []project.Server {
 		return nil
 	}
 	return p.Servers
+}
+
+// MCPServers 返回该工作区会用的 MCP server 与运行状态，供 /mcp 面板展示。
+//
+// 只读快照：不启动进程，也不改变任何状态。未配置 MCP 时返回 nil，不是错误——
+// 「没用 MCP」是正常情况，不该让面板报错。
+func (a *App) MCPServers(workspace string) []mcppkg.ServerStatus {
+	deps := a.currentRuntime()
+	if deps == nil || deps.MCPServers == nil {
+		return nil
+	}
+	root := canonicalRoot(workspace)
+	proj := a.loadProject(root, deps)
+	return deps.MCPServers(root, mcppkg.ServersFromProject(projectServers(proj)))
 }
 
 // joinProjectSkillDirs 把项目技能目录追加在机器级之后：skills.Load 是
