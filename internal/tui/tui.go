@@ -189,6 +189,12 @@ func Dial(ctx context.Context, opts Options) (*websocket.Conn, protocol.HelloPay
 
 func waitForEnvelope(conn *websocket.Conn) tea.Cmd {
 	return func() tea.Msg {
+		if conn == nil {
+			// 断线后 Model.conn 已经清空，但可能还有一帧在途（旧读协程已经
+			// 交付、只是还没被 Update 处理）。没有这层保护，wsjson.Read 会在
+			// nil 连接上解引用并把整个 TUI 打崩。
+			return closedMsg{err: errors.New("未连接到服务端")}
+		}
 		var env protocol.Envelope
 		if err := wsjson.Read(context.Background(), conn, &env); err != nil {
 			return closedMsg{err}
@@ -261,6 +267,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case envelopeMsg:
 		next := m.handleEnvelope(msg.env)
+		// 断线可能已经处理过：迟到的事件帧仍要渲染，但不能再拿 nil 连接
+		// 续读下一帧。
+		if m.conn == nil {
+			return m, next
+		}
 		return m, tea.Batch(next, waitForEnvelope(m.conn))
 
 	case closedMsg:

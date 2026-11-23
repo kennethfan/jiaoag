@@ -113,3 +113,29 @@ func TestSnapshotResetClearsViewAndResubscribes(t *testing.T) {
 		t.Fatalf("重置后应清空历史：%v", m.dialog)
 	}
 }
+
+// 断线后旧读协程可能已交付一帧、但 Update 还没处理；此时 conn 已经是 nil，
+// 不能再去读，也不能 panic。
+func TestWaitForEnvelopeWithNilConnReturnsClosed(t *testing.T) {
+	msg := waitForEnvelope(nil)()
+	if _, ok := msg.(closedMsg); !ok {
+		t.Fatalf("nil 连接应返回 closedMsg，实际 %T", msg)
+	}
+}
+
+func TestLateEnvelopeWithNilConnDoesNotScheduleRead(t *testing.T) {
+	m := New(Options{Workspace: t.TempDir(), SessionID: "ses_late"})
+	m.conn = nil
+	env, err := protocol.New(protocol.TypeEvent, protocol.StreamEventPayload{
+		Kind:    "unknown.event",
+		Payload: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("构造事件帧: %v", err)
+	}
+
+	// panic 会直接让测试失败；这里再断言不会为 nil 连接续读。
+	if _, cmd := m.Update(envelopeMsg{env: env}); cmd != nil {
+		t.Fatal("断线后不应再调度 waitForEnvelope")
+	}
+}

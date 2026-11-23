@@ -205,6 +205,7 @@ func (s *Server) handleEventSubscribe(ctx context.Context, c *clientConn, env pr
 	// 同一连接上重复订阅同一会话时，先取消旧的推送协程再起新的：
 	// 协议承诺「不重复、不乱序」，两份订阅会让每条事件发送两次。
 	key := string(sessionID)
+	s.log.Info("事件订阅已建立", "session", sessionID, "from_seq", p.FromSeq)
 	subCtx, cancel := context.WithCancel(ctx)
 	handle := c.beginStream(key, cancel)
 	sub := s.app.Hub().Subscribe(sessionID)
