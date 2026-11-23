@@ -17,8 +17,8 @@ mcp:
       dir: ~/code
       # 单次 tools/call 的超时秒数，默认 60，范围 1-600。
       timeout_s: 60
-      # ask（默认）或 allow；allow 表示整台 server 免审，仍记审计。
-      trust: ask
+      # allow（默认，配置即信任）或 ask（每次调用都审批）。
+      trust: allow
       enabled: true
 ```
 
@@ -38,12 +38,14 @@ mcp:
 
 ## 审批与信任模型
 
-MCP server 与 jiaoag 同权限运行，**不是沙箱**（ADR-0001）。因此：
+MCP server 与 jiaoag 同权限运行，**不是沙箱**（ADR-0001）。因此边界画在配置面上：
 
-- 默认每一次外部调用都要审批，TUI 显示工具名、来源与参数快照（上限 8 KB）。`y` 批准一次、`a` 本会话内同类调用都批准、`n` 拒绝。
+- **写进配置即信任**：`trust` 默认 `allow`，整台 server 的工具直接执行，不再逐次弹审批。`trust` 只能来自本地配置文件，工具无权自称可信。
+- 需要把关的 server 显式写 `trust: ask`，调用改为逐次人工批准，TUI 显示工具名、来源与参数快照（上限 8 KB）：`y` 批准一次、`a` 本会话内同类调用都批准、`n` 拒绝。
 - 拒绝时一个 `tools/call` 都不会发出去；批准后任务若已取消，也不会发。
-- 只有配置里写 `trust: allow` 才会自动放行整台 server。这属于本地配置的明确选择，不是工具的自我声明。
-- 所有路径都写审计：`external.allow`（policy）、`external.approved`（user / allow_session）、`external.denied`、`external.failed`。detail 含 source、参数、规则版本、耗时。
+- 两种路径都写审计：`external.allow`（policy，免审执行）、`external.approved`（user / allow_session）、`external.denied`、`external.failed`。detail 含 source、参数、规则版本、耗时。
+
+也就是说：是否弹审批取决于你是否把这台 server 写进配置，而不是每次调用重新确认。加一台会写文件或跑命令的 server，等于把对应的权限交给它自己判断——先读它的工具清单再加。
 
 审计示例：
 
@@ -57,7 +59,7 @@ SELECT at, actor, action, detail FROM audit WHERE action LIKE 'external.%' ORDER
 make demo-mcp
 ```
 
-需要 `npx`/Node 与 `JIAOAG_DEMO_*`（见 README「真实 provider 冒烟」）。脚本用官方 filesystem server、真实模型跑一轮「列工具 → 外部调用审批 → 执行 → 回填」，并独立核验审计里的 `external.approved`。只验证适配器本身时用 `go test -tags mcpsmoke ./internal/mcp/`。
+需要 `npx`/Node 与 `JIAOAG_DEMO_*`（见 README「真实 provider 冒烟」）。脚本用官方 filesystem server、真实模型跑一轮「列工具 → 外部调用审批 → 执行 → 回填」，并独立核验审计里的 `external.approved`——为了覆盖审批路径，脚本里显式写了 `trust: ask`；默认的 `allow` 只记 `external.allow`。只验证适配器本身时用 `go test -tags mcpsmoke ./internal/mcp/`。
 
 ## 失败行为
 

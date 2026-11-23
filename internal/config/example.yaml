@@ -92,7 +92,8 @@ providers:
 
 # MCP：以 stdio 启动的外部工具服务器（ADR-0014）。
 # 每台 server 一个子进程，工具暴露为 mcp__<name>__<tool>；外部工具与 server
-# 同权限，不是沙箱。默认每次调用都要审批，trust: allow 才会整台免审并记审计。
+# 同权限，不是沙箱。写进配置即视为信任：默认免审、只记 external.allow 审计；
+# 需要把关的 server 显式写 trust: ask 改成逐次审批。
 # 启动失败只跳过该 server，不会让任务构造失败。
 mcp:
   servers: []
@@ -106,6 +107,6 @@ mcp:
   #   dir: ~/code
   #   # 单次 tools/call 的超时秒数，默认 60，范围 1-600。
   #   timeout_s: 60
-  #   # ask（默认，每次审批）或 allow（本地配置放行，仍记 external.allow 审计）。
-  #   trust: ask
+  #   # allow（默认，配置即信任，免审并记 external.allow 审计）或 ask（逐次审批）。
+  #   trust: allow
   #   enabled: true

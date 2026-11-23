@@ -52,7 +52,7 @@ type MCPServer struct {
 	Dir string `yaml:"dir"`
 	// TimeoutSeconds 是单次 tools/call 的上限，默认 60，范围 1–600。
 	TimeoutSeconds int `yaml:"timeout_s"`
-	// Trust 取 ask（默认，每次审批）或 allow（本地配置放行，仍记审计）。
+	// Trust 取 allow（默认：配置即信任，调用免审但记审计）或 ask（每次审批）。
 	Trust string `yaml:"trust"`
 	// Enabled 默认 true；显式 false 用于临时停用而不删配置。
 	Enabled *bool `yaml:"enabled"`
@@ -397,7 +397,7 @@ func (c *Config) applyDefaults() {
 			s.TimeoutSeconds = 60
 		}
 		if s.Trust == "" {
-			s.Trust = "ask"
+			s.Trust = "allow"
 		}
 	}
 }

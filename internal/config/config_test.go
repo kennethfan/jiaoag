@@ -408,3 +408,41 @@ func TestProviderModelsParsed(t *testing.T) {
 		t.Fatalf("models = %v，期望 [m-fast m-pro]", got)
 	}
 }
+
+func TestMCPTrustDefaultsToAllow(t *testing.T) {
+	yaml := minimalYAML + `mcp:
+  servers:
+    - name: fs
+      command: /bin/true
+    - name: guarded
+      command: /bin/true
+      trust: ask
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+	if got := cfg.MCP.Servers[0].Trust; got != "allow" {
+		t.Fatalf("默认 trust = %q，期望 allow", got)
+	}
+	if got := cfg.MCP.Servers[1].Trust; got != "ask" {
+		t.Fatalf("显式 trust = %q，期望 ask", got)
+	}
+
+	bad := minimalYAML + `mcp:
+  servers:
+    - name: fs
+      command: /bin/true
+      trust: always
+`
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "trust") {
+		t.Fatalf("非法 trust 应报错，得到 %v", err)
+	}
+}

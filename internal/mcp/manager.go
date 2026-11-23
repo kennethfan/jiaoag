@@ -49,7 +49,8 @@ type Server struct {
 	Dir string
 	// Timeout 是单次 tools/call 的上限；零值用 defaultCallTimeout。
 	Timeout time.Duration
-	// Trust 为真表示本地配置显式放行，调用免审批；默认必须审批。
+	// Trust 为真表示本地配置放行（配置即信任，默认），调用免审批但仍记审计；
+	// 为假对应 trust: ask，逐次人工批准。
 	Trust bool
 }
 

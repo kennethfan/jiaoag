@@ -188,6 +188,18 @@ func TestExecuteRendersContentAndErrors(t *testing.T) {
 	}
 }
 
+func TestTrustedServerMarksExternalTrusted(t *testing.T) {
+	m, _ := managerWith(t, mcppkg.Server{Name: "fs", Timeout: time.Second, Trust: true})
+	tool := m.Tools(context.Background(), "/repo")[0]
+	prep, err := tool.Prepare(context.Background(), tools.Call{ID: "c1", Name: tool.Spec().Name, Args: json.RawMessage(`{"text":"hi"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prep.External == nil || !prep.External.Trusted {
+		t.Fatalf("trust: allow 的 server 应标记 Trusted：%+v", prep.External)
+	}
+}
+
 func TestExecuteTimeoutIsToolError(t *testing.T) {
 	m, _ := managerWith(t, mcppkg.Server{Name: "fs", Timeout: 20 * time.Millisecond})
 	tool := m.Tools(context.Background(), "/repo")[0]

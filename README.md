@@ -121,7 +121,7 @@ make demo-mcp
 | M6 | 多会话并行、同仓警告、会话内 FIFO 排队、panic 兜底、断连全量回放 | ✅ |
 | 加固 | 命令资源限制（Unix rlimit / Windows Job Object）、并发与配额（全局槽 + 队列深度 + provider 令牌桶）、TUI 队列面板、CI 双 job | ✅ |
 | 回放 | 增量回放 + 待审批快照（`event.snapshot`），`from_seq` 超前时重置 | ✅ |
-| v2.0 | MCP stdio 工具源：外部工具审批（默认逐次）、`trust: allow`、`external.*` 审计、失败隔离 | ✅ |
+| v2.0 | MCP stdio 工具源：外部工具接入、`trust` 信任模型、`external.*` 审计、失败隔离 | ✅ |
 | v2.1 | 执行隔离：`exec.backend: sandbox`（macOS seatbelt / Linux bwrap），写白名单 + 密钥禁读，不可用即启动报错 | ✅ |
 | v2.2 | 上下文压缩：超预算 80% 把较早轮次摘成 `context.compacted` 事件，保留最近 2 轮，失败降级 | ✅ |
 | v2.3 | 重启续跑：`queued` 任务重启后自动恢复（`agent.resume_queued`，默认开），执行中任务仍 canceled | ✅ |
@@ -129,6 +129,7 @@ make demo-mcp
 | v2.5 | 单 provider 多 key：`api_keys` 轮询，鉴权 / 额度 / 限流失败冷却剔除（ADR-0020） | ✅ |
 | v2.6 | 模型列表与切换：`/models` 列候选（配置优先，否则查供应商），选中即写 `session.updated`（ADR-0021） | ✅ |
 | v2.7 | 本机命令：TUI 里 `!命令` 直接在客户端执行，流式输出、`ctrl+x` 终止，不审批/不审计/不进上下文（ADR-0022） | ✅ |
+| v2.8 | MCP 信任模型：写进配置即放行（`trust` 默认 `allow`），需要把关的 server 显式 `trust: ask` | ✅ |
 
 ## 安全边界
 

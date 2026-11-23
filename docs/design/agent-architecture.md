@@ -395,9 +395,9 @@ type Spec struct {
 }
 ```
 
-MCP 不是独立特性，而是 `Source` 的一个实现（v2 已落地：只做 stdio 与 `tools/list` / `tools/call`，工具名 `mcp__<server>__<tool>`，默认逐次审批，`trust: allow` 才整台放行，见 ADR-0014 与 `docs/mcp.md`）；v2 的第三方插件是第二个实现（stdio JSON-RPC 2.0）。
+MCP 不是独立特性，而是 `Source` 的一个实现（v2 已落地：只做 stdio 与 `tools/list` / `tools/call`，工具名 `mcp__<server>__<tool>`，写进配置即信任（`trust` 默认 `allow`），需要把关的 server 写 `trust: ask` 改成逐次审批，见 ADR-0014 与 `docs/mcp.md`）；v2 的第三方插件是第二个实现（stdio JSON-RPC 2.0）。
 
-**外部工具的审批**：`Prepared.External{Source, Trusted}` 让权限引擎在 effectsClass 之前短路——外部工具不能靠自称只读获得放行，只有本地配置的 `trust` 能给出 `Allow`，且 `external.allow/approved/denied/failed` 全部入审计。审批事件带 `tool` / `source` / `args` 快照；批准前不发 `tools/call`。
+**外部工具的审批**：`Prepared.External{Source, Trusted}` 让权限引擎在 effectsClass 之前短路——外部工具不能靠自称只读获得放行，只有本地配置的 `trust` 能给出 `Allow`（默认就是放行，显式 `trust: ask` 才逐次审批），且 `external.allow/approved/denied/failed` 全部入审计。审批事件带 `tool` / `source` / `args` 快照；批准前不发 `tools/call`。
 
 **宿主中介写盘**：`propose_write` 只返回 `{path, content}`，diff / hash / 审批 / CAS 落盘全由宿主做；`process` / `network` 必审批并回报 argv / 目标。审计行必须带 `source`。插件是受信代码，不是沙箱（ADR-0001），一插件一进程，崩溃只影响该 Source。
 
