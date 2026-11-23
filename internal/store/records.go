@@ -48,6 +48,43 @@ func (s *Store) CreateSession(ctx context.Context, sess domain.Session, events [
 	return stored, nil
 }
 
+// UpdateSession 更新会话的供应商/模型，并与事件原子提交。
+func (s *Store) UpdateSession(ctx context.Context, sess domain.Session, events []domain.Event) ([]domain.Event, error) {
+	if !sess.ID.Valid() {
+		return nil, fmt.Errorf("store: 会话 id 为空")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store: 开始事务: %w", err)
+	}
+	defer tx.Rollback()
+
+	if sess.UpdatedAt.IsZero() {
+		sess.UpdatedAt = domain.Now()
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE sessions SET provider=?, model=?, updated_at=? WHERE id=?`,
+		sess.Provider, sess.Model, ts(sess.UpdatedAt), string(sess.ID))
+	if err != nil {
+		return nil, fmt.Errorf("store: 更新会话 %s: %w", sess.ID, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return nil, fmt.Errorf("store: 会话 %s: %w", sess.ID, domain.ErrNotFound)
+	}
+
+	stored, err := appendEventsTx(ctx, tx, sess.ID, events)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("store: 提交会话 %s: %w", sess.ID, err)
+	}
+	return stored, nil
+}
+
 const sessionColumns = `id, workspace, provider, model, title, created_at, updated_at`
 
 func scanSession(row interface{ Scan(...any) error }) (domain.Session, error) {

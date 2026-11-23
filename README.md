@@ -58,7 +58,7 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [ctrl+r] 重连  [ctrl+c] 退出
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
@@ -116,6 +116,7 @@ make demo-mcp
 | v2.3 | 重启续跑：`queued` 任务重启后自动恢复（`agent.resume_queued`，默认开），执行中任务仍 canceled | ✅ |
 | v2.4 | 跨会话记忆：工作区 `MEMORY.md` 注入 + `remember` 工具（追加走 diff 审批），`agent.memory` 默认开 | ✅ |
 | v2.5 | 单 provider 多 key：`api_keys` 轮询，鉴权 / 额度 / 限流失败冷却剔除（ADR-0020） | ✅ |
+| v2.6 | 模型列表与切换：`/models` 列候选（配置优先，否则查供应商），选中即写 `session.updated`（ADR-0021） | ✅ |
 
 ## 安全边界
 

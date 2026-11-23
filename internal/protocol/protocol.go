@@ -23,15 +23,20 @@ const (
 
 	TypeSessionCreate     = "session.create"      // C→S
 	TypeSessionCreated    = "session.created"     // S→C
+	TypeSessionUpdate     = "session.update"      // C→S：切换本会话使用的供应商/模型
+	TypeSessionUpdated    = "session.updated"     // S→C
 	TypeSessionList       = "session.list"        // C→S
 	TypeSessionListResult = "session.list.result" // S→C
-	TypeTaskSubmit        = "task.submit"         // C→S
-	TypeTaskQueued        = "task.queued"         // S→C
-	TypeTaskCancel        = "task.cancel"         // C→S：取消排队中或运行中的任务
-	TypeTaskCanceled      = "task.canceled"       // S→C：取消请求已被接受
-	TypeApprovalResolve   = "approval.resolve"    // C→S：对一次待审批给出裁决
-	TypeEventSubscribe    = "event.subscribe"     // C→S
-	TypeEventSnapshot     = "event.snapshot"      // S→C：增量订阅时补发非事件态（待审批）
+	TypeProviderModels    = "provider.models"     // C→S：列出该会话供应商的可用模型
+	// TypeProviderModelsResult 是 provider.models 的响应。
+	TypeProviderModelsResult = "provider.models.result" // S→C
+	TypeTaskSubmit           = "task.submit"            // C→S
+	TypeTaskQueued           = "task.queued"            // S→C
+	TypeTaskCancel           = "task.cancel"            // C→S：取消排队中或运行中的任务
+	TypeTaskCanceled         = "task.canceled"          // S→C：取消请求已被接受
+	TypeApprovalResolve      = "approval.resolve"       // C→S：对一次待审批给出裁决
+	TypeEventSubscribe       = "event.subscribe"        // C→S
+	TypeEventSnapshot        = "event.snapshot"         // S→C：增量订阅时补发非事件态（待审批）
 )
 
 // 错误码。
@@ -111,6 +116,26 @@ type SessionCreatePayload struct {
 	Provider  string `json:"provider,omitempty"`
 	Model     string `json:"model,omitempty"`
 	Title     string `json:"title,omitempty"`
+}
+
+// SessionUpdatePayload 切换会话后续任务使用的供应商与模型。
+// Provider 为空表示沿用当前供应商。
+type SessionUpdatePayload struct {
+	SessionID string `json:"session_id"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model"`
+}
+
+// ProviderModelsPayload 请求列出某个会话所属供应商的可用模型。
+type ProviderModelsPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// ProviderModelsResultPayload 是模型候选列表。Source 说明来源：
+// config（配置里写死的 models）或 api（供应商 /models 接口）。
+type ProviderModelsResultPayload struct {
+	Models []string `json:"models"`
+	Source string   `json:"source,omitempty"`
 }
 
 // SessionPayload 是会话的线上表示。

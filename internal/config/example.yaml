@@ -66,6 +66,11 @@ providers:
     # api_keys:
     #   - $DEEPSEEK_API_KEY_1
     #   - $DEEPSEEK_API_KEY_2
+    # models 是 /models 的候选列表：配了就只展示这些，不请求供应商的 /models
+    # 接口（适合网关不支持列表，或只想暴露少数模型）。留空则运行时向供应商查询。
+    # models:
+    #   - deepseek-chat
+    #   - deepseek-reasoner
     # 单次尝试的首块超时（秒），默认 120。流式收到首块后改为空闲超时。
     timeout_seconds: 120
     # 只对限流与暂时性失败生效，默认 2；写 0 表示不重试。

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
+	"github.com/kennethfan/jiaoag/internal/llm"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
@@ -37,6 +40,125 @@ func (s *Server) handleSessionCreate(ctx context.Context, c *clientConn, env pro
 	}
 	reply.SessionID = string(sess.ID)
 	reply.TS = sess.CreatedAt.UnixMilli()
+	_ = c.send(ctx, reply)
+}
+
+// handleSessionUpdate 切换会话后续任务的供应商/模型。
+func (s *Server) handleSessionUpdate(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.SessionUpdatePayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	if p.Provider != "" && s.cfg != nil {
+		if _, ok := s.cfg.Provider(p.Provider); !ok {
+			c.sendError(ctx, protocol.CodeBadRequest, fmt.Sprintf("配置里没有供应商 %q", p.Provider))
+			return
+		}
+	}
+	sess, err := s.app.UpdateSession(ctx, domain.SessionID(id), p.Provider, p.Model)
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	reply, err := protocol.New(protocol.TypeSessionUpdated, sessionPayload(sess))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = string(sess.ID)
+	reply.TS = sess.UpdatedAt.UnixMilli()
+	_ = c.send(ctx, reply)
+}
+
+// handleProviderModels 返回该会话可以切换的模型候选。
+//
+// 配置里显式给了 models 就用它；否则问供应商的 /models。会话当前没有指定
+// 供应商时沿用默认供应商。
+func (s *Server) handleProviderModels(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil || s.cfg == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入运行时")
+		return
+	}
+	var p protocol.ProviderModelsPayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	sess, err := s.app.GetSession(ctx, domain.SessionID(id))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	pc, ok := s.cfg.Provider(sess.Provider)
+	if sess.Provider == "" {
+		pc, ok = s.cfg.DefaultProvider()
+	}
+	if !ok {
+		c.sendError(ctx, protocol.CodeBadRequest, fmt.Sprintf("配置里没有供应商 %q", sess.Provider))
+		return
+	}
+
+	models := make([]string, 0, len(pc.Models))
+	source := "api"
+	if len(pc.Models) > 0 {
+		source = "config"
+		seen := make(map[string]struct{}, len(pc.Models))
+		for _, m := range pc.Models {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				continue
+			}
+			if _, dup := seen[m]; dup {
+				continue
+			}
+			seen[m] = struct{}{}
+			models = append(models, m)
+		}
+	} else {
+		built, err := llm.New(pc)
+		if err != nil {
+			c.sendError(ctx, protocol.CodeInternal, err.Error())
+			return
+		}
+		lister, ok := built.(llm.ModelLister)
+		if !ok {
+			c.sendError(ctx, protocol.CodeUnsupported, llm.ErrModelsUnsupported.Error())
+			return
+		}
+		mctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		models, err = lister.Models(mctx)
+		if err != nil {
+			c.sendError(ctx, protocol.CodeInternal, err.Error())
+			return
+		}
+	}
+	reply, err := protocol.New(protocol.TypeProviderModelsResult, protocol.ProviderModelsResultPayload{
+		Models: models,
+		Source: source,
+	})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
 	_ = c.send(ctx, reply)
 }
 

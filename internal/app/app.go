@@ -181,6 +181,42 @@ func (a *App) Hub() *event.Hub { return a.hub }
 // NewID 生成带前缀的随机标识，例如 ses_1f3c…。
 func NewID(prefix string) (string, error) { return domain.NewID(prefix) }
 
+// UpdateSession 切换会话后续任务使用的供应商与模型。
+//
+// 只影响新建的 agent；正在执行的任务按提交时冻结的配置跑完。
+func (a *App) UpdateSession(ctx context.Context, id domain.SessionID, provider, model string) (domain.Session, error) {
+	if a.closedNow() {
+		return domain.Session{}, ErrAppClosed
+	}
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return domain.Session{}, fmt.Errorf("模型不能为空")
+	}
+	sess, err := a.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if provider == "" {
+		provider = sess.Provider
+	}
+	sess.Provider = provider
+	sess.Model = model
+	sess.UpdatedAt = domain.Now()
+
+	ev, err := domain.NewEvent(domain.EventSessionUpdated, sess.ID, "",
+		domain.SessionUpdatedPayload{Provider: provider, Model: model})
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := a.commit(func() ([]domain.Event, error) {
+		return a.store.UpdateSession(ctx, sess, []domain.Event{ev})
+	}); err != nil {
+		return domain.Session{}, err
+	}
+	return sess, nil
+}
+
 // CreateSession 创建工作区会话，并写入 session.created。
 func (a *App) CreateSession(ctx context.Context, workspace, provider, model, title string) (domain.Session, error) {
 	// 关闭之后 store 马上就要关：这里直接拒绝，不让调用方拿 sqlite 的

@@ -64,10 +64,14 @@ type Model struct {
 	queue []queuedTask
 	// queuePanel 非空表示队列面板打开：此时按键交给面板，不写输入行。
 	queuePanel *queuePanelView
-	taskID     string
-	taskStatus string
-	round      int
-	tokens     int
+	// modelPanel 非空表示 /models 的模型选择面板打开，优先级高于输入行。
+	modelPanel      *modelPanelView
+	sessionProvider string
+	sessionModel    string
+	taskID          string
+	taskStatus      string
+	round           int
+	tokens          int
 
 	dialog   []string
 	stream   string
@@ -302,6 +306,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.queuePanel != nil {
 		return m.handleQueueKey(key)
 	}
+	if m.modelPanel != nil {
+		return m.handleModelKey(key)
+	}
 	switch key {
 	case "ctrl+q":
 		if len(m.queue) == 0 {
@@ -329,6 +336,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(m.input)
 		if text == "" || m.sessionID == "" {
 			return m, nil
+		}
+		if text == "/models" {
+			m.input = ""
+			m.appendLine("正在获取模型列表…")
+			return m, sendCmd(m.conn, protocol.TypeProviderModels, protocol.ProviderModelsPayload{
+				SessionID: m.sessionID,
+			})
 		}
 		// 运行中也可以提交：服务端会把它排到队尾，会话内仍是串行执行。
 		//
@@ -386,13 +400,36 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		var p protocol.SessionPayload
 		if err := env.Decode(&p); err == nil {
 			m.sessionID = p.ID
+			m.sessionProvider, m.sessionModel = p.Provider, p.Model
 			m.status = fmt.Sprintf("会话 %s · %s", p.ID, p.Workspace)
 			m.appendLine("已进入会话 " + p.ID)
+			if p.Model != "" {
+				m.appendLine("模型：" + modelLabel(p.Provider, p.Model))
+			}
 		}
 		return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
 			SessionID: m.sessionID,
 			FromSeq:   0,
 		})
+
+	case protocol.TypeSessionUpdated:
+		var p protocol.SessionPayload
+		if err := env.Decode(&p); err == nil {
+			m.sessionProvider, m.sessionModel = p.Provider, p.Model
+		}
+		return nil
+
+	case protocol.TypeProviderModelsResult:
+		var p protocol.ProviderModelsResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if len(p.Models) == 0 {
+			m.appendLine("供应商没有返回可用模型")
+			return nil
+		}
+		m.modelPanel = newModelPanel(p.Models, m.sessionModel, p.Source)
+		return nil
 
 	case protocol.TypeTaskQueued:
 		var p protocol.TaskPayload
@@ -461,6 +498,12 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 		if err := json.Unmarshal(p.Payload, &s); err == nil && len(s.SharedWorkspace) > 0 {
 			m.appendLine(fmt.Sprintf("⚠ 同一仓库还有会话 %s 在运行（写入有 CAS 保护，命令可能互踩）",
 				strings.Join(s.SharedWorkspace, ", ")))
+		}
+	case string(domain.EventSessionUpdated):
+		var s domain.SessionUpdatedPayload
+		if err := json.Unmarshal(p.Payload, &s); err == nil {
+			m.sessionProvider, m.sessionModel = s.Provider, s.Model
+			m.appendLine("模型已切换：" + modelLabel(s.Provider, s.Model))
 		}
 	case string(domain.EventTaskQueued):
 		// 提问的唯一来源：实时提交与全量重放都靠这条事件重建用户可见的对话行。
@@ -645,6 +688,9 @@ func (m *Model) View() tea.View {
 	if n := len(m.queue); n > 0 {
 		fmt.Fprintf(&b, " · 排队 %d", n)
 	}
+	if m.sessionModel != "" {
+		fmt.Fprintf(&b, " · %s", modelLabel(m.sessionProvider, m.sessionModel))
+	}
 	b.WriteByte('\n')
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')
@@ -662,13 +708,16 @@ func (m *Model) View() tea.View {
 	case m.queuePanel != nil:
 		b.WriteByte('\n')
 		b.WriteString(m.renderQueuePanel())
+	case m.modelPanel != nil:
+		b.WriteByte('\n')
+		b.WriteString(m.renderModelPanel())
 	case m.sessionID != "":
 		b.WriteString("\n› ")
 		b.WriteString(m.input)
 		b.WriteString("▏\n")
 	}
-	if m.approval == nil && m.queuePanel == nil {
-		b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
+	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil {
+		b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [ctrl+c] 退出\n")
 	}
 	return tea.NewView(b.String())
 }
@@ -682,6 +731,7 @@ func (m *Model) resetView() {
 	m.runTaskID = ""
 	m.queue = nil
 	m.queuePanel = nil
+	m.modelPanel = nil
 	m.round, m.tokens = 0, 0
 	m.dialog = nil
 	m.approval = nil

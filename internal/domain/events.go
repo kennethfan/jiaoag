@@ -15,6 +15,9 @@ type EventKind string
 
 const (
 	EventSessionCreated EventKind = "session.created"
+	// EventSessionUpdated 记录会话切换了供应商或模型。后续任务按新值构造
+	// agent；已完成任务的历史不受影响。
+	EventSessionUpdated EventKind = "session.updated"
 
 	// 任务状态统一走 task.status{from,to,reason}，不按状态拆成多种类型。
 	EventTaskQueued EventKind = "task.queued"
@@ -106,6 +109,12 @@ type SessionCreatedPayload struct {
 	// SharedWorkspace 列出同一工作区里还有 queued/running 任务的其它会话。
 	// 只做提示：两个会话各改各的文件没问题，命令与构建会互踩。
 	SharedWorkspace []string `json:"shared_workspace,omitempty"`
+}
+
+// SessionUpdatedPayload 记录会话切换后的供应商与模型。
+type SessionUpdatedPayload struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model"`
 }
 
 type TaskQueuedPayload struct {

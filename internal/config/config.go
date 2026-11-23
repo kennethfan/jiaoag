@@ -184,6 +184,9 @@ type Provider struct {
 	Type    string `yaml:"type"` // openai | anthropic
 	BaseURL string `yaml:"base_url"`
 	Model   string `yaml:"model"`
+	// Models 是 /models 的候选列表。非空时直接展示它，不再请求供应商的
+	// /models 接口；适合网关不实现列表、或只想暴露少数模型的场景。
+	Models []string `yaml:"models"`
 	// APIKey 是单 key 写法，保留兼容。APIKeys 非空时优先用列表。
 	APIKey Secret `yaml:"api_key"`
 	// APIKeys 是同一供应商的多把 key：请求轮询取用，遇到鉴权 / 额度 /

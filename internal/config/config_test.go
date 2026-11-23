@@ -392,3 +392,19 @@ func TestMemoryDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("非法记忆模式应校验失败，得到 %v", err)
 	}
 }
+
+func TestProviderModelsParsed(t *testing.T) {
+	yaml := strings.Replace(minimalYAML, "    api_key: k",
+		"    api_key: k\n    models:\n      - m-fast\n      - m-pro", 1)
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+	got := cfg.Providers[0].Models
+	if len(got) != 2 || got[0] != "m-fast" || got[1] != "m-pro" {
+		t.Fatalf("models = %v，期望 [m-fast m-pro]", got)
+	}
+}

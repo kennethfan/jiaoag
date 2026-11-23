@@ -17,6 +17,7 @@ import (
 //   - 读方法不保证看到正在进行中的写入（WAL 快照隔离）。
 type Store interface {
 	CreateSession(ctx context.Context, s domain.Session, events []domain.Event) ([]domain.Event, error)
+	UpdateSession(ctx context.Context, s domain.Session, events []domain.Event) ([]domain.Event, error)
 	GetSession(ctx context.Context, id domain.SessionID) (domain.Session, error)
 	ListSessions(ctx context.Context) ([]domain.Session, error)
 	// SessionsWithActiveTasks 返回仍有未终态任务的会话，供同仓检测。
