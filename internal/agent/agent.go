@@ -20,6 +20,7 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	"github.com/kennethfan/jiaoag/internal/memory"
 	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/prompt"
 	"github.com/kennethfan/jiaoag/internal/tools"
@@ -81,7 +82,9 @@ type Options struct {
 	MaxRounds     int
 	ContextBudget int
 	SystemLayers  []prompt.Layer
-	Logger        *slog.Logger
+	// Memory 是工作区跨会话记忆（MEMORY.md）的正文；非空时追加为提示层。
+	Memory string
+	Logger *slog.Logger
 
 	// Ruleset 是命令白名单与收紧规则的不可变快照。
 	Ruleset *perm.Ruleset
@@ -525,7 +528,15 @@ func (a *Agent) system() (prompt.Result, error) {
 		"model":     a.opts.Model,
 		"tools":     toolsSection(a.opts.Tools.Specs()),
 	}
-	return prompt.Assemble(a.opts.SystemLayers, vars)
+	layers := a.opts.SystemLayers
+	if section := memory.Section(a.opts.Memory); section != "" {
+		// 记忆追加在内置核心之后：它提供项目事实，但不能覆盖安全边界。
+		layers = append(append([]prompt.Layer(nil), layers...), prompt.Layer{
+			Source: "workspace:memory",
+			Text:   section,
+		})
+	}
+	return prompt.Assemble(layers, vars)
 }
 
 // toolSpecs 把工具描述转成供应商能懂的形状。tools 包不 import llm，

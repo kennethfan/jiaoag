@@ -98,6 +98,7 @@ make demo-mcp
 | v2.1 | 执行隔离：`exec.backend: sandbox`（macOS seatbelt / Linux bwrap），写白名单 + 密钥禁读，不可用即启动报错 | ✅ |
 | v2.2 | 上下文压缩：超预算 80% 把较早轮次摘成 `context.compacted` 事件，保留最近 2 轮，失败降级 | ✅ |
 | v2.3 | 重启续跑：`queued` 任务重启后自动恢复（`agent.resume_queued`，默认开），执行中任务仍 canceled | ✅ |
+| v2.4 | 跨会话记忆：工作区 `MEMORY.md` 注入 + `remember` 工具（追加走 diff 审批），`agent.memory` 默认开 | ✅ |
 
 ## 安全边界
 

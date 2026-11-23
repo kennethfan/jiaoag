@@ -14,6 +14,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/domain"
 	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/llm"
+	"github.com/kennethfan/jiaoag/internal/memory"
 	"github.com/kennethfan/jiaoag/internal/perm"
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/workspace"
@@ -43,7 +44,9 @@ type RuntimeDeps struct {
 	ContextCompact bool
 	// ResumeQueued 开启重启后续跑排队任务（agent.resume_queued，默认开）。
 	ResumeQueued bool
-	Logger       *slog.Logger
+	// Memory 开启跨会话项目记忆：注入 MEMORY.md，并注册 remember 工具。
+	Memory bool
+	Logger *slog.Logger
 }
 
 // taskRun 是一个运行中任务的句柄。
@@ -147,12 +150,26 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 	if err != nil {
 		return nil, "", "", err
 	}
+	// 记忆是增强不是前提：读不到就当没有，任务照跑。
+	var memoryText string
+	if deps.Memory {
+		text, truncated, err := memory.Load(ws.Root())
+		if err != nil {
+			deps.Logger.Warn("读取跨会话记忆失败，本次不注入", "error", err)
+		} else {
+			if truncated {
+				deps.Logger.Warn("跨会话记忆超过上限，已截断注入", "file", memory.FileName)
+			}
+			memoryText = text
+		}
+	}
 	ag, err := agent.New(agent.Options{
 		Provider:      provider,
 		Tools:         registry,
 		Workspace:     ws,
 		Recorder:      a,
 		Model:         model,
+		Memory:        memoryText,
 		MaxRounds:     deps.MaxRounds,
 		ContextBudget: deps.ContextBudget,
 		Compact:       deps.ContextCompact,

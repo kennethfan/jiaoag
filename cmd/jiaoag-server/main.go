@@ -166,6 +166,9 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 				tools.NewReadOutput(env),
 				tools.NewGitStatus(ws, env), tools.NewGitDiff(ws, env), tools.NewGitLog(ws, env),
 			}
+			if cfg.Agent.MemoryEnabled() {
+				base = append(base, tools.NewRemember(ws))
+			}
 			// MCP 是增强不是前提：server 起不来时 Tools 返回空列表，内置工具照常。
 			return tools.NewRegistry(append(base, mcpManager.Tools(context.Background(), ws.Root())...)...)
 		},
@@ -184,6 +187,7 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		ContextBudget:      cfg.Agent.ContextBudgetChars,
 		ContextCompact:     cfg.Agent.ContextCompact == config.ContextCompactAuto,
 		ResumeQueued:       cfg.Agent.ResumeQueuedEnabled(),
+		Memory:             cfg.Agent.MemoryEnabled(),
 		Logger:             log,
 	}
 }

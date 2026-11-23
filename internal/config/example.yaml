@@ -43,6 +43,9 @@ agent:
   # 上下文压缩：auto（默认）在占用超过预算 80% 时把较早轮次压成摘要，
   # 保留最近 2 轮；off 关闭，只做丢弃。压缩调用计入任务 token 用量。
   context_compact: auto
+  # 跨会话项目记忆：auto（默认）注入工作区 MEMORY.md，并注册 remember 工具
+  # （追加记忆走 diff 审批）；off 关闭，既不注入也不提供写入工具。
+  memory: auto
   # 跨会话同时执行的任务数上限；0 = 用默认（4）。
   max_concurrent_tasks: 4
   # 单会话排队任务数上限；0 = 用默认（16）。超出时 task.submit 返回 queue_full。

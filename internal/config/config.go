@@ -135,7 +135,13 @@ type Agent struct {
 	// ResumeQueued 控制服务端重启后是否继续执行排队中的任务。
 	// 默认开启；执行中/等审批的任务仍按失败收尾，不会自动重跑。
 	ResumeQueued *bool `yaml:"resume_queued"`
+	// Memory 控制跨会话项目记忆：auto（默认）注入工作区 MEMORY.md 并注册
+	// remember 工具；off 关闭，既不注入也不提供写入工具。
+	Memory string `yaml:"memory"`
 }
+
+// MemoryEnabled 报告是否启用跨会话项目记忆；未配置时默认开启。
+func (a Agent) MemoryEnabled() bool { return a.Memory != MemoryOff }
 
 // ResumeQueuedEnabled 报告重启后是否续跑排队任务；未配置时默认开启。
 func (a Agent) ResumeQueuedEnabled() bool {
@@ -147,6 +153,12 @@ const DefaultContextBudgetChars = 60000
 
 // ContextCompactAuto 是上下文压缩的默认模式。
 const ContextCompactAuto = "auto"
+
+// MemoryAuto 是跨会话记忆的默认模式；MemoryOff 关闭注入与 remember 工具。
+const (
+	MemoryAuto = "auto"
+	MemoryOff  = "off"
+)
 
 // DefaultMaxConcurrentTasks 是跨会话同时执行的任务数默认上限。
 const DefaultMaxConcurrentTasks = 4
@@ -340,6 +352,9 @@ func (c *Config) applyDefaults() {
 		enabled := true
 		c.Agent.ResumeQueued = &enabled
 	}
+	if c.Agent.Memory == "" {
+		c.Agent.Memory = MemoryAuto
+	}
 	if c.Policy.Dir == "" {
 		c.Policy.Dir = filepath.Join(ConfigDir(), "policy.d")
 	}
@@ -475,6 +490,11 @@ func (c *Config) validateCommon() error {
 	case "", ContextCompactAuto, "off":
 	default:
 		return fmt.Errorf("agent.context_compact 只支持 %q 或 %q，当前为 %q", ContextCompactAuto, "off", c.Agent.ContextCompact)
+	}
+	switch c.Agent.Memory {
+	case "", MemoryAuto, MemoryOff:
+	default:
+		return fmt.Errorf("agent.memory 只支持 %q 或 %q，当前为 %q", MemoryAuto, MemoryOff, c.Agent.Memory)
 	}
 	if _, err := c.Server.Token.Resolve(); err != nil {
 		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)

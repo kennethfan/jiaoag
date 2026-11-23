@@ -286,3 +286,34 @@ func TestResumeQueuedDefaultsAndOverride(t *testing.T) {
 		t.Fatalf("resume_queued: false 应合法：%v", err)
 	}
 }
+
+func TestMemoryDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.Memory != MemoryAuto || !cfg.Agent.MemoryEnabled() {
+		t.Fatalf("memory 默认应为 %q，实际 %q", MemoryAuto, cfg.Agent.Memory)
+	}
+
+	off := strings.Replace(minimalYAML, "providers:", "agent:\n  memory: off\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, off))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.MemoryEnabled() {
+		t.Fatal("memory: off 应关闭记忆")
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("memory: off 应合法：%v", err)
+	}
+
+	bad := strings.Replace(minimalYAML, "providers:", "agent:\n  memory: always\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "memory") {
+		t.Fatalf("非法记忆模式应校验失败，得到 %v", err)
+	}
+}
