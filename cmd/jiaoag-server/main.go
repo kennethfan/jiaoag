@@ -170,6 +170,10 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 			if cfg.Agent.MemoryEnabled() {
 				base = append(base, tools.NewRemember(ws))
 			}
+			// 技能索引与工具同源：catalog 由 app 按工作区加载后经 env 传进来。
+			if env.Skills != nil {
+				base = append(base, tools.NewSkill(env.Skills))
+			}
 			// MCP 是增强不是前提：server 起不来时 Tools 返回空列表，内置工具照常。
 			return tools.NewRegistry(append(base, mcpManager.Tools(context.Background(), ws.Root())...)...)
 		},
@@ -189,6 +193,7 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		ContextCompact:     cfg.Agent.ContextCompact == config.ContextCompactAuto,
 		ResumeQueued:       cfg.Agent.ResumeQueuedEnabled(),
 		Memory:             cfg.Agent.MemoryEnabled(),
+		SkillDirs:          cfg.Agent.SkillDirsFor(),
 		Logger:             log,
 	}
 }

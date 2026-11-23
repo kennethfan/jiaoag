@@ -84,7 +84,9 @@ type Options struct {
 	SystemLayers  []prompt.Layer
 	// Memory 是工作区跨会话记忆（MEMORY.md）的正文；非空时追加为提示层。
 	Memory string
-	Logger *slog.Logger
+	// SkillsIndex 是技能索引（名字 + 适用场景）；正文由 skill 工具按需加载。
+	SkillsIndex string
+	Logger      *slog.Logger
 
 	// Ruleset 是命令白名单与收紧规则的不可变快照。
 	Ruleset *perm.Ruleset
@@ -531,6 +533,14 @@ func (a *Agent) system() (prompt.Result, error) {
 		"tools":     toolsSection(a.opts.Tools.Specs()),
 	}
 	layers := a.opts.SystemLayers
+	if index := a.opts.SkillsIndex; index != "" {
+		// 技能索引同样追加在核心之后：它只描述「有哪些技能可用」，
+		// 不能覆盖安全边界。
+		layers = append(append([]prompt.Layer(nil), layers...), prompt.Layer{
+			Source: "user:skills",
+			Text:   index,
+		})
+	}
 	if section := memory.Section(a.opts.Memory); section != "" {
 		// 记忆追加在内置核心之后：它提供项目事实，但不能覆盖安全边界。
 		layers = append(append([]prompt.Layer(nil), layers...), prompt.Layer{

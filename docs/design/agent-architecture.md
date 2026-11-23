@@ -83,7 +83,7 @@ graph TD
 | `internal/store` | SQLite 单一深模块：7 张表、事务助手、投影更新、审计写入；实现 `Journal` |
 | `internal/llm` | `Provider` 端口 + openai / anthropic 适配器 + 重试 / 超时 / 限流装饰器 |
 | `internal/workspace` | 工作区根、路径解析与越界防护、读、`Snapshot` / `Hash`、`Write`（同目录临时文件 + rename，保留权限；拒绝二进制 / `.git` / 符号链接） |
-| `internal/tools` | `Prepare` / `Execute` 两段式契约、注册表与 256 KB 输出收敛；11 个工具（read_file / grep / glob / write_file / edit_file、run_command / check_command、read_output、git_status / git_diff / git_log） |
+| `internal/tools` | `Prepare` / `Execute` 两段式契约、注册表与 256 KB 输出收敛；11 个内置工具（read_file / grep / glob / write_file / edit_file、run_command / check_command、read_output、git_status / git_diff / git_log）加可选的 remember / skill |
 | `internal/exec` | 执行后端（ADR-0011）：`Plan` 校验、进程组 / Job Object 与超时 / 取消杀组、资源上限、头尾截断与全文日志（`Spec` 三档预算） |
 | `internal/perm` | 按工具副作用分级、默认拒绝；M5 已叠加参数级 argv 白名单与执行约束（ADR-0004） |
 | `internal/agent` | 上下文装配、轮次循环、审批挂起 / 恢复、取消 |
@@ -92,6 +92,7 @@ graph TD
 | `internal/server` | 鉴权、帧编解码、连接注册、订阅桥接；无业务逻辑 |
 | `internal/tui` | 渲染、输入、审批面板；`!命令` 经 `internal/localshell` 在客户端执行（ADR-0022） |
 | `internal/localshell` | 客户端本机命令：`sh -c` / `cmd /c`、按行流式回传、单行裁剪、超时与整组杀进程 |
+| `internal/skills` | 技能包发现与按需加载：扫描 `SKILL.md`、容错解析 frontmatter、只把索引交给提示词、正文由 `skill` 工具按需取（ADR-0023） |
 
 ---
 
@@ -369,6 +370,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 事件消费者 / 审计导出 | ✅ | 订阅事件流 | v2 |
 | 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |
 | 跨会话记忆 | ✅ 仅工作区文件 | `MEMORY.md` + `remember` 工具 | v2 已实现（ADR-0018） |
+| 技能包 | ✅ 仅指令文本 | 目录扫描 + 索引注入 + `skill` 工具按需取正文；`disable-model-invocation` 的技能不进索引 | v2 已实现（ADR-0023） |
 | 提示词（系统提示 / 项目知识） | ⚠️ 仅追加 | `prompt.Assemble` + 项目级确认与 hash（ADR-0012） | v1 |
 | 工具描述 / 压缩提示 | ❌ | 调用契约与上下文完整性，属代码不属配置 | 不开放 |
 | 权限规则数据 | ⚠️ 只能收紧 | `perm.Loader` + `TightenRule` | v1 本地规则，v2 签名 feed |

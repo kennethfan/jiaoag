@@ -446,3 +446,50 @@ func TestMCPTrustDefaultsToAllow(t *testing.T) {
 		t.Fatalf("非法 trust 应报错，得到 %v", err)
 	}
 }
+
+func TestSkillsDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agent.Skills; got != "auto" {
+		t.Fatalf("默认 skills = %q，期望 auto", got)
+	}
+	if dirs := cfg.Agent.SkillDirsOrDefault(); len(dirs) != 1 || dirs[0] != DefaultSkillsDir {
+		t.Fatalf("默认技能目录 = %v", dirs)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	yaml := strings.Replace(minimalYAML, "providers:", `agent:
+  skills: off
+  skills_dirs:
+    - ~/my-skills
+    - .jiaoag/skills
+providers:`, 1)
+	cfg, err = Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+	if cfg.Agent.Skills != "off" {
+		t.Fatalf("skills = %q", cfg.Agent.Skills)
+	}
+	if got := cfg.Agent.SkillsDirs[0]; got != filepath.Join(home, "my-skills") {
+		t.Fatalf("~ 应展开，得到 %q", got)
+	}
+	if got := cfg.Agent.SkillsDirs[1]; got != ".jiaoag/skills" {
+		t.Fatalf("相对目录应保持原样，得到 %q", got)
+	}
+
+	bad := strings.Replace(minimalYAML, "providers:", "agent:\n  skills: always\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "agent.skills") {
+		t.Fatalf("非法 skills 应报错，得到 %v", err)
+	}
+}

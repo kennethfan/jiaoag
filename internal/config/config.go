@@ -139,10 +139,32 @@ type Agent struct {
 	// Memory 控制跨会话项目记忆：auto（默认）注入工作区 MEMORY.md 并注册
 	// remember 工具；off 关闭，既不注入也不提供写入工具。
 	Memory string `yaml:"memory"`
+	// Skills 控制技能包：auto（默认）把索引注入系统提示并注册 skill 工具，
+	// 正文按需加载；off 关闭。
+	Skills string `yaml:"skills"`
+	// SkillsDirs 是技能包目录；留空用 DefaultSkillsDir。`~` 会在启动时展开，
+	// 相对路径按会话工作区根解析。
+	SkillsDirs []string `yaml:"skills_dirs"`
 }
 
 // MemoryEnabled 报告是否启用跨会话项目记忆；未配置时默认开启。
 func (a Agent) MemoryEnabled() bool { return a.Memory != MemoryOff }
+
+// SkillDirsOrDefault 返回技能包目录；未配置时用 DefaultSkillsDir。
+func (a Agent) SkillDirsOrDefault() []string {
+	if len(a.SkillsDirs) == 0 {
+		return []string{DefaultSkillsDir}
+	}
+	return a.SkillsDirs
+}
+
+// SkillDirsFor 返回生效的技能目录：skills 为 off 时为空，连 /skill 面板也不列。
+func (a Agent) SkillDirsFor() []string {
+	if a.Skills == SkillOff {
+		return nil
+	}
+	return a.SkillDirsOrDefault()
+}
 
 // ResumeQueuedEnabled 报告重启后是否续跑排队任务；未配置时默认开启。
 func (a Agent) ResumeQueuedEnabled() bool {
@@ -159,6 +181,13 @@ const ContextCompactAuto = "auto"
 const (
 	MemoryAuto = "auto"
 	MemoryOff  = "off"
+)
+
+// SkillAuto 是技能包的默认模式；SkillOff 关闭索引注入与 skill 工具。
+const (
+	SkillAuto        = "auto"
+	SkillOff         = "off"
+	DefaultSkillsDir = "~/.agents/skills"
 )
 
 // DefaultMaxRounds 是未配置 agent.max_rounds 时的轮数上限。
@@ -376,6 +405,16 @@ func (c *Config) applyDefaults() {
 	if c.Agent.Memory == "" {
 		c.Agent.Memory = MemoryAuto
 	}
+	if c.Agent.Skills == "" {
+		c.Agent.Skills = SkillAuto
+	}
+	for i, dir := range c.Agent.SkillsDirs {
+		// 技能目录允许 ~，展开后再落进运行时；相对路径保持原样，
+		// 由各会话按自己的工作区根解析。
+		if expanded, err := ExpandHome(strings.TrimSpace(dir)); err == nil {
+			c.Agent.SkillsDirs[i] = expanded
+		}
+	}
 	if c.Policy.Dir == "" {
 		c.Policy.Dir = filepath.Join(ConfigDir(), "policy.d")
 	}
@@ -524,6 +563,16 @@ func (c *Config) validateCommon() error {
 	case "", MemoryAuto, MemoryOff:
 	default:
 		return fmt.Errorf("agent.memory 只支持 %q 或 %q，当前为 %q", MemoryAuto, MemoryOff, c.Agent.Memory)
+	}
+	switch c.Agent.Skills {
+	case "", SkillAuto, SkillOff:
+	default:
+		return fmt.Errorf("agent.skills 只支持 %q 或 %q，当前为 %q", SkillAuto, SkillOff, c.Agent.Skills)
+	}
+	for i, dir := range c.Agent.SkillsDirs {
+		if strings.TrimSpace(dir) == "" {
+			return fmt.Errorf("agent.skills_dirs[%d] 不能为空", i)
+		}
 	}
 	if _, err := c.Server.Token.Resolve(); err != nil {
 		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)

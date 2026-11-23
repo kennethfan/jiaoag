@@ -16,6 +16,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/llm"
 	"github.com/kennethfan/jiaoag/internal/memory"
 	"github.com/kennethfan/jiaoag/internal/perm"
+	"github.com/kennethfan/jiaoag/internal/skills"
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
@@ -46,7 +47,10 @@ type RuntimeDeps struct {
 	ResumeQueued bool
 	// Memory 开启跨会话项目记忆：注入 MEMORY.md，并注册 remember 工具。
 	Memory bool
-	Logger *slog.Logger
+	// SkillDirs 是技能包目录（`~` 已展开的写法或工作区相对路径）；非空时
+	// 把索引注入系统提示并注册 skill 工具。
+	SkillDirs []string
+	Logger    *slog.Logger
 }
 
 // taskRun 是一个运行中任务的句柄。
@@ -135,7 +139,20 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 	if err != nil {
 		return nil, "", "", err
 	}
+	// 技能是增强不是前提：目录读不了就只是没有技能可用。
+	var catalog *skills.Catalog
+	if len(deps.SkillDirs) > 0 {
+		loaded, errs := skills.Load(deps.SkillDirs, ws.Root())
+		for _, err := range errs {
+			deps.Logger.Warn("加载技能失败，已跳过", "error", err)
+		}
+		if loaded.Len() > 0 {
+			catalog = loaded
+			deps.Logger.Debug("技能已加载", "count", loaded.Len())
+		}
+	}
 	registry, err := deps.Tools(ws, tools.RuntimeEnv{
+		Skills:     catalog,
 		Backend:    deps.Backend,
 		OutputDir:  deps.OutputDir,
 		SessionID:  string(sess.ID),
@@ -170,6 +187,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps) (*agent.Agent, st
 		Recorder:      a,
 		Model:         model,
 		Memory:        memoryText,
+		SkillsIndex:   catalog.Section(),
 		MaxRounds:     deps.MaxRounds,
 		ContextBudget: deps.ContextBudget,
 		Compact:       deps.ContextCompact,

@@ -46,6 +46,14 @@ agent:
   # 跨会话项目记忆：auto（默认）注入工作区 MEMORY.md，并注册 remember 工具
   # （追加记忆走 diff 审批）；off 关闭，既不注入也不提供写入工具。
   memory: auto
+  # 技能包：auto（默认）把技能名与适用场景做成索引放进系统提示，正文由
+  # skill 工具按需加载；off 关闭。
+  skills: auto
+  # 技能目录；留空用 ~/.agents/skills（Claude / OpenCode 的 SKILL.md 格式）。
+  # 目录里的每个子目录需带 SKILL.md；相对路径按会话工作区根解析。
+  # skills_dirs:
+  #   - ~/.agents/skills
+  #   - .jiaoag/skills
   # 跨会话同时执行的任务数上限；0 = 用默认（4）。
   max_concurrent_tasks: 4
   # 单会话排队任务数上限；0 = 用默认（16）。超出时 task.submit 返回 queue_full。

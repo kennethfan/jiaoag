@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	execpkg "github.com/kennethfan/jiaoag/internal/exec"
+	"github.com/kennethfan/jiaoag/internal/skills"
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
 
@@ -57,6 +58,8 @@ type RuntimeEnv struct {
 	// OutputPath 把 tool_call_id 反查成全文日志路径；read_output 用它，
 	// 模型不能直接给路径。
 	OutputPath func(ctx context.Context, toolCallID string) (string, error)
+	// Skills 是本次任务的技能库；非空时注册 skill 工具。
+	Skills *skills.Catalog
 }
 
 // NewRunCommand 返回带回正文的命令工具。
