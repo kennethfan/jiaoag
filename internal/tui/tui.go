@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,6 +37,9 @@ type Options struct {
 	Model     string
 	// SessionID 非空时跳过建会话，直接订阅该会话（进程重启后用它回到现场）。
 	SessionID string
+	// ContinueLast 在没有指定 SessionID 时，接着本目录下最近更新的那个会话
+	// 继续，而不是新开一个；同目录没有历史会话时退回新建。
+	ContinueLast bool
 	// InsecureTLS 跳过服务端证书校验，只用于自签证书的本机/内网部署。
 	InsecureTLS bool
 	// Roots 是要挂到新会话上的只读附加根（ADR-0036）。
@@ -66,6 +70,9 @@ type Model struct {
 	status string
 
 	sessionID string
+	// resuming 表示已经发出 session.list，正在等「继续最近会话」的候选列表。
+	// 只有 -c 首次连接会置位，拿到结果就清掉，避免误吃后续的列表回包。
+	resuming bool
 	// lastSeq 是本地已收到的最后一条持久事件序号。首次连接为 0（全量回放），
 	// 断线重连从它之后增量回放；临时流式帧 seq=0，不推进它。
 	lastSeq int64
@@ -415,6 +422,29 @@ func (m *Model) handleLocalCommand(ev localshell.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// latestSessionFor 从 session.list 回包（服务端已按 updated_at 倒序）里挑
+// 第一个工作区与当前目录相同的会话。-c 只在本目录内继续，否则会把另一个
+// 项目的会话拉进来，任务随后就跑在那个工作区里。
+func latestSessionFor(sessions []protocol.SessionPayload, workspace string) (protocol.SessionPayload, bool) {
+	want := canonicalPath(workspace)
+	for _, sess := range sessions {
+		if canonicalPath(sess.Workspace) == want {
+			return sess, true
+		}
+	}
+	return protocol.SessionPayload{}, false
+}
+
+// canonicalPath 展开符号链接：macOS 上 /var 与 /private/var 是同一处，
+// 不归一化会让同一个目录看起来不同。
+func canonicalPath(p string) string {
+	clean := filepath.Clean(p)
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		return real
+	}
+	return clean
+}
+
 func shortDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%d ms", d.Milliseconds())
@@ -454,6 +484,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resetView()
 		m.sessionID = ""
+		if m.opts.ContinueLast {
+			// 先问服务端本目录下有没有历史会话；有就订阅它，没有才新建。
+			m.resuming = true
+			m.status = "正在查找最近的会话…"
+			return m, tea.Batch(
+				waitForEnvelope(m.conn),
+				sendCmd(m.conn, protocol.TypeSessionList, nil),
+			)
+		}
 		return m, tea.Batch(
 			waitForEnvelope(m.conn),
 			sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
@@ -756,6 +795,41 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			}
 		}
 		return nil
+
+	case protocol.TypeSessionListResult:
+		if !m.resuming {
+			return nil
+		}
+		m.resuming = false
+		var p protocol.SessionListResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		target, ok := latestSessionFor(p.Sessions, m.opts.Workspace)
+		if !ok {
+			m.appendLine("这个目录还没有历史会话，已新建")
+			return sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
+				Workspace: m.opts.Workspace,
+				Roots:     m.opts.Roots,
+				Provider:  m.opts.Provider,
+				Model:     m.opts.Model,
+			})
+		}
+		m.resetView()
+		m.sessionID = target.ID
+		m.sessionProvider, m.sessionModel = target.Provider, target.Model
+		m.status = fmt.Sprintf("会话 %s · %s", target.ID, target.Workspace)
+		m.appendLine("继续会话 " + target.ID)
+		if target.Title != "" {
+			m.appendLine("标题：" + target.Title)
+		}
+		if target.Model != "" {
+			m.appendLine("模型：" + modelLabel(target.Provider, target.Model))
+		}
+		return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+			SessionID: m.sessionID,
+			FromSeq:   0,
+		})
 
 	case protocol.TypeSessionCreated:
 		var p protocol.SessionPayload
