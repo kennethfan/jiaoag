@@ -25,8 +25,40 @@ _Avoid_: Action、Function Call、Invocation
 _Avoid_: Confirmation、Permission、Consent
 
 **工作区 (Workspace)**:
-一个会话被允许触碰的文件系统边界，通常是一个 git 仓库根目录；越界路径一律拒绝。
+一个会话被允许触碰的文件系统边界，通常是一个 git 仓库根目录；越界路径一律拒绝。一个会话有一个主根（Primary Root）和若干附加根（Additional Root，别名形如 `lib:src/x.go`），附加根在创建会话时固定。
 _Avoid_: Project、Repo、Working Directory
+
+**附加根 (Additional Root)**:
+挂在会话上的第二个及以后的工作区目录，用别名引用；可读写，写入同样走 diff 审批与 CAS，命令用 `root=` 指定 cwd。
+_Avoid_: Mount、Secondary Workspace
+
+**技能 (Skill)**:
+一段按需加载的操作说明（`SKILL.md`）。系统提示里只放名字与适用场景，正文在模型需要时用 `skill` 工具取，或由用户 `/skill` 点名直接注入该任务。
+_Avoid_: Prompt、Template、Plugin
+
+**项目级扩展 (Project Extension)**:
+随仓库提供、需要用户一次性确认后才生效的提示、技能与 MCP 清单（`AGENTS.md`、`.jiaoag/`），按内容摘要记录信任。
+_Avoid_: Config、Dotfiles
+
+**外部工具 (External Tool)**:
+由 MCP server 或 stdio 插件提供的工具（`mcp__<server>__<tool>` / `plugin__<server>__<tool>`）；返回值是第三方内容，只能当数据引用，副作用由宿主审批或中介。
+_Avoid_: Remote Tool、Third-party API
+
+**插件 (Plugin)**:
+以 stdio 子进程运行、用换行分隔 JSON-RPC 与宿主通信的扩展。它只声明副作用意图（读 / 写 / 命令 / 外部），写入与命令都由宿主执行。
+_Avoid_: Extension、Addon、Connector
+
+**规则 feed**:
+由发布方用 ed25519 签名、带版本与有效期的收紧规则集合；`jiaoag-policy sync` 验签后落盘，只能让命令更需要审批，不能放行。
+_Avoid_: Ruleset、Policy Bundle
+
+**通知 (Notification)**:
+服务端向 webhook 推送的旁路消息，只覆盖「等待审批」与任务终态；它不是事件，不进事件日志，也不参与状态机。
+_Avoid_: Alert、Event Push
+
+**Hunk（块）**:
+一个 diff 里连续的一段改动。审批可以只批准其中若干块，未选的块不落盘。
+_Avoid_: Chunk、Patch Part
 
 **变更提案 (Change Proposal)**:
 对工作区内文件的拟修改，以待批准的 diff 形式存在；批准并落盘之前不改变磁盘内容。

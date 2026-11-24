@@ -94,6 +94,11 @@ graph TD
 | `internal/localshell` | 客户端本机命令：`sh -c` / `cmd /c`、按行流式回传、单行裁剪、超时与整组杀进程 |
 | `internal/skills` | 技能包发现与按需加载：扫描 `SKILL.md`、容错解析 frontmatter、只把索引交给提示词、正文由 `skill` 工具取或经用户 `/skill` 指定后直接注入（ADR-0023、ADR-0024） |
 | `internal/project` | 项目级扩展发现：根 `AGENTS.md`、`.jiaoag/prompts/*.md`、`.jiaoag/skills` 与 `.agents/skills`、`.jiaoag/mcp.yaml`；产出内容摘要（ADR-0025） |
+| `internal/memory` | 跨会话记忆：工作区 `MEMORY.md` 的读取、截断与提示层包装（ADR-0018） |
+| `internal/mcp` | MCP stdio 客户端与工具源：连接缓存、命名清洗、`tools.include/exclude` 过滤、外部工具审批与状态快照（ADR-0014、ADR-0025） |
+| `internal/plugin` | 第三方 stdio 插件宿主：换行分隔 JSON-RPC，插件只声明副作用意图，写入/命令/外部调用由宿主中介（ADR-0034） |
+| `internal/policyfeed` | 签名规则 feed：ed25519 验签、有效期与回滚检查、原子落盘（ADR-0032） |
+| `internal/notify` | Webhook 通知：审批与任务终态，异步有界队列、重试与 HMAC 签名（ADR-0035） |
 
 ---
 
@@ -455,27 +460,27 @@ v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过预算（�
 
 | 能力 | 为什么做不到极致 | 扩展形态 |
 |---|---|---|
-| 代码理解 | grep / glob 只做文本匹配：不懂 interface 满足关系、类型流、调用图；agent 的瓶颈八成在这里 | `tools.Source`：LSP 客户端、tree-sitter、semgrep、codegraph |
+| 代码理解 | grep / glob 只做文本匹配：不懂 interface 满足关系、类型流、调用图；agent 的瓶颈八成在这里 | 已走 MCP 接入 LSP（`mcp-language-server` + gopls，见 `docs/mcp.md` 的「用 LSP 做代码理解」）；tree-sitter / semgrep / codegraph 作为同类 `tools.Source` 未做 |
 | 命令后果判断 | argv 白名单只判「长什么样」，判不了「会发生什么」：`make` 里的 `curl \| sh`、npm postinstall、git hooks | 规则数据 + 命令重写器 + 执行包装器 |
 | 执行隔离 | 无容器（ADR-0001），命令与 server 同权限 | `ExecBackend`（ADR-0011），仅宿主选择；v2 已实现 `sandbox-exec` / `bwrap`（ADR-0015） |
 | 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（ADR-0010 管道）：`jiaoag-policy sync` 验签后落 `policy.d/feed.yaml`，只能收紧（ADR-0032） |
 | 上下文与长期记忆 | 单任务压缩已落地（ADR-0016）；跨会话记忆是工作区文件，不做检索 | `Compactor` + 工作区 `MEMORY.md`（ADR-0018） |
 | 重启恢复 | `queued` 续跑已落地（ADR-0017）；执行中任务不重跑，审批等待不可恢复 | 工作流持久化（事件回放） |
-| 模型能力 | 只适配两家协议；没有按任务选模型、本地推理、token 精算 | 供应商适配器 + 路由策略 + tokenizer |
-| 多仓库 / monorepo | 单 workspace 边界，跨仓库重构做不深 | workspace provider（多根、worktree 池） |
+| 模型能力 | 只适配两家协议；没有本地推理 | 按任务选模型已落地（ADR-0033）、预算已按估算 token + 在线校准（ADR-0031）；供应商注册表与 tokenizer 精算不上算 |
+| 多仓库 / monorepo | 多根已落地（只读 A1 + 可写 A2，ADR-0036/0037）；worktree 池、跨根原子操作未做 | workspace provider（多根视图、worktree 池） |
 | 呈现与人机协作 | TUI 只有文本；hunk 级局部批准已落地（ADR-0028），仍无移动端审批 | 协议客户端 + 审批呈现层 |
-| 通知 / 集成 | Slack、PR 评论、编辑器接入不属服务端职责 | 事件消费者（只读，零风险） |
+| 通知 / 集成 | IM / PR 评论 / 编辑器接入不属服务端职责 | 事件消费者（`jiaoag-events`，ADR-0027）与 webhook 通知（ADR-0035）已落地 |
 | 合规解读 | 能记原始事实，判不了「这次变更加了 PII」 | 审计后处理器（只读） |
 
 开放顺序按「收益 / 风险」而不是「炫技程度」：
 
 | 优先 | 缺口 | 理由 | 成本 |
 |---|---|---|---|
-| P0 | 代码理解（LSP / tree-sitter） | 直接决定 agent 好不好用；工具类风险最低 | ~3–5 天 |
+| P0 | ~~代码理解（LSP / tree-sitter）~~ | 已走 MCP 接入 LSP（`docs/mcp.md`）；tree-sitter 等同类来源未做 | — |
 | P1 | ~~执行后端（sandbox-exec / bwrap）~~ | 已落地（ADR-0015）；远程 runner 未做 | — |
-| P2 | 供应链 feed | 复用 ADR-0010 的签名管道，边际成本最低 | ~1 天 |
+| P2 | ~~供应链 feed~~ | 已落地（ADR-0032，`jiaoag-policy sync`） | — |
 | P3 | ~~记忆 / 压缩策略~~ | 单任务压缩（ADR-0016）与跨会话记忆（ADR-0018）均已落地；不做向量检索 | — |
-| P4 | UI / 通知 | 协议已定，零架构成本 | 各自独立 |
+| P4 | UI / 通知 | TUI 改版（`docs/tui.md`）与 webhook 通知（ADR-0035）已落地；移动端审批见 issue #11 | 各自独立 |
 
 三条不许破：插件的输出必须可被宿主验证；插件不得成为运行前提（缺失时核心功能照常）；插件的身份（`source` / `backend` / feed `version`）必须进审计。
 

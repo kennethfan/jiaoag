@@ -8,6 +8,8 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`。
+
 ## 构建
 
 ```bash
