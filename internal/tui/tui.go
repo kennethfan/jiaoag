@@ -77,7 +77,11 @@ type Model struct {
 	// mcpPanel 非空表示 /mcp 的 MCP server 面板打开（只读）。
 	mcpPanel *mcpPanelView
 	// forcedSkills 是用户点名、要随下一条任务提交的技能；提交后清空。
-	forcedSkills    []string
+	forcedSkills []string
+	// forcedModel 是 /model 选定的、只用于下一条任务的模型；提交后清空。
+	forcedModel string
+	// modelsForTask 标记正在等回包的模型列表用途：/model 只覆盖下一条任务。
+	modelsForTask   bool
 	sessionProvider string
 	sessionModel    string
 	taskID          string
@@ -275,11 +279,30 @@ func sendCmd(conn *websocket.Conn, typ string, payload any) tea.Cmd {
 
 // taskSubmitPayload 组装一次提交：点名的技能只随这一条任务走，用完即清。
 func (m *Model) taskSubmitPayload(text string) protocol.TaskSubmitPayload {
-	return protocol.TaskSubmitPayload{
+	p := protocol.TaskSubmitPayload{
 		SessionID: m.sessionID,
 		Text:      text,
 		Skills:    m.forcedSkills,
 	}
+	if m.forcedModel != "" {
+		p.Provider = m.sessionProvider
+		p.Model = m.forcedModel
+	}
+	return p
+}
+
+// armTaskModel 把模型绑定到下一条任务。
+//
+// 刻意不改会话：用户往往只是想用便宜模型做一次检索，改会话会让后面的任务
+// 都在不知情的情况下换了模型。
+func (m *Model) armTaskModel(model string) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		m.appendLine("模型名不能为空")
+		return
+	}
+	m.forcedModel = model
+	m.appendLine("下一条任务使用模型：" + modelLabel(m.sessionProvider, model) + "（提交后恢复会话默认）")
 }
 
 // startLocalCommand 在客户端本机执行 !命令。
@@ -504,6 +527,20 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if text == "/models" {
 			m.input = ""
+			m.modelsForTask = false
+			m.appendLine("正在获取模型列表…")
+			return m, sendCmd(m.conn, protocol.TypeProviderModels, protocol.ProviderModelsPayload{
+				SessionID: m.sessionID,
+			})
+		}
+		// /model 只覆盖下一条任务：带参数直接绑定，否则开面板选。
+		if text == "/model" || strings.HasPrefix(text, "/model ") {
+			m.input = ""
+			if name := strings.TrimSpace(strings.TrimPrefix(text, "/model")); name != "" {
+				m.armTaskModel(name)
+				return m, nil
+			}
+			m.modelsForTask = true
 			m.appendLine("正在获取模型列表…")
 			return m, sendCmd(m.conn, protocol.TypeProviderModels, protocol.ProviderModelsPayload{
 				SessionID: m.sessionID,
@@ -551,6 +588,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		payload := m.taskSubmitPayload(text)
 		m.input = ""
 		m.forcedSkills = nil
+		m.forcedModel = ""
 		return m, sendCmd(m.conn, protocol.TypeTaskSubmit, payload)
 	case "backspace":
 		if m.input != "" {
@@ -646,7 +684,12 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			m.appendLine("供应商没有返回可用模型")
 			return nil
 		}
-		m.modelPanel = newModelPanel(p.Models, m.sessionModel, p.Source)
+		current := m.sessionModel
+		if m.modelsForTask && m.forcedModel != "" {
+			current = m.forcedModel
+		}
+		m.modelPanel = newModelPanelFor(p.Models, current, p.Source, m.modelsForTask)
+		m.modelsForTask = false
 		return nil
 
 	case protocol.TypeSkillListResult:
@@ -959,6 +1002,9 @@ func (m *Model) View() tea.View {
 	if len(m.forcedSkills) > 0 {
 		fmt.Fprintf(&b, " · 技能 %s", strings.Join(m.forcedSkills, ","))
 	}
+	if m.forcedModel != "" {
+		fmt.Fprintf(&b, " · 下一条 %s", m.forcedModel)
+	}
 	b.WriteByte('\n')
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')
@@ -994,7 +1040,7 @@ func (m *Model) View() tea.View {
 		if m.local != nil {
 			b.WriteString("[enter] 发送  [ctrl+x] 终止本机命令  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
 		} else {
-			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 模型  [/skill] 技能  [/mcp] MCP  [!] 本机命令  [ctrl+c] 退出\n")
+			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [!] 本机命令  [ctrl+c] 退出\n")
 		}
 	}
 	return tea.NewView(b.String())

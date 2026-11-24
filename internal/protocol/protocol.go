@@ -208,6 +208,9 @@ type TaskSubmitPayload struct {
 	// Skills 是用户显式点名的技能：服务端会把正文直接注入这次任务，
 	// 不依赖模型自己决定要不要加载。
 	Skills []string `json:"skills,omitempty"`
+	// Provider/Model 只覆盖这一次任务；空表示跟随会话当前设置。
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // SkillListPayload 请求技能库列表。

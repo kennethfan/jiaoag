@@ -373,7 +373,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 扩展点 | 可插？ | 机制 | 时间 |
 |---|---|---|---|
 | 工具 | ✅ | `tools.Source`：builtin / MCP / stdio 插件；MCP 支持全局 `mcp.servers` 与工作区 `.jiaoag/mcp.yaml` 合并，可按 server 用 `tools.include/exclude` 过滤工具（只读接入），`/mcp` 面板只读展示已配置的 server 与运行状态 | v1 留缝；v2 MCP 已实现（ADR-0014、ADR-0025、v2.12/v2.13 修订） |
-| LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表；多 key 轮询与冷却已实现（ADR-0020），模型列表与运行中切换已实现（ADR-0021），注册表未做 | v2 |
+| LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表；多 key 轮询与冷却已实现（ADR-0020），模型列表与运行中切换已实现（ADR-0021），单次任务的模型覆盖已实现（ADR-0033），注册表未做 | v2 |
 | UI | ✅ | 协议客户端，Web / 移动端即另一个 WS 客户端 | 已成立 |
 | 事件消费者 / 审计导出 | ✅ | `event.subscribe` + `event.head` 订阅事件，`audit.tail` 按 id 游标拉审计；`jiaoag-events` 是参考实现（ADR-0027） | v2 |
 | 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |

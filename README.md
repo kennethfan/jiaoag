@@ -81,7 +81,7 @@ server:
 
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 模型  [/skill] 技能  [/mcp] MCP  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
@@ -107,6 +107,15 @@ server:
 ```
 
 只影响下一条任务。详见 [`docs/skills.md`](docs/skills.md)。
+
+`/model` 同理，只给下一条任务换模型：`/models` 改的是会话默认（之后所有任务都跟着变），`/model` 只覆盖这一条，提交后自动恢复。适合「用便宜模型做一次检索，再用强模型改代码」：
+
+```text
+› /model                 # 面板里选，状态行显示「下一条 <model>」
+› /model agnes-2.5-flash # 或直接写模型名
+```
+
+覆盖会随任务入库（`tasks.provider/model`），重启续跑仍用同一个模型。详见 [`docs/adr/0033-task-model-override.md`](docs/adr/0033-task-model-override.md)。
 
 仓库也可以自带扩展：根目录 `AGENTS.md`、`.jiaoag/prompts/*.md` 是提示，`.jiaoag/skills` 与 `.agents/skills` 是技能，`.jiaoag/mcp.yaml` 是 MCP server。这些属于**仓库内容**，默认不信任——首次发现时只提示不加载，`/trust` 确认后才生效；内容一改就要重新确认（`/untrust` 撤销，`project.mode: auto` 可跳过确认）：
 
@@ -205,6 +214,7 @@ make demo-mcp
 | v2.18 | 收尾三件：`/healthz` 信息分级（匿名只回 ok）、Windows `!命令` 整树终止（Job Object）、`allow_session` 授权落库 + 12h 过期（ADR-0030） | ✅ |
 | v2.19 | 上下文预算按估算 token：`agent.context_budget_tokens`（默认 32000）+ 按 `prompt_tokens` 在线校准，旧 `context_budget_chars` 保留折算（ADR-0031） | ✅ |
 | v2.20 | 签名规则 feed：`jiaoag-policy sync` 验签（ed25519）后落 `policy.d/feed.yaml`，只收紧、带有效期与回滚保护（ADR-0032） | ✅ |
+| v2.21 | 按任务选模型：`task.submit` 带 provider/model 只覆盖这一次，TUI 用 `/model` 绑定下一条任务，`jiaoag-demo -task-model`（ADR-0033） | ✅ |
 
 ## 安全边界
 

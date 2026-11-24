@@ -387,7 +387,19 @@ func (s *Server) handleTaskSubmit(ctx context.Context, c *clientConn, env protoc
 		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
 		return
 	}
-	task, err := s.app.SubmitTask(ctx, domain.SessionID(p.SessionID), p.Text, p.Skills...)
+	// 单次模型覆盖要按配置校验：名字写错就报错，而不是回落到会话默认后
+	// 悄悄用另一个模型跑，事后审计才发现。
+	if p.Provider != "" && s.cfg != nil {
+		if _, ok := s.cfg.Provider(p.Provider); !ok {
+			c.sendError(ctx, protocol.CodeBadRequest, fmt.Sprintf("配置里没有供应商 %q", p.Provider))
+			return
+		}
+	}
+	task, err := s.app.SubmitTaskWith(ctx, domain.SessionID(p.SessionID), p.Text, app.SubmitOptions{
+		Skills:   p.Skills,
+		Provider: p.Provider,
+		Model:    p.Model,
+	})
 	if err != nil {
 		// 排队已满是可恢复的客户端错误：界面该提示稍后重试，而不是当成协议错误。
 		code := protocol.CodeBadRequest

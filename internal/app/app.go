@@ -294,20 +294,36 @@ func normalizeSkills(in []string) ([]string, error) {
 	return out, nil
 }
 
-// SubmitTask 提交一个任务：会话空闲就立刻执行，已有任务在跑就排到队尾。
+// SubmitOptions 是提交任务时的单次覆盖，只影响这一个任务。
 //
-// requested 是用户显式点名的技能，会随任务一起入库：重启续跑时仍能加载同一份
-// 正文，而不是悄悄丢掉技能。
+// Provider/Model 空表示跟随会话：用户没有点名时，后续改会话模型仍然生效。
+type SubmitOptions struct {
+	Skills   []string
+	Provider string
+	Model    string
+}
+
+// SubmitTask 提交只带技能的普通任务（兼容既有调用点）。
+func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt string, requested ...string) (domain.Task, error) {
+	return a.SubmitTaskWith(ctx, sessionID, prompt, SubmitOptions{Skills: requested})
+}
+
+// SubmitTaskWith 提交一个任务：会话空闲就立刻执行，已有任务在跑就排到队尾。
+//
+// 技能与模型覆盖都会随任务一起入库：重启续跑按任务自己记录的值重建，而不是
+// 回落到会话当前设置——否则用户点名用的便宜模型，重启后悄悄换成贵的。
 //
 // 排队只放内存队列，数据库里的状态仍是 queued（唯一的状态来源）。
-func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt string, requested ...string) (domain.Task, error) {
+func (a *App) SubmitTaskWith(ctx context.Context, sessionID domain.SessionID, prompt string, opts SubmitOptions) (domain.Task, error) {
 	if strings.TrimSpace(prompt) == "" {
 		return domain.Task{}, fmt.Errorf("app: 任务内容为空")
 	}
-	wanted, err := normalizeSkills(requested)
+	wanted, err := normalizeSkills(opts.Skills)
 	if err != nil {
 		return domain.Task{}, err
 	}
+	overrideProvider := strings.TrimSpace(opts.Provider)
+	overrideModel := strings.TrimSpace(opts.Model)
 	// 早退：关闭之后不必再读会话、建供应商。真正的判定在提交前的锁内。
 	if a.closedNow() {
 		return domain.Task{}, ErrAppClosed
@@ -315,6 +331,14 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	sess, err := a.store.GetSession(ctx, sessionID)
 	if err != nil {
 		return domain.Task{}, err
+	}
+	// 单次覆盖只改这份会话副本：provider 闭包按它取供应商与模型，
+	// 不改库里的会话，所以下一个任务仍回到会话默认。
+	if overrideProvider != "" {
+		sess.Provider = overrideProvider
+	}
+	if overrideModel != "" {
+		sess.Model = overrideModel
 	}
 
 	// 两次加锁：先快照依赖，再复查登记。
@@ -346,6 +370,8 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 		Status:           domain.TaskQueued,
 		Prompt:           prompt,
 		Skills:           wanted,
+		Provider:         overrideProvider,
+		Model:            overrideModel,
 		SystemPromptHash: systemHash,
 		ExtensionsDigest: extensionsDigest,
 		CreatedAt:        domain.Now(),
@@ -353,6 +379,8 @@ func (a *App) SubmitTask(ctx context.Context, sessionID domain.SessionID, prompt
 	ev, err := domain.NewEvent(domain.EventTaskQueued, sessionID, task.ID, domain.TaskQueuedPayload{
 		Prompt:           task.Prompt,
 		Skills:           task.Skills,
+		Provider:         task.Provider,
+		Model:            task.Model,
 		SystemPromptHash: task.SystemPromptHash,
 		ExtensionsDigest: task.ExtensionsDigest,
 	})

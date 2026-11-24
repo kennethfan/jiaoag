@@ -70,7 +70,11 @@ type Task struct {
 	Status    TaskStatus
 	Prompt    string
 	// Skills 是提交时用户显式点名的技能名（由 /skill 面板选择）。
-	Skills           []string
+	Skills []string
+	// Provider/Model 是这次任务实际使用的供应商与模型。空表示跟随会话默认；
+	// 非空来自提交时的单次覆盖（C1），重启续跑按它重建，而不是回落到会话设置。
+	Provider         string
+	Model            string
 	SystemPromptHash string
 	ExtensionsDigest string
 	LastSeq          Seq

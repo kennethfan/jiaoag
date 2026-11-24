@@ -25,14 +25,16 @@ import (
 
 func main() {
 	var (
-		url       = flag.String("url", "", "服务端 WS 地址，例如 ws://127.0.0.1:18787/ws")
-		token     = flag.String("token", "", "server.token")
-		workspace = flag.String("workspace", "", "会话工作区（真实目录）")
-		prompt    = flag.String("prompt", "", "任务内容")
-		provider  = flag.String("provider", "", "供应商名（空表示用配置里的默认供应商）")
-		model     = flag.String("model", "", "模型 id（空表示用供应商配置里的 model）")
-		decision  = flag.String("approve", "allow_once", "审批策略：allow_once | allow_session | deny")
-		timeout   = flag.Duration("timeout", 5*time.Minute, "整轮超时")
+		url          = flag.String("url", "", "服务端 WS 地址，例如 ws://127.0.0.1:18787/ws")
+		token        = flag.String("token", "", "server.token")
+		workspace    = flag.String("workspace", "", "会话工作区（真实目录）")
+		prompt       = flag.String("prompt", "", "任务内容")
+		provider     = flag.String("provider", "", "供应商名（空表示用配置里的默认供应商）")
+		model        = flag.String("model", "", "会话模型 id（空表示用供应商配置里的 model）")
+		taskProvider = flag.String("task-provider", "", "只覆盖本次任务的供应商（空表示跟随会话）")
+		taskModel    = flag.String("task-model", "", "只覆盖本次任务的模型（空表示跟随会话）")
+		decision     = flag.String("approve", "allow_once", "审批策略：allow_once | allow_session | deny")
+		timeout      = flag.Duration("timeout", 5*time.Minute, "整轮超时")
 	)
 	flag.Parse()
 	if *url == "" || *token == "" || *workspace == "" || *prompt == "" {
@@ -70,6 +72,7 @@ func main() {
 	}
 	if err := send(ctx, conn, protocol.TypeTaskSubmit, protocol.TaskSubmitPayload{
 		SessionID: sessionID, Text: *prompt,
+		Provider: *taskProvider, Model: *taskModel,
 	}); err != nil {
 		fail(err)
 	}

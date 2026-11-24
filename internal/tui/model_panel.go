@@ -15,12 +15,19 @@ type modelPanelView struct {
 	selected int
 	source   string
 	offset   int
+	// forTask 为 true 时，选中只作用于下一条任务（/model）；否则改会话（/models）。
+	forTask bool
 }
 
 const modelPanelHeight = 12
 
 func newModelPanel(models []string, current, source string) *modelPanelView {
-	v := &modelPanelView{models: models, source: source}
+	return newModelPanelFor(models, current, source, false)
+}
+
+// newModelPanelFor 按用途构造面板：会话级或仅下一条任务。
+func newModelPanelFor(models []string, current, source string, forTask bool) *modelPanelView {
+	v := &modelPanelView{models: models, source: source, forTask: forTask}
 	for i, m := range models {
 		if m == current {
 			v.selected = i
@@ -73,6 +80,11 @@ func (m *Model) handleModelKey(key string) (tea.Model, tea.Cmd) {
 	case "enter":
 		chosen := v.models[v.selected]
 		m.modelPanel = nil
+		if v.forTask {
+			// 只覆盖这一条任务：不动会话，提交后自动恢复。
+			m.armTaskModel(chosen)
+			return m, nil
+		}
 		m.appendLine("正在切换模型：" + chosen)
 		return m, sendCmd(m.conn, protocol.TypeSessionUpdate, protocol.SessionUpdatePayload{
 			SessionID: m.sessionID,
@@ -96,7 +108,11 @@ func (m *Model) renderModelPanel() string {
 	if v.source == "api" {
 		source = "供应商接口"
 	}
-	fmt.Fprintf(&b, "⇄ 选择模型（%d 个，来源：%s）\n", len(v.models), source)
+	purpose := "切换会话模型"
+	if v.forTask {
+		purpose = "只用于下一条任务"
+	}
+	fmt.Fprintf(&b, "⇄ 选择模型（%d 个，来源：%s，%s）\n", len(v.models), source, purpose)
 	b.WriteString(strings.Repeat("─", panelWidth))
 	b.WriteByte('\n')
 	end := v.offset + modelPanelHeight
@@ -109,7 +125,10 @@ func (m *Model) renderModelPanel() string {
 			marker = "▶ "
 		}
 		line := marker + v.models[i]
-		if v.models[i] == m.sessionModel {
+		switch {
+		case v.forTask && m.forcedModel != "" && v.models[i] == m.forcedModel:
+			line += "  (下一条)"
+		case v.models[i] == m.sessionModel:
 			line += "  (当前)"
 		}
 		b.WriteString(strings.Join(wrapText(line, panelWidth), "\n"))

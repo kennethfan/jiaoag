@@ -50,6 +50,13 @@ func (a *App) resumeQueuedTasks(ctx context.Context, deps *RuntimeDeps) error {
 			a.failResumedTask(ctx, logger, task, "读取会话失败: "+err.Error())
 			continue
 		}
+		// 任务自己记录了单次模型覆盖：续跑时按它重建，不跟随会话当前设置。
+		if task.Provider != "" {
+			sess.Provider = task.Provider
+		}
+		if task.Model != "" {
+			sess.Model = task.Model
+		}
 		ag, _, digest, err := a.newAgent(sess, deps, task.Skills)
 		if err != nil {
 			logger.Error("恢复排队任务：重建执行环境失败", "task", task.ID, "err", err)
