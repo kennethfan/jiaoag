@@ -297,6 +297,7 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
+		Audit:    []domain.AuditRecord{writeAudit(auditWriteApplied, toolCall, approval, change, "")},
 		Events:   []domain.Event{resolved, applied, resumed},
 	}); err != nil {
 		return tools.Result{}, err
@@ -324,11 +325,43 @@ func (a *Agent) failChange(ctx context.Context, task domain.Task, toolCall *doma
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
+		Audit:    []domain.AuditRecord{writeAudit(auditWriteFailed, toolCall, approval, change, message)},
 		Events:   []domain.Event{resolved, rejected, resumed},
 	}); err != nil {
 		return tools.Result{}, err
 	}
 	return tools.Result{Content: message + "；文件未被修改", IsError: true}, nil
+}
+
+// writeAudit 记录一次「已批准写入」的最终结局：落盘成功或失败。
+//
+// 为什么写操作也要进 audit 而不是只靠 proposal.* 事件：事件是会话内的，
+// 审计是跨会话的事后追责依据；只读导出（jiaoag-events）与 SQL 巡检都按
+// audit 表提问「谁在什么时候改了哪个文件」，缺了这条就只能靠人读懂事件流。
+// 未落盘的拒绝仍记 tool.denied，两者不重叠。
+func writeAudit(action string, toolCall *domain.ToolCall, approval *domain.Approval,
+	change *tools.Change, reason string) domain.AuditRecord {
+
+	detail := map[string]any{
+		"path":      change.Path,
+		"base_hash": change.BaseHash,
+		"new_hash":  change.NewHash,
+		"bytes":     len(change.NewContent),
+		"decision":  string(approval.Decision),
+	}
+	if reason != "" {
+		detail["reason"] = reason
+	}
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		raw = nil
+	}
+	return domain.AuditRecord{
+		Actor:      auditActor(approval.Source),
+		Action:     action,
+		ToolCallID: toolCall.ID,
+		Detail:     raw,
+	}
 }
 
 // expireApproval 把等不到裁决的审批收尾。调用时 ctx 已经失效，只能另起一个。

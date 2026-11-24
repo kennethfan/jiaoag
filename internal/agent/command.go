@@ -23,6 +23,10 @@ const (
 	auditExecTimeout  = "exec.timeout"
 	auditExecFailed   = "exec.failed"
 	auditToolDenied   = "tool.denied"
+	// 写入审批的最终结局。落盘成功与失败各一条，与 tool.denied（没有落盘）
+	// 区分开：按 audit 表提问「改过哪些文件」时只该看这两条。
+	auditWriteApplied = "write.applied"
+	auditWriteFailed  = "write.failed"
 )
 
 // execAuditDetail 是审计记录里的事实：事后要能回答「刚才那条命令到底跑了

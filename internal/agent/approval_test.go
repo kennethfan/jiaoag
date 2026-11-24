@@ -113,6 +113,27 @@ func TestApproveWritesFile(t *testing.T) {
 	if rec.approvals[0].Tool != "write_file" {
 		t.Fatalf("审批对象 = %s", rec.approvals[0].Tool)
 	}
+
+	// 落盘成功必须留一条 write.applied：只读导出与 SQL 巡检都按 audit 表
+	// 提问「谁改过哪个文件」，缺了这条就只能靠人读事件流。
+	var applied []domain.AuditRecord
+	for _, a := range recordedAudits(rec) {
+		if a.Action == "write.applied" {
+			applied = append(applied, a)
+		}
+	}
+	if len(applied) != 1 {
+		t.Fatalf("write.applied 审计应恰好一条，实际 %d 条", len(applied))
+	}
+	if applied[0].Actor != "user" {
+		t.Fatalf("write.applied actor = %q，期望 user", applied[0].Actor)
+	}
+	detail := string(applied[0].Detail)
+	for _, want := range []string{`"path":"out.txt"`, `"decision":"allow_once"`, `"bytes":17`} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("write.applied 审计缺少 %s，实际 %s", want, detail)
+		}
+	}
 }
 
 func TestDenyLeavesDiskUntouched(t *testing.T) {
