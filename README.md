@@ -94,6 +94,17 @@ server:
 
 `/sessions` 管这个工作区的所有会话：面板按最近活动排序，`↑/↓` 选、`enter` 就地切换（退订旧会话、从 `seq=0` 回放新会话）、`t` 改名（复用输入行，回车保存）、`d` 两次确认删除。有未结束任务的会话既不能切也不能删；删除会把任务、事件、审批、提案、工具调用连同可归属的审计一起清掉，无法撤销（`docs/sessions.md`）。
 
+不进 TUI 也能管，用 `jiaoag-sessions`：
+
+```bash
+jiaoag-sessions list                 # 当前目录的会话
+jiaoag-sessions list -all            # 跨工作区全列
+jiaoag-sessions rename ses_8d64 修登录超时
+jiaoag-sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
+```
+
+会话 id 可以只给前几位（要求唯一）。它走 WS 协议，所以要有一个在跑的服务端——`jiaoag-tui` 拉起的那台也算。
+
 写入审批默认是整份文件。diff 有两个以上块时，面板会提示 `[v] 逐块`：进去以后 `space` 勾选、`j/k` 换块、`y` 只应用勾中的块，未勾的块不落盘，工具结果会告诉模型哪几块没写（ADR-0028）。
 
 输入以 `!` 开头时，命令在**客户端本机**执行（`sh -c`，cwd 是工作区），输出逐行刷进对话区，`ctrl+x` 随时终止：
@@ -230,6 +241,7 @@ make demo-mcp
 | v2.26 | TUI 改版：状态栏置底（连接/工作目录/状态/轮次/队列/模型/token）、语义色与 `NO_COLOR` 降级、审批三按钮 + `tab` 焦点、`?` 键位面板、默认全屏 + 内部滚动（`-inline`/`-no-mouse`）（docs/tui.md） | ✅ |
 | v2.27 | `run_command` 的 `shell` 入口：整条命令由 `sh -c` 解释，固定审批且理由为 `shell: …`；审批面板展示整条命令，审计带 `shell` 标记（ADR-0038） | ✅ |
 | v2.28 | 会话管理：`/sessions` 面板（切换/改名/删除），删除按序清关联数据，忙会话拒绝切换与删除（ADR-0039） | ✅ |
+| v2.29 | 命令行会话管理：`jiaoag-sessions list/rename/rm`，`-all` 跨工作区、id 前缀补全、删除需 `-yes`（ADR-0039 修订） | ✅ |
 
 ## 安全边界
 

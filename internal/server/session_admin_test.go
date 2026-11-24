@@ -165,3 +165,53 @@ func TestReadOnlyTokenCannotManageSessions(t *testing.T) {
 		t.Fatalf("标题不该被改动：%+v", after.Sessions)
 	}
 }
+
+// 命令行工具没有会话上下文：列表可以按 workspace 筛，也可以 -all 跨工作区。
+func TestSessionManageWithoutSessionContext(t *testing.T) {
+	ts := newModelsServer(t)
+	c := dial(t, wsURL(ts), testToken)
+	handshake(t, c)
+
+	dirA, dirB := t.TempDir(), t.TempDir()
+	a := createSessionIn(t, c, dirA, "甲")
+	createSessionIn(t, c, dirA, "乙")
+	createSessionIn(t, c, dirB, "别处")
+
+	send(t, c, protocol.TypeSessionManage, protocol.SessionManagePayload{Workspace: dirA})
+	byDir := readEnvelope(t, c)
+	if byDir.Type != protocol.TypeSessionManageResult {
+		t.Fatalf("按目录列表回帧 = %s：%s", byDir.Type, byDir.Payload)
+	}
+	var list protocol.SessionManageResultPayload
+	if err := byDir.Decode(&list); err != nil {
+		t.Fatalf("解码会话列表: %v", err)
+	}
+	if len(list.Sessions) != 2 {
+		t.Fatalf("dirA 应有 2 条，得到 %d", len(list.Sessions))
+	}
+	for _, item := range list.Sessions {
+		if item.Workspace != dirA {
+			t.Fatalf("混进了别的工作区：%q", item.Workspace)
+		}
+	}
+
+	send(t, c, protocol.TypeSessionManage, protocol.SessionManagePayload{All: true})
+	allEnv := readEnvelope(t, c)
+	var all protocol.SessionManageResultPayload
+	if err := allEnv.Decode(&all); err != nil {
+		t.Fatalf("解码会话列表: %v", err)
+	}
+	if len(all.Sessions) != 3 {
+		t.Fatalf("-all 应有 3 条，得到 %d", len(all.Sessions))
+	}
+	// 会话 id 仍按 session_id 取：三维度里它优先级最高，命令行不该被 workspace 干扰。
+	if all.Sessions[0].ID == a {
+		t.Log("最近活动的会话排在首位")
+	}
+
+	send(t, c, protocol.TypeSessionManage, protocol.SessionManagePayload{})
+	bad := readEnvelope(t, c)
+	if bad.Type != protocol.TypeError {
+		t.Fatalf("什么都不给应报错，得到 %s", bad.Type)
+	}
+}

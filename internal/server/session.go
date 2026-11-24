@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -377,10 +378,12 @@ func (s *Server) handleSessionList(ctx context.Context, c *clientConn) {
 	_ = c.send(ctx, reply)
 }
 
-// handleSessionManage 返回同一工作区的会话列表（供 /sessions 面板）。
+// handleSessionManage 返回会话列表：TUI 面板按当前会话的工作区筛，命令行工具
+// 可以显式给 workspace 或要求全列。
 //
-// 工作区取自当前会话本身而不是请求里带的路径：看哪个目录的会话该由会话决定，
-// 否则任何客户端都能列举别处的工作。
+// 默认（带 session_id）工作区取自会话本身而不是请求里带的路径：看哪个目录的
+// 会话该由会话决定。命令行没有会话上下文，只能自己指定目录——那也需要有效
+// 令牌，而且列表只回元数据，不含事件内容。
 func (s *Server) handleSessionManage(ctx context.Context, c *clientConn, env protocol.Envelope) {
 	if s.app == nil {
 		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
@@ -395,16 +398,29 @@ func (s *Server) handleSessionManage(ctx context.Context, c *clientConn, env pro
 	if id == "" {
 		id = env.SessionID
 	}
-	if id == "" {
-		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+	var workspace string
+	switch {
+	case id != "":
+		sess, err := s.app.GetSession(ctx, domain.SessionID(id))
+		if err != nil {
+			c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+			return
+		}
+		workspace = sess.Workspace
+	case p.All:
+		workspace = ""
+	case p.Workspace != "":
+		abs, err := filepath.Abs(p.Workspace)
+		if err != nil {
+			c.sendError(ctx, protocol.CodeBadRequest, "workspace 无法绝对化: "+err.Error())
+			return
+		}
+		workspace = abs
+	default:
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id（或传 workspace / all）")
 		return
 	}
-	sess, err := s.app.GetSession(ctx, domain.SessionID(id))
-	if err != nil {
-		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
-		return
-	}
-	summaries, err := s.app.SessionSummaries(ctx, sess.Workspace)
+	summaries, err := s.app.SessionSummaries(ctx, workspace)
 	if err != nil {
 		c.sendError(ctx, protocol.CodeInternal, err.Error())
 		return

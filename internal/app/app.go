@@ -236,14 +236,29 @@ func (a *App) UpdateSession(ctx context.Context, id domain.SessionID, provider, 
 // workspace 为空表示列出全部。计数由存储层一次算出：面板要的是「哪条该留」，
 // 而不是逐条再查一遍任务。
 func (a *App) SessionSummaries(ctx context.Context, workspace string) ([]domain.SessionSummary, error) {
-	if workspace != "" {
-		canonical, err := filepath.Abs(workspace)
-		if err != nil {
-			return nil, fmt.Errorf("app: 解析工作区: %w", err)
-		}
-		workspace = canonical
+	// 空工作区表示「全列」；否则在 Go 里按规范化路径比对。
+	//
+	// 不在 SQL 里直接比字符串：历史会话可能存的是 /tmp/x，而命令行传的是
+	// /private/tmp/x（macOS 上 /tmp 是符号链接）。会话总量是几十条量级，
+	// 内存过滤比让用户猜「该写哪个路径」划算。
+	summaries, err := a.store.ListSessionSummaries(ctx, "")
+	if err != nil {
+		return nil, err
 	}
-	return a.store.ListSessionSummaries(ctx, workspace)
+	if workspace == "" {
+		return summaries, nil
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	want := canonicalWorkspace(workspace)
+	filtered := make([]domain.SessionSummary, 0, len(summaries))
+	for _, sum := range summaries {
+		if canonicalWorkspace(sum.Workspace) == want {
+			filtered = append(filtered, sum)
+		}
+	}
+	return filtered, nil
 }
 
 // RenameSession 改会话标题；空标题表示清掉。

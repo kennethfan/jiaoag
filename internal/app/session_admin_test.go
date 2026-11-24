@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -88,5 +89,34 @@ func TestSessionManageListRenameDelete(t *testing.T) {
 	}
 	if _, err := a.GetSession(ctx, doomed.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("会话应已删除，得到 %v", err)
+	}
+}
+
+// 同一个目录的两种写法（符号链接 vs 真实路径）必须能对上：macOS 上 /tmp 就是
+// /private/tmp，命令行传哪个都可能。
+func TestSessionSummariesMatchThroughSymlink(t *testing.T) {
+	ctx := context.Background()
+	a := newApp(t)
+
+	real := t.TempDir()
+	link := real + "-link"
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("无法创建符号链接: %v", err)
+	}
+	if _, err := a.CreateSession(ctx, real, "openai", "gpt-x", "真实路径"); err != nil {
+		t.Fatalf("创建会话: %v", err)
+	}
+
+	for _, query := range []string{real, link} {
+		got, err := a.SessionSummaries(ctx, query)
+		if err != nil {
+			t.Fatalf("按 %s 列会话: %v", query, err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("按 %s 查应有 1 条，得到 %d", query, len(got))
+		}
+	}
+	if all, err := a.SessionSummaries(ctx, ""); err != nil || len(all) != 1 {
+		t.Fatalf("全列应有 1 条：%d %v", len(all), err)
 	}
 }

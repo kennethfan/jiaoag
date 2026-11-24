@@ -222,12 +222,19 @@ type SessionListResultPayload struct {
 	Sessions []SessionPayload `json:"sessions"`
 }
 
-// SessionManagePayload 请求 /sessions 面板的数据。
+// SessionManagePayload 请求会话列表：TUI 面板与命令行工具都用它。
 //
-// 只带当前会话 id 而不带工作区路径：服务端拿会话本身的工作区去筛选，
-// 客户端传路径等于让它自己决定看哪个目录。
+// 三种取工作区的方式，按优先级：
+//  1. session_id：服务端拿会话本身的工作区去筛选（TUI 面板走这条）；
+//  2. all：跨工作区全列（命令行 `-all`）；
+//  3. workspace：命令行在没有会话上下文时显式指定目录，服务端会做绝对化。
+//
+// 第 3 条与 ADR-0039 最初的「只认会话」不同：命令行工具本来就不在任何会话里，
+// 而列表只回元数据（标题、计数），不含事件内容，拿得到令牌的人本来也能看到。
 type SessionManagePayload struct {
-	SessionID string `json:"session_id"`
+	SessionID string `json:"session_id,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	All       bool   `json:"all,omitempty"`
 }
 
 // SessionSummaryPayload 是会话管理面板的一行。
