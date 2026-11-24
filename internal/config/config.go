@@ -34,6 +34,7 @@ type Config struct {
 	Exec      Exec       `yaml:"exec"`
 	Providers []Provider `yaml:"providers"`
 	MCP       MCP        `yaml:"mcp"`
+	Plugins   Plugins    `yaml:"plugins"`
 	Project   Project    `yaml:"project"`
 }
 
@@ -125,6 +126,31 @@ type PolicyFeed struct {
 	// Keys 是 ed25519 公钥（base64），可配多把用于轮换。
 	Keys []string `yaml:"keys"`
 }
+
+// Plugins 是第三方 stdio 插件（ADR-0034）。
+//
+// 插件是可执行文件，与宿主同权限，不是沙箱；写入与命令仍走宿主的审批、沙箱
+// 与审计。只支持本机进程，不支持远程插件。
+type Plugins struct {
+	Servers []PluginServer `yaml:"servers"`
+}
+
+// PluginServer 是一台插件进程。
+type PluginServer struct {
+	Name string `yaml:"name"`
+	// Command 是程序路径或 PATH 里的名字，不经过 shell。
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	Env     map[string]string `yaml:"env"`
+	// Dir 是子进程的工作目录，支持 ~ 与相对配置文件目录的写法由使用者保证。
+	Dir string `yaml:"dir"`
+	// TimeoutSeconds 是单次 prepare/execute 的等待上限。
+	TimeoutSeconds int   `yaml:"timeout_s"`
+	Enabled        *bool `yaml:"enabled"`
+}
+
+// IsEnabled 返回插件是否启用；未写视为启用。
+func (p PluginServer) IsEnabled() bool { return p.Enabled == nil || *p.Enabled }
 
 // Exec 是命令执行的约束。
 type Exec struct {
@@ -608,6 +634,12 @@ func (c *Config) applyDefaults() {
 	if c.Exec.LogLimit <= 0 {
 		c.Exec.LogLimit = DefaultExecLogLimit
 	}
+	for i := range c.Plugins.Servers {
+		s := &c.Plugins.Servers[i]
+		if s.TimeoutSeconds <= 0 {
+			s.TimeoutSeconds = 60
+		}
+	}
 	for i := range c.MCP.Servers {
 		s := &c.MCP.Servers[i]
 		if s.TimeoutSeconds <= 0 {
@@ -617,6 +649,39 @@ func (c *Config) applyDefaults() {
 			s.Trust = "allow"
 		}
 	}
+}
+
+// validatePlugins 校验插件配置。名字进工具名与审计，非法名必须启动即挡。
+func (c *Config) validatePlugins() error {
+	seen := make(map[string]bool, len(c.Plugins.Servers))
+	for i, s := range c.Plugins.Servers {
+		prefix := fmt.Sprintf("plugins.servers[%d]", i)
+		if s.Name == "" {
+			return fmt.Errorf("%s.name 不能为空", prefix)
+		}
+		if !validMCPName(s.Name) {
+			return fmt.Errorf("%s.name 只允许字母、数字、'_'、'-'，当前为 %q", prefix, s.Name)
+		}
+		if len(s.Name) > 32 {
+			return fmt.Errorf("%s.name 超过 32 字节", prefix)
+		}
+		if seen[s.Name] {
+			return fmt.Errorf("%s.name 重复：%s", prefix, s.Name)
+		}
+		seen[s.Name] = true
+		if strings.TrimSpace(s.Command) == "" {
+			return fmt.Errorf("%s.command 不能为空", prefix)
+		}
+		if s.TimeoutSeconds < 0 || s.TimeoutSeconds > 600 {
+			return fmt.Errorf("%s.timeout_s 必须在 0-600 之间", prefix)
+		}
+		if s.Dir != "" {
+			if _, err := ExpandHome(s.Dir); err != nil {
+				return fmt.Errorf("%s.dir: %w", prefix, err)
+			}
+		}
+	}
+	return nil
 }
 
 // validateMCP 校验外部工具配置。工具名会进入系统提示与审计，非法名必须
@@ -688,6 +753,9 @@ func (c *Config) ValidateServer() error {
 		return err
 	}
 	if err := c.validateMCP(); err != nil {
+		return err
+	}
+	if err := c.validatePlugins(); err != nil {
 		return err
 	}
 	if len(c.Providers) == 0 {

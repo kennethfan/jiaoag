@@ -160,3 +160,21 @@ mcp:
   #     include: [definition, references, hover, diagnostics]
   #     exclude: [edit_file, rename_symbol]
   #   enabled: true
+
+# 第三方 stdio 插件（ADR-0034）。插件与 server 同权限运行，能声明四类副作用：
+# read（直接执行）、write（宿主算 diff、走审批后落盘）、command（宿主选执行后端）、
+# external（每次调用都要审批）。写不了、起不来都只影响该插件，不会拖死任务。
+plugins:
+  servers: []
+  # - name: notes
+  #   # 启动命令：必须在 PATH 里，或写绝对路径（不经 shell，~ 不展开）。
+  #   command: jiaoag-plugin-example
+  #   args: []
+  #   # 追加给子进程的环境变量。
+  #   env:
+  #     LOG_LEVEL: info
+  #   # 子进程工作目录；相对路径相对启动目录。
+  #   dir: ~/code
+  #   # 单次 prepare/execute 的超时秒数，默认 60，范围 0-600。
+  #   timeout_s: 60
+  #   enabled: true

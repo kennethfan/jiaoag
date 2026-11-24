@@ -215,6 +215,7 @@ make demo-mcp
 | v2.19 | 上下文预算按估算 token：`agent.context_budget_tokens`（默认 32000）+ 按 `prompt_tokens` 在线校准，旧 `context_budget_chars` 保留折算（ADR-0031） | ✅ |
 | v2.20 | 签名规则 feed：`jiaoag-policy sync` 验签（ed25519）后落 `policy.d/feed.yaml`，只收紧、带有效期与回滚保护（ADR-0032） | ✅ |
 | v2.21 | 按任务选模型：`task.submit` 带 provider/model 只覆盖这一次，TUI 用 `/model` 绑定下一条任务，`jiaoag-demo -task-model`（ADR-0033） | ✅ |
+| v2.22 | 第三方 stdio 插件：`plugins.servers`，插件只声明意图，写入走 diff 审批、命令走执行后端、失败隔离（ADR-0034） | ✅ |
 
 ## 安全边界
 

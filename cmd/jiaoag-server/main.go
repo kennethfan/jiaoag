@@ -21,6 +21,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/llm"
 	mcppkg "github.com/kennethfan/jiaoag/internal/mcp"
 	"github.com/kennethfan/jiaoag/internal/perm"
+	pluginpkg "github.com/kennethfan/jiaoag/internal/plugin"
 	"github.com/kennethfan/jiaoag/internal/server"
 	"github.com/kennethfan/jiaoag/internal/store"
 	"github.com/kennethfan/jiaoag/internal/tools"
@@ -105,7 +106,13 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 
 	mcpManager := mcppkg.NewManager(mcppkg.Options{Servers: mcpServers(cfg), Logger: log})
 	defer mcpManager.Close()
-	if err := application.ConfigureRuntime(runtimeDeps(cfg, log, backend, ruleset, mcpManager)); err != nil {
+	pluginManager := pluginpkg.NewManager(pluginpkg.Options{
+		Servers: pluginServers(cfg),
+		Logger:  log,
+		Version: version.Version,
+	})
+	defer pluginManager.Close()
+	if err := application.ConfigureRuntime(runtimeDeps(cfg, log, backend, ruleset, mcpManager, pluginManager)); err != nil {
 		return err
 	}
 	log.Info("数据已就绪", "db", cfg.Storage.DBPath)
@@ -193,7 +200,7 @@ func newExecBackend(name string) (execpkg.Backend, error) {
 }
 
 // runtimeDeps 把配置翻译成执行依赖：app 不认识 config，这里做唯一的接线。
-func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset, mcpManager *mcppkg.Manager) app.RuntimeDeps {
+func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset, mcpManager *mcppkg.Manager, pluginManager *pluginpkg.Manager) app.RuntimeDeps {
 	outputDir, err := config.ExpandHome(cfg.Storage.OutputDir)
 	if err != nil {
 		outputDir = cfg.Storage.OutputDir
@@ -239,6 +246,8 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 			sources := []tools.Source{
 				tools.NewStaticSource("builtin", base...),
 				mcpManager.Source(ws.Root(), mcppkg.ServersFromProject(env.ProjectServers)),
+				// 插件同样只是增强：进程起不来时该来源为空，其余工具照常。
+				pluginManager.Source(ws, env),
 			}
 			registry, errs := tools.NewRegistryFrom(context.Background(), sources...)
 			for _, err := range errs {
@@ -316,6 +325,42 @@ func mcpServers(cfg *config.Config) []mcppkg.Server {
 			Trust:   s.Trust == "allow",
 			Include: include,
 			Exclude: exclude,
+		})
+	}
+	return out
+}
+
+// pluginServers 把配置转成插件管理器的形态。
+func pluginServers(cfg *config.Config) []pluginpkg.Server {
+	out := make([]pluginpkg.Server, 0, len(cfg.Plugins.Servers))
+	for _, s := range cfg.Plugins.Servers {
+		if !s.IsEnabled() {
+			continue
+		}
+		argv := make([]string, 0, 1+len(s.Args))
+		argv = append(argv, s.Command)
+		argv = append(argv, s.Args...)
+		dir := s.Dir
+		if dir != "" {
+			if expanded, err := config.ExpandHome(dir); err == nil {
+				dir = expanded
+			}
+		}
+		env := make([]string, 0, len(s.Env))
+		keys := make([]string, 0, len(s.Env))
+		for k := range s.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			env = append(env, k+"="+s.Env[k])
+		}
+		out = append(out, pluginpkg.Server{
+			Name:    s.Name,
+			Argv:    argv,
+			Env:     env,
+			Dir:     dir,
+			Timeout: time.Duration(s.TimeoutSeconds) * time.Second,
 		})
 	}
 	return out

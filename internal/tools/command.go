@@ -345,6 +345,12 @@ func clampTimeout(d time.Duration) time.Duration {
 //
 // 白名单而不是黑名单：DATABASE_URL 这类变量也可能内嵌口令，而黑名单永远
 // 漏得掉。代价是某些自定义工具链变量要显式加进来。
+// CommandEnv 是命令类工具共用的环境变量策略：白名单放行、剥离密钥。
+//
+// 开放给插件宿主使用，避免插件命令继承父进程的全部环境（那就等于绕过了
+// 「密钥不进子进程」这条约束）。
+func CommandEnv(environ []string) []string { return commandEnv(environ) }
+
 func commandEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {

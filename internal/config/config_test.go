@@ -698,3 +698,75 @@ func TestPolicyFeedValidation(t *testing.T) {
 		t.Fatalf("非法公钥应报错")
 	}
 }
+
+// pluginsBlock 把一段 plugins 配置插到 providers 之前，其余用最小配置。
+func pluginsBlock(section string) string {
+	return strings.Replace(minimalYAML, "providers:", section+"providers:", 1)
+}
+
+func TestPluginsValidation(t *testing.T) {
+	ok := `plugins:
+  servers:
+    - name: notes
+      command: /bin/true
+      args: [--flag]
+      timeout_s: 30
+`
+	cfg, err := Load(writeTemp(t, pluginsBlock(ok)))
+	if err != nil {
+		t.Fatalf("合法插件配置应通过: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("合法插件配置应通过校验: %v", err)
+	}
+	if len(cfg.Plugins.Servers) != 1 || cfg.Plugins.Servers[0].Name != "notes" {
+		t.Fatalf("插件配置未解析: %+v", cfg.Plugins.Servers)
+	}
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "缺名字",
+			body: "plugins:\n  servers:\n    - command: /bin/true\n",
+			want: "plugins.servers[0].name",
+		},
+		{
+			name: "非法名字",
+			body: "plugins:\n  servers:\n    - name: \"bad name\"\n      command: /bin/true\n",
+			want: "只允许字母",
+		},
+		{
+			name: "名字重复",
+			body: "plugins:\n  servers:\n    - name: dup\n      command: /bin/true\n    - name: dup\n      command: /bin/true\n",
+			want: "重复",
+		},
+		{
+			name: "缺命令",
+			body: "plugins:\n  servers:\n    - name: nocmd\n",
+			want: "plugins.servers[0].command",
+		},
+		{
+			name: "超时越界",
+			body: "plugins:\n  servers:\n    - name: slow\n      command: /bin/true\n      timeout_s: 601\n",
+			want: "timeout_s",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeTemp(t, pluginsBlock(tc.body)))
+			if err != nil {
+				t.Fatalf("加载配置: %v", err)
+			}
+			err = cfg.ValidateServer()
+			if err == nil {
+				t.Fatal("期望校验失败")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误应包含 %q，实际: %v", tc.want, err)
+			}
+		})
+	}
+}
