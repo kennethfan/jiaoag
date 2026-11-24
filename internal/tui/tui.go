@@ -90,6 +90,11 @@ type Model struct {
 	skillPanel *skillPanelView
 	// mcpPanel 非空表示 /mcp 的 MCP server 面板打开（只读）。
 	mcpPanel *mcpPanelView
+	// sessionsPanel 非空表示 /sessions 的会话管理面板打开。
+	sessionsPanel *sessionsPanelView
+	// renamingSession 非空表示正在输入某会话的新标题：此时输入行的内容不是任务。
+	renamingSession string
+	sessionTitle    string
 	// forcedSkills 是用户点名、要随下一条任务提交的技能；提交后清空。
 	forcedSkills []string
 	// forcedModel 是 /model 选定的、只用于下一条任务的模型；提交后清空。
@@ -599,6 +604,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.mcpPanel != nil {
 		return m.handleMCPKey(key)
 	}
+	if m.sessionsPanel != nil {
+		return m.handleSessionsKey(key)
+	}
 	if m.help {
 		// 帮助是覆盖层：除了 ctrl+c / ctrl+f 与关闭键，其余按键都不该穿透。
 		switch key {
@@ -651,6 +659,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.queuePanel = &queuePanelView{}
 		return m, nil
 	case "esc":
+		if m.renamingSession != "" {
+			m.renamingSession = ""
+			m.input = ""
+			m.appendLine("已取消改名")
+			return m, nil
+		}
 		// 有任务在跑时 esc 是取消，否则退出：避免误按把界面关掉。
 		// 只认正在执行/等审批的那个 id，排队任务不能在这里被误取消。
 		if m.runTaskID != "" {
@@ -667,6 +681,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.connectCmd()
 	case "enter":
 		text := strings.TrimSpace(m.input)
+		// 改名优先：此刻输入行装的是标题，不是要提交的任务。空标题表示清掉。
+		if m.renamingSession != "" {
+			return m, m.finishRename(text)
+		}
 		if text == "" {
 			return m, nil
 		}
@@ -716,6 +734,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.input = ""
 			m.appendLine("正在获取 MCP server 列表…")
 			return m, sendCmd(m.conn, protocol.TypeMCPList, protocol.MCPListPayload{
+				SessionID: m.sessionID,
+			})
+		}
+		// /sessions 打开会话管理面板：只看本工作区，能切换、改名、删除。
+		if text == "/sessions" {
+			m.input = ""
+			m.appendLine("正在获取会话列表…")
+			return m, sendCmd(m.conn, protocol.TypeSessionManage, protocol.SessionManagePayload{
 				SessionID: m.sessionID,
 			})
 		}
@@ -819,6 +845,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		}
 		m.resetView()
 		m.sessionID = target.ID
+		m.sessionTitle = target.Title
 		m.sessionProvider, m.sessionModel = target.Provider, target.Model
 		m.status = fmt.Sprintf("会话 %s · %s", target.ID, target.Workspace)
 		m.appendLine("继续会话 " + target.ID)
@@ -833,10 +860,61 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			FromSeq:   0,
 		})
 
+	case protocol.TypeSessionManageResult:
+		var p protocol.SessionManageResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if len(p.Sessions) == 0 {
+			m.appendLine("这个工作区还没有会话")
+			return nil
+		}
+		m.sessionsPanel = newSessionsPanel(p.Sessions, m.sessionID)
+		return nil
+
+	case protocol.TypeSessionRenamed:
+		var p protocol.SessionPayload
+		if err := env.Decode(&p); err == nil {
+			if p.ID == m.sessionID {
+				m.sessionTitle = p.Title
+			}
+			if p.Title == "" {
+				m.appendLine("标题已清空")
+			} else {
+				m.appendLine("标题已改为：" + p.Title)
+			}
+		}
+		return nil
+
+	case protocol.TypeSessionDeleted:
+		var p protocol.SessionDeletedPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		m.forgetSession(p.SessionID)
+		m.appendLine("已删除会话 " + shortID(p.SessionID))
+		if p.SessionID == m.sessionID {
+			// 当前会话被删：界面不能指着一个不存在的 id，直接开一条新的。
+			// 先清 id 再 resetView：resetView 不清 sessionID，留着它会让下一条
+			// 任务的 session_id 指向已删除的会话。
+			m.sessionID = ""
+			m.sessionTitle = ""
+			m.resetView()
+			m.appendLine("当前会话已删除，新建会话")
+			return sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
+				Workspace: m.opts.Workspace,
+				Roots:     m.opts.Roots,
+				Provider:  m.opts.Provider,
+				Model:     m.opts.Model,
+			})
+		}
+		return nil
+
 	case protocol.TypeSessionCreated:
 		var p protocol.SessionPayload
 		if err := env.Decode(&p); err == nil {
 			m.sessionID = p.ID
+			m.sessionTitle = p.Title
 			m.sessionProvider, m.sessionModel = p.Provider, p.Model
 			m.status = fmt.Sprintf("会话 %s · %s", p.ID, p.Workspace)
 			m.appendLine("已进入会话 " + p.ID)
@@ -1247,6 +1325,8 @@ func (m *Model) View() tea.View {
 		modalText = m.renderSkillPanel()
 	case m.mcpPanel != nil:
 		modalText = m.renderMCPPanel()
+	case m.sessionsPanel != nil:
+		modalText = m.renderSessionsPanel()
 	case m.help:
 		modalText = m.renderHelpPanel()
 	default:
@@ -1580,6 +1660,8 @@ func (m *Model) hintParts(width int) []string {
 		parts = []string{k("↑↓", "选择"), k("enter", "指定"), k("x", "清除"), k("esc", "关闭")}
 	case m.mcpPanel != nil:
 		parts = []string{k("↑↓", "选择"), k("esc", "关闭")}
+	case m.sessionsPanel != nil:
+		parts = []string{k("↑↓", "选择"), k("enter", "切换"), k("t", "改名"), k("d", "删除"), k("esc", "关闭")}
 	case m.help:
 		parts = []string{k("esc", "关闭")}
 	case m.local != nil:
@@ -1616,6 +1698,7 @@ func (m *Model) renderHelpPanel() string {
 		{"/skill", "指定下一条任务加载的技能"},
 		{"/mcp", "MCP server 与工具数"},
 		{"/roots", "会话挂载的附加根"},
+		{"/sessions", "会话列表：切换、改名、删除"},
 		{"!cmd", "在本机执行命令（不进模型、不审计）"},
 		{"v", "审批时逐块选择"},
 		{"tab", "审批时切换三个按钮"},
@@ -1725,6 +1808,7 @@ func (m *Model) resetView() {
 	m.modelPanel = nil
 	m.skillPanel = nil
 	m.mcpPanel = nil
+	m.sessionsPanel = nil
 	m.round, m.tokens = 0, 0
 	m.localLines, m.localOmitted = 0, 0
 	m.dialog = nil

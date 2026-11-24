@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kennethfan/jiaoag/internal/agent"
 
@@ -228,6 +229,67 @@ func (a *App) UpdateSession(ctx context.Context, id domain.SessionID, provider, 
 		return domain.Session{}, err
 	}
 	return sess, nil
+}
+
+// SessionSummaries 是会话管理面板的数据源。
+//
+// workspace 为空表示列出全部。计数由存储层一次算出：面板要的是「哪条该留」，
+// 而不是逐条再查一遍任务。
+func (a *App) SessionSummaries(ctx context.Context, workspace string) ([]domain.SessionSummary, error) {
+	if workspace != "" {
+		canonical, err := filepath.Abs(workspace)
+		if err != nil {
+			return nil, fmt.Errorf("app: 解析工作区: %w", err)
+		}
+		workspace = canonical
+	}
+	return a.store.ListSessionSummaries(ctx, workspace)
+}
+
+// RenameSession 改会话标题；空标题表示清掉。
+func (a *App) RenameSession(ctx context.Context, id domain.SessionID, title string) (domain.Session, error) {
+	if a.closedNow() {
+		return domain.Session{}, ErrAppClosed
+	}
+	title = strings.TrimSpace(title)
+	if utf8.RuneCountInString(title) > maxSessionTitleRunes {
+		return domain.Session{}, fmt.Errorf("标题最多 %d 个字符", maxSessionTitleRunes)
+	}
+	sess, err := a.store.GetSession(ctx, id)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if sess.Title == title {
+		return sess, nil
+	}
+	sess.Title = title
+	sess.UpdatedAt = domain.Now()
+
+	ev, err := domain.NewEvent(domain.EventSessionRenamed, sess.ID, "",
+		domain.SessionRenamedPayload{Title: title})
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := a.commit(func() ([]domain.Event, error) {
+		return a.store.RenameSession(ctx, sess, []domain.Event{ev})
+	}); err != nil {
+		return domain.Session{}, err
+	}
+	return sess, nil
+}
+
+// maxSessionTitleRunes 是标题上限：它只进状态栏与面板，太长会把两者都挤爆。
+const maxSessionTitleRunes = 60
+
+// DeleteSession 永久删除会话与关联数据。
+//
+// 有未终态任务时存储层返回 domain.ErrSessionBusy：那种时候删掉会话，正在跑的
+// agent 就失去归属了。调用方应让用户先取消任务或等它结束。
+func (a *App) DeleteSession(ctx context.Context, id domain.SessionID) error {
+	if a.closedNow() {
+		return ErrAppClosed
+	}
+	return a.store.DeleteSession(ctx, id)
 }
 
 // CreateSession 创建工作区会话，并写入 session.created。

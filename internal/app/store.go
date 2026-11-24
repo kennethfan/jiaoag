@@ -23,6 +23,12 @@ type Store interface {
 	ListSessions(ctx context.Context) ([]domain.Session, error)
 	// SessionsWithActiveTasks 返回仍有未终态任务的会话，供同仓检测。
 	SessionsWithActiveTasks(ctx context.Context) ([]domain.Session, error)
+	// ListSessionSummaries 是会话管理面板的读模型：会话 + 任务/token 计数。
+	ListSessionSummaries(ctx context.Context, workspace string) ([]domain.SessionSummary, error)
+	// RenameSession 只改标题（不碰 provider/model，避免改名把期间切换的模型写回旧值）。
+	RenameSession(ctx context.Context, s domain.Session, events []domain.Event) ([]domain.Event, error)
+	// DeleteSession 永久删除会话与关联数据；有未终态任务时返回 domain.ErrSessionBusy。
+	DeleteSession(ctx context.Context, id domain.SessionID) error
 
 	CreateTask(ctx context.Context, t domain.Task, events []domain.Event) ([]domain.Event, error)
 	GetTask(ctx context.Context, id domain.TaskID) (domain.Task, error)

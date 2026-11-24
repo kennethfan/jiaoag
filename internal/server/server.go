@@ -100,6 +100,17 @@ func (c *clientConn) endStream(sessionKey string, h *streamHandle) {
 	h.cancel()
 }
 
+// cancelStream 停掉某会话的推送协程（会话被删或客户端换会话时）。
+func (c *clientConn) cancelStream(sessionKey string) {
+	c.subsMu.Lock()
+	h := c.subs[sessionKey]
+	delete(c.subs, sessionKey)
+	c.subsMu.Unlock()
+	if h != nil {
+		h.cancel()
+	}
+}
+
 func (c *clientConn) send(ctx context.Context, env protocol.Envelope) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -372,6 +383,18 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		case protocol.TypeSessionList:
 			s.handleSessionList(ctx, c)
 
+		case protocol.TypeSessionManage:
+			s.handleSessionManage(ctx, c, env)
+
+		case protocol.TypeSessionRename:
+			s.handleSessionRename(ctx, c, env)
+
+		case protocol.TypeSessionDelete:
+			s.handleSessionDelete(ctx, c, env)
+
+		case protocol.TypeEventUnsubscribe:
+			s.handleEventUnsubscribe(ctx, c, env)
+
 		case protocol.TypeTaskSubmit:
 			s.handleTaskSubmit(ctx, c, env)
 
@@ -400,6 +423,8 @@ func isWriteCommand(typ string) bool {
 	switch typ {
 	case protocol.TypeSessionCreate,
 		protocol.TypeSessionUpdate,
+		protocol.TypeSessionRename,
+		protocol.TypeSessionDelete,
 		protocol.TypeTaskSubmit,
 		protocol.TypeTaskCancel,
 		protocol.TypeApprovalResolve,

@@ -71,6 +71,18 @@ type SessionRoot struct {
 	Path  string `json:"path"`
 }
 
+// SessionSummary 是会话管理面板用的读模型：会话本体 + 计数。
+//
+// 计数放在读模型里而不是 Session 上：会话本身的字段是任务构造的输入，
+// 统计只服务展示，混在一起会让「会话」这个概念变得越来越沉。
+type SessionSummary struct {
+	Session
+	Tasks            int
+	ActiveTasks      int
+	PromptTokens     int
+	CompletionTokens int
+}
+
 // Task 是一次用户请求，按轮次推进。状态迁移见 state.go。
 type Task struct {
 	ID        TaskID

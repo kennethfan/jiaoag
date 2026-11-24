@@ -377,6 +377,157 @@ func (s *Server) handleSessionList(ctx context.Context, c *clientConn) {
 	_ = c.send(ctx, reply)
 }
 
+// handleSessionManage 返回同一工作区的会话列表（供 /sessions 面板）。
+//
+// 工作区取自当前会话本身而不是请求里带的路径：看哪个目录的会话该由会话决定，
+// 否则任何客户端都能列举别处的工作。
+func (s *Server) handleSessionManage(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.SessionManagePayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	sess, err := s.app.GetSession(ctx, domain.SessionID(id))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	summaries, err := s.app.SessionSummaries(ctx, sess.Workspace)
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	out := make([]protocol.SessionSummaryPayload, 0, len(summaries))
+	for _, sum := range summaries {
+		out = append(out, protocol.SessionSummaryPayload{
+			ID:               string(sum.ID),
+			Title:            sum.Title,
+			Workspace:        sum.Workspace,
+			Provider:         sum.Provider,
+			Model:            sum.Model,
+			Tasks:            sum.Tasks,
+			ActiveTasks:      sum.ActiveTasks,
+			PromptTokens:     sum.PromptTokens,
+			CompletionTokens: sum.CompletionTokens,
+			CreatedAt:        sum.CreatedAt.UnixMilli(),
+			UpdatedAt:        sum.UpdatedAt.UnixMilli(),
+		})
+	}
+	reply, err := protocol.New(protocol.TypeSessionManageResult, protocol.SessionManageResultPayload{Sessions: out})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
+	_ = c.send(ctx, reply)
+}
+
+// handleSessionRename 改会话标题，回执带完整的 session 载荷。
+func (s *Server) handleSessionRename(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.SessionRenamePayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	sess, err := s.app.RenameSession(ctx, domain.SessionID(id), p.Title)
+	if err != nil {
+		code := protocol.CodeInternal
+		if errors.Is(err, domain.ErrNotFound) {
+			code = protocol.CodeBadRequest
+		}
+		c.sendError(ctx, code, err.Error())
+		return
+	}
+	reply, err := protocol.New(protocol.TypeSessionRenamed, sessionPayload(sess))
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
+	_ = c.send(ctx, reply)
+}
+
+// handleSessionDelete 永久删除会话；有未结束任务时拒绝。
+func (s *Server) handleSessionDelete(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if s.app == nil {
+		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")
+		return
+	}
+	var p protocol.SessionDeletePayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "缺少 session_id")
+		return
+	}
+	if err := s.app.DeleteSession(ctx, domain.SessionID(id)); err != nil {
+		code := protocol.CodeInternal
+		if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrSessionBusy) {
+			code = protocol.CodeBadRequest
+		}
+		c.sendError(ctx, code, err.Error())
+		return
+	}
+	// 删除的正好是本连接订阅的会话：先停掉推送，否则它会一直等一个不再有
+	// 事件可发的订阅。
+	c.cancelStream(id)
+	reply, err := protocol.New(protocol.TypeSessionDeleted, protocol.SessionDeletedPayload{SessionID: id})
+	if err != nil {
+		c.sendError(ctx, protocol.CodeInternal, err.Error())
+		return
+	}
+	reply.SessionID = id
+	_ = c.send(ctx, reply)
+}
+
+// handleEventUnsubscribe 停掉某会话的事件推送（换会话前先退订旧的）。
+func (s *Server) handleEventUnsubscribe(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	var p protocol.EventUnsubscribePayload
+	if err := env.Decode(&p); err != nil {
+		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
+		return
+	}
+	id := p.SessionID
+	if id == "" {
+		id = env.SessionID
+	}
+	if id == "" {
+		c.sendError(ctx, protocol.CodeBadRequest, "event.unsubscribe 缺少 session_id")
+		return
+	}
+	c.cancelStream(id)
+}
+
 func (s *Server) handleTaskSubmit(ctx context.Context, c *clientConn, env protocol.Envelope) {
 	if s.app == nil {
 		c.sendError(ctx, protocol.CodeUnsupported, "服务端尚未接入会话存储")

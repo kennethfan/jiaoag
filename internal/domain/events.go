@@ -19,6 +19,10 @@ const (
 	// agent；已完成任务的历史不受影响。
 	EventSessionUpdated EventKind = "session.updated"
 
+	// EventSessionRenamed 记录会话改名。回放靠它把标题带回来：session.created
+	// 里的标题是创建时的值，之后可能已经改过。
+	EventSessionRenamed EventKind = "session.renamed"
+
 	// 任务状态统一走 task.status{from,to,reason}，不按状态拆成多种类型。
 	EventTaskQueued EventKind = "task.queued"
 	EventTaskStatus EventKind = "task.status"
@@ -116,6 +120,11 @@ type SessionCreatedPayload struct {
 type SessionUpdatedPayload struct {
 	Provider string `json:"provider,omitempty"`
 	Model    string `json:"model"`
+}
+
+// SessionRenamedPayload 记录会话标题变更；空标题表示清掉。
+type SessionRenamedPayload struct {
+	Title string `json:"title"`
 }
 
 type TaskQueuedPayload struct {

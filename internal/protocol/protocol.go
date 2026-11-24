@@ -27,7 +27,16 @@ const (
 	TypeSessionUpdated    = "session.updated"     // S→C
 	TypeSessionList       = "session.list"        // C→S
 	TypeSessionListResult = "session.list.result" // S→C
-	TypeProviderModels    = "provider.models"     // C→S：列出该会话供应商的可用模型
+	// TypeSessionManage 是 /sessions 面板的读模型：只回同一工作区的会话，
+	// 并带上任务数、活动任务数与 token 合计。与 session.list 分开是因为后者
+	// 被 -c 用来挑「全量更新序里的最近一条」，语义不该被统计需求带偏。
+	TypeSessionManage       = "session.manage"        // C→S
+	TypeSessionManageResult = "session.manage.result" // S→C
+	TypeSessionRename       = "session.rename"        // C→S
+	TypeSessionRenamed      = "session.renamed"       // S→C
+	TypeSessionDelete       = "session.delete"        // C→S
+	TypeSessionDeleted      = "session.deleted"       // S→C
+	TypeProviderModels      = "provider.models"       // C→S：列出该会话供应商的可用模型
 	// TypeProviderModelsResult 是 provider.models 的响应。
 	TypeProviderModelsResult = "provider.models.result" // S→C
 	TypeSkillList            = "skill.list"             // C→S：列出技能库（供 /skill 面板）
@@ -54,6 +63,9 @@ const (
 	TypeApprovalResolve = "approval.resolve" // C→S：对一次待审批给出裁决
 	TypeEventSubscribe  = "event.subscribe"  // C→S
 	TypeEventSnapshot   = "event.snapshot"   // S→C：增量订阅时补发非事件态（待审批）
+	// TypeEventUnsubscribe 停掉某会话的推送：换会话时旧订阅不取消的话，
+	// 两边事件会混在同一条连接上（subs 是按会话 id 分键的）。
+	TypeEventUnsubscribe = "event.unsubscribe" // C→S
 )
 
 // 错误码。
@@ -208,6 +220,58 @@ type ProjectStatusPayload struct {
 // SessionListResultPayload 是 session.list 的响应。
 type SessionListResultPayload struct {
 	Sessions []SessionPayload `json:"sessions"`
+}
+
+// SessionManagePayload 请求 /sessions 面板的数据。
+//
+// 只带当前会话 id 而不带工作区路径：服务端拿会话本身的工作区去筛选，
+// 客户端传路径等于让它自己决定看哪个目录。
+type SessionManagePayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// SessionSummaryPayload 是会话管理面板的一行。
+type SessionSummaryPayload struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	Workspace string `json:"workspace"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	// Tasks 是任务总数，ActiveTasks 是其中未终态的（queued/running/waiting_approval）。
+	// 有活动任务的会话既不能切走也不能删：切走会让审批面板错位，删掉会把
+	// 还在跑的 goroutine 甩在后面。
+	Tasks            int   `json:"tasks"`
+	ActiveTasks      int   `json:"active_tasks,omitempty"`
+	PromptTokens     int   `json:"prompt_tokens,omitempty"`
+	CompletionTokens int   `json:"completion_tokens,omitempty"`
+	CreatedAt        int64 `json:"created_at,omitempty"`
+	UpdatedAt        int64 `json:"updated_at,omitempty"`
+}
+
+// SessionManageResultPayload 是 session.manage 的响应。
+type SessionManageResultPayload struct {
+	Sessions []SessionSummaryPayload `json:"sessions"`
+}
+
+// SessionRenamePayload 改会话标题；空标题表示清掉标题。
+type SessionRenamePayload struct {
+	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
+}
+
+// SessionDeletePayload 请求永久删除会话。
+type SessionDeletePayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// SessionDeletedPayload 是 session.delete 的响应。
+type SessionDeletedPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// EventUnsubscribePayload 取消某会话的事件推送。
+type EventUnsubscribePayload struct {
+	SessionID string `json:"session_id"`
 }
 
 // TaskSubmitPayload 提交一个任务。

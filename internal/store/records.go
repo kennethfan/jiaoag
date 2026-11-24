@@ -91,14 +91,17 @@ func (s *Store) UpdateSession(ctx context.Context, sess domain.Session, events [
 
 const sessionColumns = `id, workspace, provider, model, title, created_at, updated_at, roots`
 
-func scanSession(row interface{ Scan(...any) error }) (domain.Session, error) {
+// scanSession 扫描一行会话，extra 用于同一行里附加的统计列（会话管理面板）。
+func scanSession(row interface{ Scan(...any) error }, extra ...any) (domain.Session, error) {
 	var (
 		sess             domain.Session
 		id               string
 		created, updated string
 		roots            string
 	)
-	if err := row.Scan(&id, &sess.Workspace, &sess.Provider, &sess.Model, &sess.Title, &created, &updated, &roots); err != nil {
+	dest := []any{&id, &sess.Workspace, &sess.Provider, &sess.Model, &sess.Title, &created, &updated, &roots}
+	dest = append(dest, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return domain.Session{}, err
 	}
 	sess.ID = domain.SessionID(id)

@@ -8,7 +8,7 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 
@@ -85,12 +85,14 @@ server:
 
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [/sessions] 会话  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
 
 界面是「对话 / 面板 / 输入 / 状态栏」四段：默认占满窗口（alternate screen），状态栏钉在终端底行，显示连接状态、工作目录、任务状态、轮次、队列、模型与 token（键位提示也在这一行的右侧，输入行紧贴其上）；内容超出视口用 `pgup/pgdn`、`home/end` 滚动，翻页时状态栏提示未读行数。`?` 打开键位与版本面板，`ctrl+f` 在内联/全屏间切换，`-inline` 启动即用内联（保留 scrollback）、鼠标滚轮默认由程序接管（`-no-mouse` 交还终端）。审批卡片有三个按钮，`tab` 切换焦点、`enter` 执行，`y`/`a`/`n` 仍可直选。布局与配色见 `docs/tui.md`。
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
+
+`/sessions` 管这个工作区的所有会话：面板按最近活动排序，`↑/↓` 选、`enter` 就地切换（退订旧会话、从 `seq=0` 回放新会话）、`t` 改名（复用输入行，回车保存）、`d` 两次确认删除。有未结束任务的会话既不能切也不能删；删除会把任务、事件、审批、提案、工具调用连同可归属的审计一起清掉，无法撤销（`docs/sessions.md`）。
 
 写入审批默认是整份文件。diff 有两个以上块时，面板会提示 `[v] 逐块`：进去以后 `space` 勾选、`j/k` 换块、`y` 只应用勾中的块，未勾的块不落盘，工具结果会告诉模型哪几块没写（ADR-0028）。
 
@@ -227,6 +229,7 @@ make demo-mcp
 | v2.25 | 附加根可写：写入走同一套 diff/审批/CAS，`run_command root=` 切换 cwd，sandbox 可写范围扩到所有根（ADR-0037） | ✅ |
 | v2.26 | TUI 改版：状态栏置底（连接/工作目录/状态/轮次/队列/模型/token）、语义色与 `NO_COLOR` 降级、审批三按钮 + `tab` 焦点、`?` 键位面板、默认全屏 + 内部滚动（`-inline`/`-no-mouse`）（docs/tui.md） | ✅ |
 | v2.27 | `run_command` 的 `shell` 入口：整条命令由 `sh -c` 解释，固定审批且理由为 `shell: …`；审批面板展示整条命令，审计带 `shell` 标记（ADR-0038） | ✅ |
+| v2.28 | 会话管理：`/sessions` 面板（切换/改名/删除），删除按序清关联数据，忙会话拒绝切换与删除（ADR-0039） | ✅ |
 
 ## 安全边界
 
