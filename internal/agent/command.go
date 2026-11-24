@@ -32,9 +32,11 @@ const (
 // execAuditDetail 是审计记录里的事实：事后要能回答「刚才那条命令到底跑了
 // 什么、退出码多少、当时用的是哪套规则与哪个后端」。
 type execAuditDetail struct {
-	Argv           []string        `json:"argv"`
-	Cwd            string          `json:"cwd"`
-	Root           string          `json:"root,omitempty"`
+	Argv []string `json:"argv"`
+	Cwd  string   `json:"cwd"`
+	Root string   `json:"root,omitempty"`
+	// Shell 标记这条命令由 shell 解释；Argv 此时是 [sh,-c,<整条>]。
+	Shell          bool            `json:"shell,omitempty"`
 	Backend        string          `json:"backend,omitempty"`
 	BackendVersion string          `json:"backend_version,omitempty"`
 	PolicyVersion  string          `json:"policy_version,omitempty"`
@@ -130,6 +132,7 @@ func commandAudit(action, actor string, prepared tools.Prepared, result tools.Re
 		detail.Argv = cmd.Argv
 		detail.Cwd = cmd.Cwd
 		detail.Root = cmd.Root
+		detail.Shell = cmd.Shell != ""
 		detail.Backend = cmd.Backend
 	}
 	raw, err := json.Marshal(detail)
@@ -176,6 +179,7 @@ func (a *Agent) proposeCommand(ctx context.Context, task domain.Task, toolCall *
 			Kind:       domain.ApprovalCommand,
 			Risk:       domain.RiskHigh,
 			Command:    cmd.Argv,
+			Shell:      cmd.Shell,
 			Cwd:        cmd.Cwd,
 			Backend:    cmd.Backend,
 			TimeoutMS:  cmd.Timeout.Milliseconds(),

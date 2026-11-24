@@ -234,7 +234,7 @@ case <-ctx.Done():       // 取消 / 服务端关闭
 
 ### 5.4 权限是纯函数（ADR-0004）
 
-层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。`go build` 与 git 子命令不在命令白名单里：前者会写工作区产物，后者会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。
+层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。`go build` 与 git 子命令不在命令白名单里：前者会写工作区产物，后者会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。模型的 shell 需求走显式 `shell` 字段（ADR-0038）：整条命令由 `sh -c` / `cmd /c` 解释，固定要审批，理由写作 `shell: …`，不再借用元字符判定给模型的行为贴错标签。
 
 ### 5.5 LLM 端口 + 装饰器（ADR-0008）
 
@@ -334,7 +334,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 ## 8. 错误与可观测性
 
 - 各层返回类型化错误（`perm.DeniedError`、`workspace.ErrStale`、`llm.ErrRateLimited`），只在 `app` 边界映射成 `protocol` 错误码。
-- 命令类工具每次执行恰写一行 `audit`（与 `tool.result` 同事务）：`argv`、`cwd`、`backend` / `backend_version`、`policy_version` / `rule_id`、`exit_code`、`output_path`、`duration_ms`、`log_error`；写入审批只在拒绝 / 策略拒绝时写 `tool.denied`。`actor` 取 `policy` / `user` / `system`。
+- 命令类工具每次执行恰写一行 `audit`（与 `tool.result` 同事务）：`argv`、`shell`（是否为 shell 形态）、`cwd`、`backend` / `backend_version`、`policy_version` / `rule_id`、`exit_code`、`output_path`、`duration_ms`、`log_error`；写入审批只在拒绝 / 策略拒绝时写 `tool.denied`。`actor` 取 `policy` / `user` / `system`。
 - 事件流本身即 trace：一轮 = `message.start → tool.requested → approval.* → tool.result → message.completed`。
 
 ---

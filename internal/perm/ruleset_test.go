@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kennethfan/jiaoag/internal/perm"
@@ -94,6 +95,25 @@ func TestMetacharForcesApprovalEvenWhenWhitelisted(t *testing.T) {
 		if d.Verdict != perm.RequireUser {
 			t.Fatalf("%v 应要求审批，实际 %q（%s）", argv, d.Verdict, d.Reason)
 		}
+	}
+}
+
+// shell 命令的审批理由必须说清「为什么不能静态判定」，而不是拿元字符
+// 当借口：| 与 > 在 shell 命令里是正常语法，报 metachar 会让人以为工具误判。
+func TestShellCommandExplainsWhyItNeedsApproval(t *testing.T) {
+	rs := perm.DefaultRuleset()
+	p := commandPrepared("sh", "-c", "ls | head -3")
+	p.Command.Shell = "ls | head -3"
+
+	d := rs.Evaluate(context.Background(), p)
+	if d.Verdict != perm.RequireUser {
+		t.Fatalf("shell 命令应要求审批，实际 %q", d.Verdict)
+	}
+	if !strings.HasPrefix(d.Reason, "shell:") {
+		t.Fatalf("理由应以 shell: 开头，实际 %q", d.Reason)
+	}
+	if strings.Contains(d.Reason, "metachar") {
+		t.Fatalf("shell 命令不应报元字符：%q", d.Reason)
 	}
 }
 

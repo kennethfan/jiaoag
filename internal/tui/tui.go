@@ -144,6 +144,8 @@ type approvalView struct {
 	diff      string
 	truncated bool
 	command   []string
+	// shell 非空表示这条命令由系统 shell 解释，面板展示整条命令。
+	shell     string
 	cwd       string
 	backend   string
 	timeoutMS int64
@@ -1139,13 +1141,18 @@ func (m *Model) showApprovalRequest(a domain.ApprovalRequestedPayload, announce 
 			id:        string(a.ApprovalID),
 			kind:      string(a.Kind),
 			command:   a.Command,
+			shell:     a.Shell,
 			cwd:       a.Cwd,
 			backend:   a.Backend,
 			timeoutMS: a.TimeoutMS,
 			reason:    a.Reason,
 		}
 		if announce {
-			m.appendLine("⚠ 待审批命令：" + compact(strings.Join(a.Command, " ")))
+			shown := strings.Join(a.Command, " ")
+			if a.Shell != "" {
+				shown = a.Shell
+			}
+			m.appendLine("⚠ 待审批命令：" + compact(shown))
 		}
 		return
 	}
@@ -1969,17 +1976,33 @@ func (m *Model) renderCommandPanel() string {
 	b.WriteByte('\n')
 	// 长 token（上限 4 KB）必须折行：审批面板是用户判断「这串到底是什么」的
 	// 唯一依据，一行冲出去看不见的部分等于没展示。
-	for i, token := range v.command {
-		prefix := fmt.Sprintf("  argv[%d]  ", i)
+	if v.shell != "" {
+		// shell 命令是一条整体：拆成 argv[0..2] 只会把真正要读的那段推到
+		// 第三行，还会显示成 sh -c 这种与意图无关的形态。
+		prefix := "  shell   "
 		width := panelWidth - len(prefix)
 		if width < 8 {
 			width = 8
 		}
-		chunks := wrapText(token, width)
+		chunks := wrapText(v.shell, width)
 		b.WriteString(prefix + chunks[0] + "\n")
 		indent := strings.Repeat(" ", len(prefix))
 		for _, chunk := range chunks[1:] {
 			b.WriteString(indent + chunk + "\n")
+		}
+	} else {
+		for i, token := range v.command {
+			prefix := fmt.Sprintf("  argv[%d]  ", i)
+			width := panelWidth - len(prefix)
+			if width < 8 {
+				width = 8
+			}
+			chunks := wrapText(token, width)
+			b.WriteString(prefix + chunks[0] + "\n")
+			indent := strings.Repeat(" ", len(prefix))
+			for _, chunk := range chunks[1:] {
+				b.WriteString(indent + chunk + "\n")
+			}
 		}
 	}
 	fmt.Fprintf(&b, "  cwd       %s\n", wrapOne(orDash(v.cwd), panelWidth-12))

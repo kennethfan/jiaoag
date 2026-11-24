@@ -210,6 +210,9 @@ type ApprovalRequestedPayload struct {
 	// 提示「你看到的不是全部」，否则就是在让人盲批一份没看全的改动。
 	Truncated bool     `json:"truncated,omitempty"`
 	Command   []string `json:"command,omitempty"`
+	// Shell 是模型请求 shell 解释时的整条命令；非空时客户端应把它当作
+	// 主体展示，不要再拆成 argv 三段。
+	Shell string `json:"shell,omitempty"`
 	// 命令审批必须展示真实 argv、cwd、后端与超时：用户批的应该是「实际要跑的
 	// 东西」，而不是一句「要不要执行命令」。
 	Cwd       string `json:"cwd,omitempty"`

@@ -25,6 +25,10 @@ const (
 
 	maxArgvTokens = 128
 	maxTokenBytes = 4 << 10
+	// maxShellBytes 限制整条 shell 命令。shell 文本是一条整体，不按 token
+	// 逐个校验：一条带内联脚本的命令动辄上万字节，而 maxTokenBytes 是给
+	// 单个 argv 元素设的。
+	maxShellBytes = 8 << 10
 
 	// commandEventReserve 是事件载荷给「退出码 N」「日志警告」留的余量。
 	//
@@ -33,12 +37,17 @@ const (
 	commandEventReserve = 200
 )
 
-// Command 是一次待执行的命令。Argv 逐 token 传递，永远不经 shell。
+// Command 是一次待执行的命令。模型可以直接给 argv（逐 token，不经 shell，
+// 可能命中命令白名单），也可以给一整条 shell 命令由系统 shell 解释。
 type Command struct {
 	Argv    []string
 	Cwd     string
 	Timeout time.Duration
 	Env     []string
+	// Shell 非空表示这次调用请求了 shell 解释：Argv 已是 [shell, -c, Shell]
+	// 的形态。审批面板据此显示整条命令而不是拆成三段；策略层据此跳过
+	// 元字符判定——元字符对 shell 是正常语法，对 argv 才可疑。
+	Shell string
 	// Backend 由宿主注入的工具环境填写，仅供审批面板与审计展示；
 	// 模型无权指定（ADR-0011）。
 	Backend string
@@ -91,8 +100,10 @@ type commandTool struct {
 }
 
 type commandArgs struct {
-	Argv     []string `json:"argv"`
-	TimeoutS *int     `json:"timeout_s,omitempty"`
+	Argv []string `json:"argv"`
+	// Shell 是整条由系统 shell 解释的命令，与 Argv 二选一。
+	Shell    string `json:"shell,omitempty"`
+	TimeoutS *int   `json:"timeout_s,omitempty"`
 	// Root 指定在哪个附加根下执行；省略即主根。
 	Root string `json:"root,omitempty"`
 }
@@ -108,20 +119,25 @@ func (t *commandTool) Spec() Spec {
 	name := t.name()
 	version := runCommandVersion
 	desc := "执行一条命令并带回合并后的 stdout/stderr（最多 8 KB，保留头尾；全文写入日志）。" +
-		"argv 逐 token 传递，不经过 shell；不会自动放行的命令需要用户批准。"
+		"能在 argv 里逐 token 表达时用 argv（不经 shell，可能被命令白名单自动放行）。" +
+		"需要管道、重定向、通配符或多条命令时用 shell 字段写整条命令，由系统 shell 解释，" +
+		"这条一定需要用户批准；不要把整条命令塞进 argv（例如 [\"sh\",\"-c\",\"…\"]），" +
+		"那样会被当成普通程序调用，审批时也看不出你的意图。"
 	schema := `{
   "type": "object",
   "properties": {
-    "argv":      {"type": "array", "items": {"type": "string"}, "description": "逐 token 的 argv，例如 [\"go\",\"test\",\"./...\"]；不要传 shell 字符串"},
+    "argv":      {"type": "array", "items": {"type": "string"}, "description": "逐 token 的 argv，例如 [\"go\",\"test\",\"./...\"]；不要写成 [\"sh\",\"-c\",\"…\"]"},
+    "shell":     {"type": "string", "description": "需要管道、重定向、通配符或多条命令时写整条命令，例如 \"go test ./... 2>&1 | tail -20\"；与 argv 二选一，且一定要用户批准"},
     "timeout_s": {"type": "integer", "description": "超时秒数，默认 120，范围 1-600"},
     "root":      {"type": "string", "description": "在哪个附加根下执行（别名）；省略表示主根"}
   },
-  "required": ["argv"]
+  "anyOf": [{"required": ["argv"]}, {"required": ["shell"]}]
 }`
 	if !t.capture {
 		version = checkCommandVersion
 		desc = "执行一条命令，只带回退出码；失败时额外带回尾部诊断（最多 2 KB）。" +
-			"适合 go build / go vet / git status 这类只关心成败的命令。"
+			"适合 go build / go vet / git status 这类只关心成败的命令。" +
+			"需要管道或多条命令时用 shell 字段写整条，不要塞进 argv（那就成了 sh -c 的普通程序调用）。"
 	}
 	return Spec{
 		Name:        name,
@@ -140,21 +156,40 @@ func (t *commandTool) Prepare(ctx context.Context, call Call) (Prepared, error) 
 	if err := decodeArgs(call, &args); err != nil {
 		return Prepared{}, err
 	}
-	if len(args.Argv) == 0 {
-		return Prepared{}, invalidArgs(call.Name, "argv 不能为空")
+	shell := strings.TrimSpace(args.Shell)
+	switch {
+	case len(args.Argv) == 0 && shell == "":
+		return Prepared{}, invalidArgs(call.Name, "argv 与 shell 至少要给一个")
+	case len(args.Argv) > 0 && shell != "":
+		// 二选一是刻意的：一条命令要么能被拆成 argv（可静态判定、可走白名单），
+		// 要么整体交给 shell（一定要审批）。同时给会让「到底跑了什么」变得含糊。
+		return Prepared{}, invalidArgs(call.Name, "argv 与 shell 只能二选一：能拆成 argv 时不要用 shell")
 	}
-	if len(args.Argv) > maxArgvTokens {
-		return Prepared{}, invalidArgs(call.Name, "argv 有 %d 个 token，超过上限 %d", len(args.Argv), maxArgvTokens)
-	}
-	for i, token := range args.Argv {
-		if token == "" {
-			return Prepared{}, invalidArgs(call.Name, "argv[%d] 为空", i)
+
+	var rawArgv []string
+	if shell != "" {
+		if len(shell) > maxShellBytes {
+			return Prepared{}, invalidArgs(call.Name, "shell 命令有 %d 字节，超过上限 %d", len(shell), maxShellBytes)
 		}
-		if len(token) > maxTokenBytes {
-			return Prepared{}, invalidArgs(call.Name, "argv[%d] 有 %d 字节，超过上限 %d", i, len(token), maxTokenBytes)
+		if strings.ContainsRune(shell, 0) {
+			return Prepared{}, invalidArgs(call.Name, "shell 命令含 NUL 字节")
 		}
-		if strings.ContainsRune(token, 0) {
-			return Prepared{}, invalidArgs(call.Name, "argv[%d] 含 NUL 字节", i)
+		rawArgv = shellArgv(shell)
+	} else {
+		rawArgv = args.Argv
+		if len(rawArgv) > maxArgvTokens {
+			return Prepared{}, invalidArgs(call.Name, "argv 有 %d 个 token，超过上限 %d", len(rawArgv), maxArgvTokens)
+		}
+		for i, token := range rawArgv {
+			if token == "" {
+				return Prepared{}, invalidArgs(call.Name, "argv[%d] 为空", i)
+			}
+			if len(token) > maxTokenBytes {
+				return Prepared{}, invalidArgs(call.Name, "argv[%d] 有 %d 字节，超过上限 %d", i, len(token), maxTokenBytes)
+			}
+			if strings.ContainsRune(token, 0) {
+				return Prepared{}, invalidArgs(call.Name, "argv[%d] 含 NUL 字节", i)
+			}
 		}
 	}
 
@@ -175,8 +210,8 @@ func (t *commandTool) Prepare(ctx context.Context, call Call) (Prepared, error) 
 	if t.env.Backend != nil {
 		backend = t.env.Backend.Name()
 	}
-	argv := make([]string, len(args.Argv))
-	copy(argv, args.Argv)
+	argv := make([]string, len(rawArgv))
+	copy(argv, rawArgv)
 
 	// 命令的 cwd 决定 path_args 的判定边界：在附加根里跑就在那个根里判定，
 	// 不能拿主根去卡另一个仓的路径。
@@ -196,6 +231,7 @@ func (t *commandTool) Prepare(ctx context.Context, call Call) (Prepared, error) 
 
 	cmd := &Command{
 		Argv:     argv,
+		Shell:    shell,
 		Cwd:      target.Root(),
 		Timeout:  timeout,
 		Env:      commandEnv(os.Environ()),

@@ -332,6 +332,16 @@ func (r *Ruleset) evaluateCommand(toolName string, cmd *tools.Command) Decision 
 	if len(argv) == 0 {
 		return Decision{Verdict: RequireUser, Reason: "empty_argv: 命令为空"}
 	}
+	// shell 命令要在元字符检查之前拦下：一条 shell 命令里的 | > $ 是正常
+	// 语法，不是注入，拿元字符去解释只会给出误导性的理由。它同样无法按
+	// 程序名匹配白名单（argv[0] 永远是 sh/cmd），所以固定要人看。
+	if cmd.Shell != "" {
+		return Decision{
+			Verdict:       RequireUser,
+			Reason:        "shell: 需要 shell 解释（管道/重定向/多命令），无法静态判定",
+			PolicyVersion: r.version(),
+		}
+	}
 	if token, ok := metacharToken(argv); ok {
 		return Decision{Verdict: RequireUser, Reason: fmt.Sprintf("metachar: argv 含 shell 元字符 %q", token)}
 	}

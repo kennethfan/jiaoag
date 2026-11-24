@@ -226,6 +226,7 @@ make demo-mcp
 | v2.24 | 多仓库只读附加根：`-root alias=path`，`read_file`/`grep`/`glob` 用 `alias:path` 访问，写入与命令仍限主根（ADR-0036） | ✅ |
 | v2.25 | 附加根可写：写入走同一套 diff/审批/CAS，`run_command root=` 切换 cwd，sandbox 可写范围扩到所有根（ADR-0037） | ✅ |
 | v2.26 | TUI 改版：状态栏置底（连接/工作目录/状态/轮次/队列/模型/token）、语义色与 `NO_COLOR` 降级、审批三按钮 + `tab` 焦点、`?` 键位面板、默认全屏 + 内部滚动（`-inline`/`-no-mouse`）（docs/tui.md） | ✅ |
+| v2.27 | `run_command` 的 `shell` 入口：整条命令由 `sh -c` 解释，固定审批且理由为 `shell: …`；审批面板展示整条命令，审计带 `shell` 标记（ADR-0038） | ✅ |
 
 ## 安全边界
 
