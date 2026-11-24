@@ -50,6 +50,8 @@
 
 ## 平台差异
 
-Windows 上 `ctrl+x` 只终止直接子进程（`cmd.exe` 的孙进程不会跟着退出），且不做 Job Object 收尾。需要整棵树终止时，请改用 agent 的 `run_command`。
+Windows 上 `ctrl+x` 会终止整个进程树：`cmd.exe` 启动后立刻被放进 Job Object，`Stop`/超时时 `TerminateJobObject` 收掉整棵树，再用 `taskkill /T` 兜底覆盖「已派生、还没赋进 Job」的微秒级窗口。建不出 Job 时退化为只 `taskkill /T`，命令本身不会因此失败。
+
+刻意没有设置 `KILL_ON_JOB_CLOSE`：正常结束时关掉句柄不会连带杀掉命令留下的后台进程（`!npm run dev &` 与 Unix 行为一致），只有 `Stop` 与超时才动手。
 
 决策背景见 [`docs/adr/0022-local-shell-command.md`](adr/0022-local-shell-command.md)。

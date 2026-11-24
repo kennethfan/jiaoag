@@ -58,6 +58,7 @@ type Event struct {
 // 之后 channel 关闭。
 type Run struct {
 	cmd    *exec.Cmd
+	job    *jobHandle
 	events chan Event
 	cancel context.CancelFunc
 
@@ -85,13 +86,16 @@ func Start(opts Options, command string) *Run {
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 
-	run := &Run{cmd: cmd, events: make(chan Event, eventBuffer), cancel: cancel}
+	run := &Run{cmd: cmd, job: newJobHandle(), events: make(chan Event, eventBuffer), cancel: cancel}
 	if err := cmd.Start(); err != nil {
+		run.job.close()
 		_ = pw.Close()
 		_ = pr.Close()
 		run.finish(Event{Err: err, ExitCode: -1}, time.Now())
 		return run
 	}
+	// Windows 上把子进程收进 Job 只能在 Start 之后；Unix 侧是空操作。
+	run.job.afterStart(cmd)
 	go run.stream(ctx, pr, pw)
 	return run
 }
@@ -173,6 +177,9 @@ func (r *Run) finish(ev Event, start time.Time) {
 	ev.Duration = time.Since(start)
 	// 停掉超时看门狗：正常结束的进程不该让 ctx 一直挂着。
 	r.cancel()
+	// 进程已经结束（或从未启动），句柄不再需要。Windows 上没有设置
+	// KILL_ON_JOB_CLOSE，所以关闭 Job 不会连带杀掉命令留下的后台进程。
+	r.job.close()
 	r.events <- ev
 	close(r.events)
 }
@@ -181,7 +188,7 @@ func (r *Run) kill() {
 	if r.cmd.Process == nil {
 		return
 	}
-	killTree(r.cmd)
+	r.job.kill(r.cmd)
 }
 
 func lineEvent(line string) Event {

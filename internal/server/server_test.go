@@ -80,8 +80,21 @@ func TestHealthz(t *testing.T) {
 	if !strings.Contains(string(body), `"status":"ok"`) {
 		t.Fatalf("响应体缺少 status=ok: %s", body)
 	}
-	if !strings.Contains(string(body), `"protocol_version":1`) {
-		t.Fatalf("响应体缺少协议版本: %s", body)
+
+	// 版本信息属于运行态细节，匿名不给；带令牌才拿得到（见 health_test.go）。
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	authed, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /healthz（带令牌）: %v", err)
+	}
+	defer authed.Body.Close()
+	detail, _ := io.ReadAll(authed.Body)
+	if !strings.Contains(string(detail), `"protocol_version":1`) {
+		t.Fatalf("带令牌的响应体缺少协议版本: %s", detail)
 	}
 }
 

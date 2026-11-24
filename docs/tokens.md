@@ -63,9 +63,25 @@ Windows 上没有 `SIGHUP`，`signal.Notify` 收到它不会触发——那边�
 
 重载成功：`令牌已重载 count=2`；失败：`令牌重载失败，继续使用旧令牌 err=...`。客户端握手日志里也有 `token=viewer read_only=true`，能直接看出这条连接用的是哪把钥匙。
 
+## /healthz 的信息分级
+
+`/healthz` 是探活口，**永远返回 200**，不因为没令牌就 401——TUI 拉起服务端、k8s liveness 探针都不该需要凭据。它只按 `Authorization` 决定 body 里有几个字段：
+
+| 请求 | 返回 |
+|---|---|
+| 匿名 / 错令牌 | `{"status":"ok"}` |
+| 有效令牌（含只读） | `status`、`version`、`protocol_version`、`uptime_seconds`、`connections` |
+
+版本号对应已知漏洞，连接数能看出有没有人在用——这类运行态细节在暴露到内网或反代之后就是免费的侦察材料，所以只给持令牌的人。要监控版本，用带令牌的请求：
+
+```bash
+curl -s -H "Authorization: Bearer $(cat ~/.config/jiaoag/token)" 127.0.0.1:8787/healthz | jq .
+```
+
 ## 边界
 
 - 这是**权限分级**，不是多用户：没有 per-user 归属、配额或用例隔离。
 - 令牌一律明文比较的常数时间实现；文件权限仍然是你的责任（`chmod 600`）。
 - 只读令牌能看全部会话的事件与审计——它是「观测者」，不是「受限用户」。
 - 与 TLS 独立：明文连接下令牌仍会在网络上裸奔，远程使用必须配 `tls_cert`/`tls_key`（见 [`tls.md`](tls.md)）。
+- `/healthz` 的匿名响应只说明「进程活着」，不代表数据库可用或任务能跑；要判断可用性请走 WS 握手。

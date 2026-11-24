@@ -253,14 +253,19 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "ok",
-		"version":          s.version,
-		"protocol_version": protocol.Version,
-		"uptime_seconds":   int64(time.Since(s.startedAt).Seconds()),
-		"connections":      s.connCount(),
-	})
+// handleHealth 是探活口，做信息分级而不是鉴权失败：
+// 匿名只拿到「服务还活着」，版本、运行时长与连接数属于运行态信息，只回给
+// 持有有效令牌的调用方。探针（TUI 拉起 server、外部 liveness 检查）不该需要
+// 凭据，所以这里一律 200，只按 Authorization 决定 body 里有几个字段。
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	body := map[string]any{"status": "ok"}
+	if _, ok := s.authorized(r); ok {
+		body["version"] = s.version
+		body["protocol_version"] = protocol.Version
+		body["uptime_seconds"] = int64(time.Since(s.startedAt).Seconds())
+		body["connections"] = s.connCount()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
