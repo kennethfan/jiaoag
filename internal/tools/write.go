@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/kennethfan/jiaoag/internal/patch"
@@ -23,10 +24,23 @@ const (
 // 审批通过后由 agent 调 workspace.Write。
 func NewWriteFile(ws *workspace.Workspace) Tool { return &writeFileTool{ws: ws} }
 
+// NewWriteFileWithRoots 额外拒绝 alias: 前缀：附加根只读（ADR-0036）。
+func NewWriteFileWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
+	return &writeFileTool{ws: ws, roots: roots}
+}
+
 // NewEditFile 返回按片段替换的工具，同样只产出提案。
 func NewEditFile(ws *workspace.Workspace) Tool { return &editFileTool{ws: ws} }
 
-type writeFileTool struct{ ws *workspace.Workspace }
+// NewEditFileWithRoots 与 NewWriteFileWithRoots 同理：写入只限主根。
+func NewEditFileWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
+	return &editFileTool{ws: ws, roots: roots}
+}
+
+type writeFileTool struct {
+	ws    *workspace.Workspace
+	roots *workspace.Roots
+}
 
 type writeFileArgs struct {
 	Path    string `json:"path"`
@@ -51,6 +65,18 @@ func (t *writeFileTool) Spec() Spec {
 	}
 }
 
+// rejectReadOnlyRoot 是写入类工具的统一守门：路径指向附加根时明确报错，
+// 而不是把一个带冒号的文件名写进主根。
+func rejectReadOnlyRoot(roots *workspace.Roots, path string) error {
+	if roots == nil {
+		return nil
+	}
+	if _, _, alias, err := roots.Resolve(path); err == nil && alias != "" {
+		return fmt.Errorf("%w：%s 是只读附加根，只能读不能写", workspace.ErrReadOnlyRoot, alias)
+	}
+	return nil
+}
+
 func (t *writeFileTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
 	var args writeFileArgs
 	if err := decodeArgs(call, &args); err != nil {
@@ -58,6 +84,9 @@ func (t *writeFileTool) Prepare(ctx context.Context, call Call) (Prepared, error
 	}
 	if strings.TrimSpace(args.Path) == "" {
 		return Prepared{}, invalidArgs(call.Name, "path 不能为空")
+	}
+	if err := rejectReadOnlyRoot(t.roots, args.Path); err != nil {
+		return Prepared{}, invalidArgs(call.Name, "%v", err)
 	}
 	abs, err := t.ws.Resolve(args.Path)
 	if err != nil {
@@ -86,7 +115,10 @@ func (t *writeFileTool) Execute(ctx context.Context, p Prepared) (Result, error)
 	return Result{Content: "write_file 必须经过审批：落盘由上层在批准后调用 workspace.Write 完成", IsError: true}, nil
 }
 
-type editFileTool struct{ ws *workspace.Workspace }
+type editFileTool struct {
+	ws    *workspace.Workspace
+	roots *workspace.Roots
+}
 
 type editFileArgs struct {
 	Path       string `json:"path"`
@@ -122,6 +154,9 @@ func (t *editFileTool) Prepare(ctx context.Context, call Call) (Prepared, error)
 	}
 	if strings.TrimSpace(args.Path) == "" {
 		return Prepared{}, invalidArgs(call.Name, "path 不能为空")
+	}
+	if err := rejectReadOnlyRoot(t.roots, args.Path); err != nil {
+		return Prepared{}, invalidArgs(call.Name, "%v", err)
 	}
 	if args.OldString == "" {
 		return Prepared{}, invalidArgs(call.Name, "old_string 不能为空；要整文件覆盖请用 write_file")

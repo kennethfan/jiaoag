@@ -15,19 +15,31 @@ type readFileArgs struct {
 	Path   string `json:"path"`
 	Offset int    `json:"offset,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
+
+	// ws 与 label 由 Prepare 填入：路径可能带 alias: 前缀（只读附加根）。
+	target *workspace.Workspace
+	label  string
 }
 
 // NewReadFile 返回带行号的文本读取工具。
-func NewReadFile(ws *workspace.Workspace) Tool { return &readFileTool{ws: ws} }
+func NewReadFile(ws *workspace.Workspace) Tool {
+	return &readFileTool{ws: ws}
+}
+
+// NewReadFileWithRoots 允许用 alias:path 读取会话挂的附加根（ADR-0036）。
+func NewReadFileWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
+	return &readFileTool{ws: ws, roots: roots}
+}
 
 type readFileTool struct {
-	ws *workspace.Workspace
+	ws    *workspace.Workspace
+	roots *workspace.Roots
 }
 
 func (t *readFileTool) Spec() Spec {
 	return Spec{
 		Name:        "read_file",
-		Description: "读取工作区内的文本文件并返回带行号的内容。大文件可用 offset/limit 分页。",
+		Description: "读取工作区内的文本文件并返回带行号的内容。大文件可用 offset/limit 分页。附加根用 alias:path 形式（只读）。",
 		Version:     readFileVersion,
 		Effects:     []Effect{EffectRead},
 		Schema: json.RawMessage(`{
@@ -56,16 +68,31 @@ func (t *readFileTool) Prepare(ctx context.Context, call Call) (Prepared, error)
 	if args.Limit < 0 {
 		return Prepared{}, invalidArgs(call.Name, "limit 不能为负数")
 	}
-	abs, err := t.ws.Resolve(args.Path)
+	target, rel, label, err := t.resolve(args.Path)
+	if err != nil {
+		return Prepared{}, invalidArgs(call.Name, "%v", err)
+	}
+	abs, err := target.Resolve(rel)
 	if err != nil {
 		return Prepared{}, err
 	}
+	args.Path = rel
+	args.target = target
+	args.label = label
 	return Prepared{
 		Call:  call,
 		Spec:  t.Spec(),
 		Args:  args,
 		Paths: []string{abs},
 	}, nil
+}
+
+// resolve 解析 alias: 前缀；没挂载附加根时退化成主根。
+func (t *readFileTool) resolve(path string) (*workspace.Workspace, string, string, error) {
+	if t.roots == nil {
+		return t.ws, path, "", nil
+	}
+	return t.roots.Resolve(path)
 }
 
 func (t *readFileTool) Execute(ctx context.Context, p Prepared) (Result, error) {
@@ -76,7 +103,11 @@ func (t *readFileTool) Execute(ctx context.Context, p Prepared) (Result, error) 
 	if !ok {
 		return Result{}, fmt.Errorf("tools: read_file 参数类型异常")
 	}
-	fc, err := t.ws.Read(args.Path, args.Offset, args.Limit)
+	target := args.target
+	if target == nil {
+		target = t.ws
+	}
+	fc, err := target.Read(args.Path, args.Offset, args.Limit)
 	if err != nil {
 		return toolFailure(ctx, err)
 	}
@@ -85,9 +116,13 @@ func (t *readFileTool) Execute(ctx context.Context, p Prepared) (Result, error) 
 	if offset <= 0 {
 		offset = 1
 	}
+	display := fc.Path
+	if args.label != "" {
+		display = args.label + ":" + fc.Path
+	}
 	var b strings.Builder
 	if len(fc.Lines) == 0 {
-		fmt.Fprintf(&b, "（%s 没有内容或起始行 %d 超出末尾）\n", fc.Path, offset)
+		fmt.Fprintf(&b, "（%s 没有内容或起始行 %d 超出末尾）\n", display, offset)
 	}
 	for i, line := range fc.Lines {
 		fmt.Fprintf(&b, "%d: %s\n", offset+i, line)

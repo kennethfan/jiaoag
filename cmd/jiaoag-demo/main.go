@@ -33,6 +33,7 @@ func main() {
 		model        = flag.String("model", "", "会话模型 id（空表示用供应商配置里的 model）")
 		taskProvider = flag.String("task-provider", "", "只覆盖本次任务的供应商（空表示跟随会话）")
 		taskModel    = flag.String("task-model", "", "只覆盖本次任务的模型（空表示跟随会话）")
+		rootFlag     = flag.String("root", "", "只读附加根 alias=path（可选，ADR-0036）")
 		decision     = flag.String("approve", "allow_once", "审批策略：allow_once | allow_session | deny")
 		timeout      = flag.Duration("timeout", 5*time.Minute, "整轮超时")
 	)
@@ -59,7 +60,15 @@ func main() {
 	defer conn.CloseNow()
 	fmt.Printf("已连接: server=%s protocol=v%d\n", hello.ServerVersion, hello.ProtocolVersion)
 
-	sessionID, err := createSession(ctx, conn, *workspace, *provider, *model)
+	var roots []protocol.SessionRootPayload
+	if *rootFlag != "" {
+		alias, path, ok := strings.Cut(*rootFlag, "=")
+		if !ok || strings.TrimSpace(alias) == "" || strings.TrimSpace(path) == "" {
+			fail(fmt.Errorf("-root 需要 alias=path 形式，收到 %q", *rootFlag))
+		}
+		roots = []protocol.SessionRootPayload{{Alias: strings.TrimSpace(alias), Path: strings.TrimSpace(path)}}
+	}
+	sessionID, err := createSession(ctx, conn, *workspace, *provider, *model, roots)
 	if err != nil {
 		fail(err)
 	}
@@ -128,9 +137,9 @@ func dial(ctx context.Context, url, token string) (*websocket.Conn, protocol.Hel
 	return conn, hp, nil
 }
 
-func createSession(ctx context.Context, conn *websocket.Conn, workspace, provider, model string) (string, error) {
+func createSession(ctx context.Context, conn *websocket.Conn, workspace, provider, model string, roots []protocol.SessionRootPayload) (string, error) {
 	if err := send(ctx, conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
-		Workspace: workspace, Provider: provider, Model: model,
+		Workspace: workspace, Roots: roots, Provider: provider, Model: model,
 	}); err != nil {
 		return "", err
 	}

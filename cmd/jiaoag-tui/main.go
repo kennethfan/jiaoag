@@ -28,6 +28,8 @@ func main() {
 		srvBin   = flag.String("server-bin", "", "jiaoag-server 路径（默认同目录或 PATH）")
 		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 	)
+	var rootFlags rootList
+	flag.Var(&rootFlags, "root", "只读附加根，形如 alias=path；可重复（ADR-0036）")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -54,7 +56,11 @@ func main() {
 		}
 		target = scheme + "://" + dialableAddr(cfg.Server.Listen) + "/ws"
 	}
-	opts := tui.Options{URL: target, Token: token, SessionID: *sesID, InsecureTLS: *insecure}
+	roots, err := rootFlags.payloads()
+	if err != nil {
+		fatal(err)
+	}
+	opts := tui.Options{URL: target, Token: token, SessionID: *sesID, InsecureTLS: *insecure, Roots: roots}
 
 	if *check {
 		runCheck(opts)
@@ -121,4 +127,33 @@ func dialableAddr(listen string) string {
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "jiaoag-tui: %v\n", err)
 	os.Exit(1)
+}
+
+// rootList 收集 -root alias=path（可重复）。
+type rootList []string
+
+func (r *rootList) String() string { return strings.Join(*r, ",") }
+
+func (r *rootList) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}
+
+func (r rootList) payloads() ([]protocol.SessionRootPayload, error) {
+	out := make([]protocol.SessionRootPayload, 0, len(r))
+	seen := map[string]bool{}
+	for _, item := range r {
+		alias, path, ok := strings.Cut(item, "=")
+		alias = strings.TrimSpace(alias)
+		path = strings.TrimSpace(path)
+		if !ok || alias == "" || path == "" {
+			return nil, fmt.Errorf("-root 需要 alias=path 形式，收到 %q", item)
+		}
+		if seen[alias] {
+			return nil, fmt.Errorf("-root 别名 %q 重复", alias)
+		}
+		seen[alias] = true
+		out = append(out, protocol.SessionRootPayload{Alias: alias, Path: path})
+	}
+	return out, nil
 }

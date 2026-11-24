@@ -267,8 +267,10 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 			env.EventLimit = cfg.Exec.EventLimit
 			env.LogLimit = cfg.Exec.LogLimit
 			base := []tools.Tool{
-				tools.NewReadFile(ws), tools.NewGrep(ws), tools.NewGlob(ws),
-				tools.NewWriteFile(ws), tools.NewEditFile(ws),
+				tools.NewReadFileWithRoots(ws, env.Roots),
+				tools.NewGrepWithRoots(ws, env.Roots),
+				tools.NewGlobWithRoots(ws, env.Roots),
+				tools.NewWriteFileWithRoots(ws, env.Roots), tools.NewEditFileWithRoots(ws, env.Roots),
 				tools.NewRunCommand(ws, env), tools.NewCheckCommand(ws, env),
 				tools.NewReadOutput(env),
 				tools.NewGitStatus(ws, env), tools.NewGitDiff(ws, env), tools.NewGitLog(ws, env),

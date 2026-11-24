@@ -102,10 +102,11 @@ func (e Event) Decode(v any) error {
 // task.status，其余为后续里程碑预置（字段先落，避免日志格式反复变动）。
 
 type SessionCreatedPayload struct {
-	Workspace string `json:"workspace"`
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Title     string `json:"title,omitempty"`
+	Workspace string        `json:"workspace"`
+	Roots     []SessionRoot `json:"roots,omitempty"`
+	Provider  string        `json:"provider,omitempty"`
+	Model     string        `json:"model,omitempty"`
+	Title     string        `json:"title,omitempty"`
 	// SharedWorkspace 列出同一工作区里还有 queued/running 任务的其它会话。
 	// 只做提示：两个会话各改各的文件没问题，命令与构建会互踩。
 	SharedWorkspace []string `json:"shared_workspace,omitempty"`

@@ -30,7 +30,7 @@ func (s *Server) handleSessionCreate(ctx context.Context, c *clientConn, env pro
 		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
 		return
 	}
-	sess, err := s.app.CreateSession(ctx, p.Workspace, p.Provider, p.Model, p.Title)
+	sess, err := s.app.CreateSession(ctx, p.Workspace, p.Provider, p.Model, p.Title, sessionRootsDomain(p.Roots)...)
 	if err != nil {
 		c.sendError(ctx, protocol.CodeBadRequest, err.Error())
 		return
@@ -708,10 +708,33 @@ func sendEvent(ctx context.Context, c *clientConn, ev domain.Event) error {
 	return nil
 }
 
+func sessionRootsDomain(roots []protocol.SessionRootPayload) []domain.SessionRoot {
+	if len(roots) == 0 {
+		return nil
+	}
+	out := make([]domain.SessionRoot, 0, len(roots))
+	for _, r := range roots {
+		out = append(out, domain.SessionRoot{Alias: r.Alias, Path: r.Path})
+	}
+	return out
+}
+
+func sessionRootsPayload(roots []domain.SessionRoot) []protocol.SessionRootPayload {
+	if len(roots) == 0 {
+		return nil
+	}
+	out := make([]protocol.SessionRootPayload, 0, len(roots))
+	for _, r := range roots {
+		out = append(out, protocol.SessionRootPayload{Alias: r.Alias, Path: r.Path})
+	}
+	return out
+}
+
 func sessionPayload(sess domain.Session) protocol.SessionPayload {
 	return protocol.SessionPayload{
 		ID:        string(sess.ID),
 		Workspace: sess.Workspace,
+		Roots:     sessionRootsPayload(sess.Roots),
 		Provider:  sess.Provider,
 		Model:     sess.Model,
 		Title:     sess.Title,

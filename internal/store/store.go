@@ -298,6 +298,9 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 	if version >= 4 {
 		probes = append(probes, `SELECT session_id, key, expires_at FROM session_approvals LIMIT 1`)
 	}
+	if version >= 6 {
+		probes = append(probes, `SELECT roots FROM sessions LIMIT 1`)
+	}
 	if version >= 5 {
 		probes = append(probes, `SELECT provider, model FROM tasks LIMIT 1`)
 	}

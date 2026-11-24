@@ -30,11 +30,15 @@ func (s *Store) CreateSession(ctx context.Context, sess domain.Session, events [
 	if sess.UpdatedAt.IsZero() {
 		sess.UpdatedAt = sess.CreatedAt
 	}
+	roots, err := rootsColumn(sess.Roots)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO sessions(id, workspace, provider, model, title, created_at, updated_at)
-		 VALUES(?,?,?,?,?,?,?)`,
+		`INSERT INTO sessions(id, workspace, provider, model, title, created_at, updated_at, roots)
+		 VALUES(?,?,?,?,?,?,?,?)`,
 		string(sess.ID), sess.Workspace, sess.Provider, sess.Model, sess.Title,
-		ts(sess.CreatedAt), ts(sess.UpdatedAt)); err != nil {
+		ts(sess.CreatedAt), ts(sess.UpdatedAt), roots); err != nil {
 		return nil, fmt.Errorf("store: 写入会话 %s: %w", sess.ID, err)
 	}
 
@@ -85,18 +89,24 @@ func (s *Store) UpdateSession(ctx context.Context, sess domain.Session, events [
 	return stored, nil
 }
 
-const sessionColumns = `id, workspace, provider, model, title, created_at, updated_at`
+const sessionColumns = `id, workspace, provider, model, title, created_at, updated_at, roots`
 
 func scanSession(row interface{ Scan(...any) error }) (domain.Session, error) {
 	var (
 		sess             domain.Session
 		id               string
 		created, updated string
+		roots            string
 	)
-	if err := row.Scan(&id, &sess.Workspace, &sess.Provider, &sess.Model, &sess.Title, &created, &updated); err != nil {
+	if err := row.Scan(&id, &sess.Workspace, &sess.Provider, &sess.Model, &sess.Title, &created, &updated, &roots); err != nil {
 		return domain.Session{}, err
 	}
 	sess.ID = domain.SessionID(id)
+	if roots != "" {
+		if err := json.Unmarshal([]byte(roots), &sess.Roots); err != nil {
+			return domain.Session{}, fmt.Errorf("store: 会话 %s 的附加根损坏: %w", id, err)
+		}
+	}
 	var err error
 	if sess.CreatedAt, err = parseTS(created); err != nil {
 		return domain.Session{}, err
@@ -105,6 +115,18 @@ func scanSession(row interface{ Scan(...any) error }) (domain.Session, error) {
 		return domain.Session{}, err
 	}
 	return sess, nil
+}
+
+// rootsColumn 把附加根编码成 JSON 文本；空列表存空串而不是 "[]"。
+func rootsColumn(roots []domain.SessionRoot) (string, error) {
+	if len(roots) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(roots)
+	if err != nil {
+		return "", fmt.Errorf("store: 编码附加根: %w", err)
+	}
+	return string(b), nil
 }
 
 // GetSession 按标识取会话。
@@ -149,7 +171,7 @@ func (s *Store) ListSessions(ctx context.Context) ([]domain.Session, error) {
 // waiting_approval 也算活跃：批准后马上就要落盘，正是最该提醒的时刻。
 func (s *Store) SessionsWithActiveTasks(ctx context.Context) ([]domain.Session, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT s.id, s.workspace, s.provider, s.model, s.title, s.created_at, s.updated_at
+		`SELECT DISTINCT s.id, s.workspace, s.provider, s.model, s.title, s.created_at, s.updated_at, s.roots
 		 FROM sessions s JOIN tasks t ON t.session_id = s.id
 		 WHERE t.status NOT IN ('completed', 'failed', 'canceled')
 		 ORDER BY s.created_at ASC, s.id ASC`)

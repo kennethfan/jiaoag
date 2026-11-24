@@ -56,11 +56,19 @@ func NewID(prefix string) (string, error) {
 type Session struct {
 	ID        SessionID
 	Workspace string
+	// Roots 是只读附加根（ADR-0036）：alias 用于 alias:path 前缀。主根不在其中。
+	Roots     []SessionRoot
 	Provider  string
 	Model     string
 	Title     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// SessionRoot 是会话挂载的只读附加根。
+type SessionRoot struct {
+	Alias string `json:"alias"`
+	Path  string `json:"path"`
 }
 
 // Task 是一次用户请求，按轮次推进。状态迁移见 state.go。

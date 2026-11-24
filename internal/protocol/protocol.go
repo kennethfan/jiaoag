@@ -132,9 +132,11 @@ type ErrorPayload struct {
 // SessionCreatePayload 请求创建一个工作区会话。
 type SessionCreatePayload struct {
 	Workspace string `json:"workspace"`
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Title     string `json:"title,omitempty"`
+	// Roots 是只读附加根（ADR-0036）：只能读，写入与命令仍限主根。
+	Roots    []SessionRootPayload `json:"roots,omitempty"`
+	Provider string               `json:"provider,omitempty"`
+	Model    string               `json:"model,omitempty"`
+	Title    string               `json:"title,omitempty"`
 }
 
 // SessionUpdatePayload 切换会话后续任务使用的供应商与模型。
@@ -158,14 +160,21 @@ type ProviderModelsResultPayload struct {
 }
 
 // SessionPayload 是会话的线上表示。
+// SessionRootPayload 是会话挂载的只读附加根（ADR-0036）。
+type SessionRootPayload struct {
+	Alias string `json:"alias"`
+	Path  string `json:"path"`
+}
+
 type SessionPayload struct {
-	ID        string `json:"id"`
-	Workspace string `json:"workspace"`
-	Provider  string `json:"provider,omitempty"`
-	Model     string `json:"model,omitempty"`
-	Title     string `json:"title,omitempty"`
-	CreatedAt int64  `json:"created_at,omitempty"`
-	UpdatedAt int64  `json:"updated_at,omitempty"`
+	ID        string               `json:"id"`
+	Workspace string               `json:"workspace"`
+	Roots     []SessionRootPayload `json:"roots,omitempty"`
+	Provider  string               `json:"provider,omitempty"`
+	Model     string               `json:"model,omitempty"`
+	Title     string               `json:"title,omitempty"`
+	CreatedAt int64                `json:"created_at,omitempty"`
+	UpdatedAt int64                `json:"updated_at,omitempty"`
 	// Project 只在 session.created 上出现：工作区里有项目级扩展时带上状态，
 	// 让客户端能提示「发现了但未确认」。
 	Project *ProjectInfo `json:"project,omitempty"`

@@ -20,6 +20,8 @@ var (
 	ErrOutsideRoot = errors.New("workspace: 路径越界")
 	// ErrIgnored 表示路径命中不可访问名单（.git 等）。
 	ErrIgnored = errors.New("workspace: 路径不可访问")
+	// ErrReadOnlyRoot 表示路径落在只读附加根里（ADR-0036）。
+	ErrReadOnlyRoot = errors.New("workspace: 附加根只读")
 	// ErrBinary 表示文件含 NUL 字节，按二进制处理。
 	ErrBinary = errors.New("workspace: 二进制文件")
 	// ErrNotRegular 表示目标不是普通文件（目录、设备、链接等）。

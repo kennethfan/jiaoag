@@ -38,6 +38,8 @@ type Options struct {
 	SessionID string
 	// InsecureTLS 跳过服务端证书校验，只用于自签证书的本机/内网部署。
 	InsecureTLS bool
+	// Roots 是要挂到新会话上的只读附加根（ADR-0036）。
+	Roots []protocol.SessionRootPayload
 }
 
 type (
@@ -425,6 +427,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			waitForEnvelope(m.conn),
 			sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
 				Workspace: m.opts.Workspace,
+				Roots:     m.opts.Roots,
 				Provider:  m.opts.Provider,
 				Model:     m.opts.Model,
 			}),
@@ -567,6 +570,18 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 		// /trust 确认当前工作区的项目级扩展（AGENTS.md、.jiaoag/、.agents/skills）。
+		if text == "/roots" {
+			m.input = ""
+			if len(m.opts.Roots) == 0 {
+				m.appendLine("没有附加根：启动时用 -root alias=path 挂载（只读）")
+			} else {
+				m.appendLine(fmt.Sprintf("附加根 %d 个（只读）：", len(m.opts.Roots)))
+				for _, r := range m.opts.Roots {
+					m.appendLine(fmt.Sprintf("  %s → %s", r.Alias, r.Path))
+				}
+			}
+			return m, nil
+		}
 		if text == "/trust" {
 			m.input = ""
 			m.appendLine("正在确认项目级扩展…")

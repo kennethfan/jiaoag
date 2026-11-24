@@ -217,6 +217,7 @@ make demo-mcp
 | v2.21 | 按任务选模型：`task.submit` 带 provider/model 只覆盖这一次，TUI 用 `/model` 绑定下一条任务，`jiaoag-demo -task-model`（ADR-0033） | ✅ |
 | v2.22 | 第三方 stdio 插件：`plugins.servers`，插件只声明意图，写入走 diff 审批、命令走执行后端、失败隔离（ADR-0034） | ✅ |
 | v2.23 | Webhook 通知：`notify.webhooks[]`，只推审批与任务终态，异步 + 3 次重试 + 可选 HMAC 签名（ADR-0035） | ✅ |
+| v2.24 | 多仓库只读附加根：`-root alias=path`，`read_file`/`grep`/`glob` 用 `alias:path` 访问，写入与命令仍限主根（ADR-0036） | ✅ |
 
 ## 安全边界
 

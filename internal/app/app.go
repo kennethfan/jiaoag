@@ -20,6 +20,7 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
+	workspacepkg "github.com/kennethfan/jiaoag/internal/workspace"
 )
 
 // App 组合持久化与事件扇出。除它之外没有第二个写者。
@@ -230,14 +231,26 @@ func (a *App) UpdateSession(ctx context.Context, id domain.SessionID, provider, 
 }
 
 // CreateSession 创建工作区会话，并写入 session.created。
-func (a *App) CreateSession(ctx context.Context, workspace, provider, model, title string) (domain.Session, error) {
+func (a *App) CreateSession(ctx context.Context, workspacePath, provider, model, title string, roots ...domain.SessionRoot) (domain.Session, error) {
 	// 关闭之后 store 马上就要关：这里直接拒绝，不让调用方拿 sqlite 的
 	// 「数据库已关闭」当成业务错误。
 	if a.closedNow() {
 		return domain.Session{}, ErrAppClosed
 	}
-	if !filepath.IsAbs(workspace) {
-		return domain.Session{}, fmt.Errorf("app: 工作区必须是绝对路径: %q", workspace)
+	if !filepath.IsAbs(workspacePath) {
+		return domain.Session{}, fmt.Errorf("app: 工作区必须是绝对路径: %q", workspacePath)
+	}
+	primary, err := workspacepkg.New(workspacePath)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	extras := make([]workspacepkg.NamedRoot, 0, len(roots))
+	for _, r := range roots {
+		extras = append(extras, workspacepkg.NamedRoot{Alias: r.Alias, Path: r.Path})
+	}
+	set, err := workspacepkg.NewRoots(primary, extras)
+	if err != nil {
+		return domain.Session{}, err
 	}
 	id, err := NewID("ses")
 	if err != nil {
@@ -246,12 +259,15 @@ func (a *App) CreateSession(ctx context.Context, workspace, provider, model, tit
 	now := domain.Now()
 	sess := domain.Session{
 		ID:        domain.SessionID(id),
-		Workspace: filepath.Clean(workspace),
+		Workspace: filepath.Clean(workspacePath),
 		Provider:  strings.TrimSpace(provider),
 		Model:     strings.TrimSpace(model),
 		Title:     strings.TrimSpace(title),
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	for _, r := range set.Extra() {
+		sess.Roots = append(sess.Roots, domain.SessionRoot{Alias: r.Alias, Path: r.Path})
 	}
 	// 同仓只警告不拒绝：两个会话各改各的文件没问题，命令与构建会互踩。
 	// 这条查询失败不该挡住建会话——它只是提示。
@@ -262,6 +278,7 @@ func (a *App) CreateSession(ctx context.Context, workspace, provider, model, tit
 	}
 	ev, err := domain.NewEvent(domain.EventSessionCreated, sess.ID, "", domain.SessionCreatedPayload{
 		Workspace:       sess.Workspace,
+		Roots:           sess.Roots,
 		Provider:        sess.Provider,
 		Model:           sess.Model,
 		Title:           sess.Title,

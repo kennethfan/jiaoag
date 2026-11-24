@@ -64,6 +64,8 @@ type RuntimeEnv struct {
 	// ProjectServers 是工作区里已确认的 MCP server（ADR-0025）；由宿主
 	// 转换成 mcp.Server 后与全局配置一起启动。
 	ProjectServers []project.Server
+	// Roots 是会话挂载的只读附加根（ADR-0036）；nil 表示只有主根。
+	Roots *workspace.Roots
 }
 
 // NewRunCommand 返回带回正文的命令工具。

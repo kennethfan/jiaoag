@@ -31,13 +31,22 @@ type globArgs struct {
 type globState struct {
 	pattern string
 	max     int
+
+	ws    *workspace.Workspace
+	label string
 }
 
 // NewGlob 返回按模式列文件的工具，支持 `**`。
 func NewGlob(ws *workspace.Workspace) Tool { return &globTool{ws: ws} }
 
+// NewGlobWithRoots 允许模式写 alias:... 列出会话挂的附加根（ADR-0036）。
+func NewGlobWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
+	return &globTool{ws: ws, roots: roots}
+}
+
 type globTool struct {
-	ws *workspace.Workspace
+	ws    *workspace.Workspace
+	roots *workspace.Roots
 }
 
 func (t *globTool) Spec() Spec {
@@ -65,9 +74,20 @@ func (t *globTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
 	if strings.TrimSpace(args.Pattern) == "" {
 		return Prepared{}, invalidArgs(call.Name, "pattern 不能为空")
 	}
+	target, label := t.ws, ""
+	pattern := args.Pattern
+	if t.roots != nil {
+		if i := strings.Index(pattern, ":"); i > 0 && workspace.ValidAlias(pattern[:i]) {
+			ws, rel, alias, err := t.roots.Resolve(pattern)
+			if err != nil {
+				return Prepared{}, invalidArgs(call.Name, "%v", err)
+			}
+			target, label, pattern = ws, alias, rel
+		}
+	}
 	// 模式非法要在 Prepare 阶段就报出来：否则模型看到的是「没有匹配的文件」，
 	// 会以为是路径问题而不是自己的模式写错了。
-	if err := Validate(args.Pattern); err != nil {
+	if err := Validate(pattern); err != nil {
 		return Prepared{}, invalidArgs(call.Name, "%v", err)
 	}
 	if args.MaxResults < 0 {
@@ -83,7 +103,7 @@ func (t *globTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
 	return Prepared{
 		Call: call,
 		Spec: t.Spec(),
-		Args: globState{pattern: args.Pattern, max: max},
+		Args: globState{pattern: pattern, max: max, ws: target, label: label},
 	}, nil
 }
 
@@ -97,7 +117,11 @@ func (t *globTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 		found   []string
 		overCap bool
 	)
-	err := t.ws.Walk(".", func(rel string, size int64) error {
+	target := st.ws
+	if target == nil {
+		target = t.ws
+	}
+	err := target.Walk(".", func(rel string, size int64) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -129,6 +153,9 @@ func (t *globTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 	}
 	var b strings.Builder
 	for _, rel := range found {
+		if st.label != "" {
+			b.WriteString(st.label + ":")
+		}
 		b.WriteString(rel)
 		b.WriteByte('\n')
 	}

@@ -39,13 +39,22 @@ type grepState struct {
 	re   *regexp.Regexp
 	root string
 	max  int
+
+	ws    *workspace.Workspace
+	label string
 }
 
 // NewGrep 返回正则搜索工具。用 Go 的 RE2，不依赖外部 ripgrep。
 func NewGrep(ws *workspace.Workspace) Tool { return &grepTool{ws: ws} }
 
+// NewGrepWithRoots 允许 path 写 alias:... 搜索会话挂的附加根（ADR-0036）。
+func NewGrepWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
+	return &grepTool{ws: ws, roots: roots}
+}
+
 type grepTool struct {
-	ws *workspace.Workspace
+	ws    *workspace.Workspace
+	roots *workspace.Roots
 }
 
 func (t *grepTool) Spec() Spec {
@@ -95,10 +104,19 @@ func (t *grepTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
 	if err != nil {
 		return Prepared{}, invalidArgs(call.Name, "正则表达式无效：%v", err)
 	}
-	abs, err := t.ws.Resolve(args.Path)
+	target, rel, label := t.ws, args.Path, ""
+	if t.roots != nil {
+		var err error
+		target, rel, label, err = t.roots.Resolve(args.Path)
+		if err != nil {
+			return Prepared{}, invalidArgs(call.Name, "%v", err)
+		}
+	}
+	abs, err := target.Resolve(rel)
 	if err != nil {
 		return Prepared{}, err
 	}
+	args.Path = rel
 	max := args.MaxResults
 	if max <= 0 {
 		max = grepDefaultMax
@@ -109,7 +127,7 @@ func (t *grepTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
 	return Prepared{
 		Call:  call,
 		Spec:  t.Spec(),
-		Args:  grepState{args: args, re: re, root: t.ws.Root(), max: max},
+		Args:  grepState{args: args, re: re, root: target.Root(), max: max, ws: target, label: label},
 		Paths: []string{abs},
 	}, nil
 }
@@ -124,7 +142,11 @@ func (t *grepTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 		matches   []string
 		truncated bool
 	)
-	err := t.ws.Walk(st.args.Path, func(rel string, size int64) error {
+	target := st.ws
+	if target == nil {
+		target = t.ws
+	}
+	err := target.Walk(st.args.Path, func(rel string, size int64) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -136,7 +158,11 @@ func (t *grepTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 		}
 		remaining := st.max - len(matches)
 		// 多要一条：拿满 remaining 无法区分「恰好到头」与「还有更多」。
-		found, err := searchFile(filepath.Join(st.root, filepath.FromSlash(rel)), rel, st.re, remaining+1)
+		display := rel
+		if st.label != "" {
+			display = st.label + ":" + rel
+		}
+		found, err := searchFile(filepath.Join(st.root, filepath.FromSlash(rel)), display, st.re, remaining+1)
 		if err != nil {
 			// 单个文件读不了不终止整次搜索：权限、竞态删除都属正常。
 			return nil

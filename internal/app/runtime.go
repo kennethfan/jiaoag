@@ -156,6 +156,18 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 	if err != nil {
 		return nil, "", "", err
 	}
+	// 附加根只读（ADR-0036）：这里只负责把别名映射到目录，权限在工具层。
+	var roots *workspace.Roots
+	if len(sess.Roots) > 0 {
+		extras := make([]workspace.NamedRoot, 0, len(sess.Roots))
+		for _, r := range sess.Roots {
+			extras = append(extras, workspace.NamedRoot{Alias: r.Alias, Path: r.Path})
+		}
+		roots, err = workspace.NewRoots(ws, extras)
+		if err != nil {
+			return nil, "", "", err
+		}
+	}
 	// 项目级扩展来自仓库，可能不是自己写的：未确认时整体跳过（ADR-0025）。
 	proj := a.loadProject(ws.Root(), deps)
 	// 技能是增强不是前提：目录读不了就只是没有技能可用。
@@ -175,6 +187,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		return nil, "", "", err
 	}
 	registry, err := deps.Tools(ws, tools.RuntimeEnv{
+		Roots:          roots,
 		Skills:         catalog,
 		ProjectServers: projectServers(proj),
 		Backend:        deps.Backend,
