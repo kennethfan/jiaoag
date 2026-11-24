@@ -13,9 +13,10 @@
 ## 构建
 
 ```bash
-go build -o bin/jiaoag-server ./cmd/jiaoag-server
-go build -o bin/jiaoag-tui    ./cmd/jiaoag-tui
+make build          # 产出唯一的二进制 bin/jiaoag
 ```
+
+服务端、TUI、会话管理、事件导出、规则 feed、冒烟脚本都是这一个二进制的子命令（`jiaoag help` 看全量），早先的 `jiaoag-server` / `jiaoag-tui` / `jiaoag-events` 等独立二进制已移除。
 
 ## 静态检查
 
@@ -28,7 +29,7 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时跑两个 job�
 ## 配置
 
 ```bash
-./bin/jiaoag-server -init      # 写入 ~/.config/jiaoag/config.yaml（不覆盖已有文件）
+./bin/jiaoag serve -init   # 写入 ~/.config/jiaoag/config.yaml（不覆盖已有文件）
 ```
 
 随后编辑该文件：`server.token` 与各 `providers[].api_key` 支持三种写法——明文、`$ENV_NAME`、`file:/abs/path`。
@@ -47,15 +48,15 @@ CI（`.github/workflows/ci.yml`）在 push 到 `master` 与 PR 时跑两个 job�
 
 ```bash
 cd ~/agent/code/some-project
-/Users/kenneth/agent/code/jiaoag/bin/jiaoag-tui
+/Users/kenneth/agent/code/jiaoag/bin/jiaoag        # 裸跑就是 TUI
 ```
 
-TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。拉起时会给服务端传 `-exit-when-idle=30s`：最后一个客户端断开后 30 秒内没有新连接、也没有排队或运行中的任务，服务端自行优雅退出。所以多开 TUI 时，某一个退出不会踢掉其他人；如果已有服务端在跑则直接复用，也不会误杀。
+TUI 连不上本地服务端时会用自己这个二进制拉起 `serve` 子命令（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。拉起时会给服务端传 `-exit-when-idle=30s`：最后一个客户端断开后 30 秒内没有新连接、也没有排队或运行中的任务，服务端自行优雅退出。所以多开 TUI 时，某一个退出不会踢掉其他人；如果已有服务端在跑则直接复用，也不会误杀。
 
 - `-c`：继续本目录下最近更新的会话（没有就新建）；`-s <id>` 优先于它。
 - `-s <id>`：回到指定会话（历史与工具调用会从事件回放）；`-session` 是同一参数的旧写法。
 - `-no-spawn`：不自动拉起，连不上就报错（脚本/CI 用）。
-- `-server-bin`：指定 `jiaoag-server` 路径，默认依次找 PATH 与 TUI 同目录。
+- `-server-bin`：覆盖拉起服务端用的可执行文件（默认就是自己，按 `<bin> serve` 调用）。
 - `-insecure`：跳过 TLS 证书校验，只用于自签证书（见下）。
 - `-url` 指向远端地址时不会拉起本地进程。
 
@@ -67,7 +68,7 @@ server:
   tls_key: ~/.config/jiaoag/tls/key.pem
 ```
 
-令牌可以配多把，并区分只读。只读令牌只能订阅事件、拉审计、列会话、看模型与 MCP 状态，不能提交任务或裁决审批——`jiaoag-events` 这类观测入口用它就够：
+令牌可以配多把，并区分只读。只读令牌只能订阅事件、拉审计、列会话、看模型与 MCP 状态，不能提交任务或裁决审批——`jiaoag events` 这类观测入口用它就够：
 
 ```yaml
 server:
@@ -84,26 +85,27 @@ server:
 也可以手工分开跑（手工启动默认常驻，不会空闲退出）：
 
 ```bash
-./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
-./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [/sessions] 会话  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+./bin/jiaoag serve                            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
+./bin/jiaoag                                  # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [/sessions] 会话  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+
+```
 
 界面是「对话 / 面板 / 输入 / 状态栏」四段：默认占满窗口（alternate screen），状态栏钉在终端底行，显示连接状态、工作目录、任务状态、轮次、队列、模型与 token（键位提示也在这一行的右侧，输入行紧贴其上）；内容超出视口用 `pgup/pgdn`、`home/end` 滚动，翻页时状态栏提示未读行数。`?` 打开键位与版本面板，`ctrl+f` 在内联/全屏间切换，`-inline` 启动即用内联（保留 scrollback）、鼠标滚轮默认由程序接管（`-no-mouse` 交还终端）。审批卡片有三个按钮，`tab` 切换焦点、`enter` 执行，`y`/`a`/`n` 仍可直选。布局与配色见 `docs/tui.md`。
-```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
 
 `/sessions` 管这个工作区的所有会话：面板按最近活动排序，`↑/↓` 选、`enter` 就地切换（退订旧会话、从 `seq=0` 回放新会话）、`t` 改名（复用输入行，回车保存）、`d` 两次确认删除。有未结束任务的会话既不能切也不能删；删除会把任务、事件、审批、提案、工具调用连同可归属的审计一起清掉，无法撤销（`docs/sessions.md`）。
 
-不进 TUI 也能管，用 `jiaoag-sessions`：
+不进 TUI 也能管，用 `jiaoag sessions`：
 
 ```bash
-jiaoag-sessions list                 # 当前目录的会话
-jiaoag-sessions list -all            # 跨工作区全列
-jiaoag-sessions rename ses_8d64 修登录超时
-jiaoag-sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
+jiaoag sessions list                 # 当前目录的会话
+jiaoag sessions list -all            # 跨工作区全列
+jiaoag sessions rename ses_8d64 修登录超时
+jiaoag sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
 ```
 
-会话 id 可以只给前几位（要求唯一）。它走 WS 协议，所以要有一个在跑的服务端——`jiaoag-tui` 拉起的那台也算。
+会话 id 可以只给前几位（要求唯一）。它走 WS 协议，所以要有一个在跑的服务端——`jiaoag` 拉起的那台也算。
 
 写入审批默认是整份文件。diff 有两个以上块时，面板会提示 `[v] 逐块`：进去以后 `space` 勾选、`j/k` 换块、`y` 只应用勾中的块，未勾的块不落盘，工具结果会告诉模型哪几块没写（ADR-0028）。
 
@@ -150,17 +152,17 @@ jiaoag-sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
 
 ### 事件与审计导出
 
-`jiaoag-events` 是只读消费者：把一个会话的事件流和全库审计增量打到 stdout，默认每行一条 JSON。它没有写入口，接日志系统、CI 或 `jq` 都靠它。
+`jiaoag events` 是只读消费者：把一个会话的事件流和全库审计增量打到 stdout，默认每行一条 JSON。它没有写入口，接日志系统、CI 或 `jq` 都靠它。
 
 ```bash
 # 跟着最近活跃的会话 tail（Ctrl+C 退出）
-./bin/jiaoag-events -config ~/.config/jiaoag/config.yaml
+./bin/jiaoag events -config ~/.config/jiaoag/config.yaml
 
 # 导出历史：事件从 seq=0、审计从 id=0 开始，导出到启动时刻为止后退出
-./bin/jiaoag-events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
+./bin/jiaoag events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
 
 # 给人看
-./bin/jiaoag-events -session ses_xxx -from 0 -format text
+./bin/jiaoag events -session ses_xxx -from 0 -format text
 ```
 
 事件行带 `seq`/`type`/`task_id`/`payload`，审计行带 `action`/`actor`/`task_id`/`session_id`/`detail`；审计按 id 游标增量拉取（1 秒一轮，`-interval` 可调）。详见 [`docs/observability.md`](docs/observability.md)。
@@ -168,7 +170,7 @@ jiaoag-sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
 无终端环境下自检两端是否互通：
 
 ```bash
-./bin/jiaoag-tui -check        # 期望输出：ok: 服务端 0.1.0-dev，协议 v1，双向链路正常
+./bin/jiaoag tui -check        # 期望输出：ok: 服务端 0.1.0-dev，协议 v1，双向链路正常
 curl -s 127.0.0.1:8787/healthz
 ```
 
@@ -227,13 +229,13 @@ make demo-mcp
 | v2.12 | MCP 可观测性：`/mcp` 面板（只读，服务器 / 工具数 / 信任 / 版本），提示词申明外部工具返回内容只当数据 | ✅ |
 | v2.13 | MCP 工具过滤：`tools.include/exclude`，配套 LSP 只读接入配方（`docs/mcp.md`） | ✅ |
 | v2.14 | 传输加密：可选 `server.tls_cert/tls_key` 启用 wss，TUI `-insecure` 接自签，反代写法见 `docs/tls.md`（ADR-0026） | ✅ |
-| v2.15 | 事件与审计导出：`jiaoag-events`（只读 WS：`event.head`/`event.subscribe` + `audit.tail` 游标），JSONL 输出（ADR-0027） | ✅ |
+| v2.15 | 事件与审计导出：`jiaoag events`（只读 WS：`event.head`/`event.subscribe` + `audit.tail` 游标），JSONL 输出（ADR-0027） | ✅ |
 | v2.16 | hunk 级部分批准：`approval.resolve` 带 `hunks`，只写勾中的块，未选块丢弃并告知模型（ADR-0028） | ✅ |
 | v2.17 | 多令牌与只读权限：`server.tokens[]`（`read_only`），SIGHUP 热重载，吊销不用重启（ADR-0029） | ✅ |
 | v2.18 | 收尾三件：`/healthz` 信息分级（匿名只回 ok）、Windows `!命令` 整树终止（Job Object）、`allow_session` 授权落库 + 12h 过期（ADR-0030） | ✅ |
 | v2.19 | 上下文预算按估算 token：`agent.context_budget_tokens`（默认 32000）+ 按 `prompt_tokens` 在线校准，旧 `context_budget_chars` 保留折算（ADR-0031） | ✅ |
-| v2.20 | 签名规则 feed：`jiaoag-policy sync` 验签（ed25519）后落 `policy.d/feed.yaml`，只收紧、带有效期与回滚保护（ADR-0032） | ✅ |
-| v2.21 | 按任务选模型：`task.submit` 带 provider/model 只覆盖这一次，TUI 用 `/model` 绑定下一条任务，`jiaoag-demo -task-model`（ADR-0033） | ✅ |
+| v2.20 | 签名规则 feed：`jiaoag policy sync` 验签（ed25519）后落 `policy.d/feed.yaml`，只收紧、带有效期与回滚保护（ADR-0032） | ✅ |
+| v2.21 | 按任务选模型：`task.submit` 带 provider/model 只覆盖这一次，TUI 用 `/model` 绑定下一条任务，`jiaoag demo -task-model`（ADR-0033） | ✅ |
 | v2.22 | 第三方 stdio 插件：`plugins.servers`，插件只声明意图，写入走 diff 审批、命令走执行后端、失败隔离（ADR-0034） | ✅ |
 | v2.23 | Webhook 通知：`notify.webhooks[]`，只推审批与任务终态，异步 + 3 次重试 + 可选 HMAC 签名（ADR-0035） | ✅ |
 | v2.24 | 多仓库只读附加根：`-root alias=path`，`read_file`/`grep`/`glob` 用 `alias:path` 访问，写入与命令仍限主根（ADR-0036） | ✅ |
@@ -241,7 +243,8 @@ make demo-mcp
 | v2.26 | TUI 改版：状态栏置底（连接/工作目录/状态/轮次/队列/模型/token）、语义色与 `NO_COLOR` 降级、审批三按钮 + `tab` 焦点、`?` 键位面板、默认全屏 + 内部滚动（`-inline`/`-no-mouse`）（docs/tui.md） | ✅ |
 | v2.27 | `run_command` 的 `shell` 入口：整条命令由 `sh -c` 解释，固定审批且理由为 `shell: …`；审批面板展示整条命令，审计带 `shell` 标记（ADR-0038） | ✅ |
 | v2.28 | 会话管理：`/sessions` 面板（切换/改名/删除），删除按序清关联数据，忙会话拒绝切换与删除（ADR-0039） | ✅ |
-| v2.29 | 命令行会话管理：`jiaoag-sessions list/rename/rm`，`-all` 跨工作区、id 前缀补全、删除需 `-yes`（ADR-0039 修订） | ✅ |
+| v2.29 | 命令行会话管理：`jiaoag sessions list/rename/rm`，`-all` 跨工作区、id 前缀补全、删除需 `-yes`（ADR-0039 修订） | ✅ |
+| v2.30 | 命令行收口：七个二进制合并为 `jiaoag` 一个入口（`serve` / `tui` / `sessions` / `events` / `policy` / `demo` / `plugin-example`），裸跑即 TUI；旧名 `jiaoag-*` 移除 | ✅ |
 
 ## 安全边界
 
@@ -253,4 +256,4 @@ make demo-mcp
 
 技能包默认从 `~/.agents/skills` 读取：系统提示里只放技能名与适用场景，模型需要时用 `skill` 工具取正文，正文不常驻、也不扩大执行权限；见 [`docs/skills.md`](docs/skills.md)。
 
-规则可以来自外部：`jiaoag-policy sync` 下载 ed25519 签名的规则 feed，验签后落到 `policy.d/`，服务端启动时加载。feed 只能收紧（把命令变成需要审批），不能放行任何东西，且带有效期与回滚保护；见 [`docs/policy-feed.md`](docs/policy-feed.md)。
+规则可以来自外部：`jiaoag policy sync` 下载 ed25519 签名的规则 feed，验签后落到 `policy.d/`，服务端启动时加载。feed 只能收紧（把命令变成需要审批），不能放行任何东西，且带有效期与回滚保护；见 [`docs/policy-feed.md`](docs/policy-feed.md)。

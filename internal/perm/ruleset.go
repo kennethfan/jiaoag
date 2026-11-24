@@ -128,7 +128,7 @@ func (l *Loader) Load() (*Ruleset, error) {
 			return nil, err
 		}
 		if !meta.ExpiresAt.IsZero() && time.Now().After(meta.ExpiresAt) {
-			return nil, fmt.Errorf("perm: 规则 feed 已于 %s 过期，请运行 jiaoag-policy sync 更新",
+			return nil, fmt.Errorf("perm: 规则 feed 已于 %s 过期，请运行 jiaoag policy sync 更新",
 				meta.ExpiresAt.Format(time.RFC3339))
 		}
 		feedData, feedMeta = data, meta

@@ -1,5 +1,5 @@
-// Command jiaoag-server 是 jiaoag 的服务端：持有会话、任务与工具执行。
-package main
+// Command jiaoag serve 是 jiaoag 的服务端：持有会话、任务与工具执行。
+package serve
 
 import (
 	"context"
@@ -30,7 +30,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
 
-func main() {
+func Main() {
 	var (
 		cfgPath     = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
 		listen      = flag.String("listen", "", "覆盖配置里的 server.listen")
@@ -408,6 +408,6 @@ func pluginServers(cfg *config.Config) []pluginpkg.Server {
 }
 
 func exit(err error) {
-	fmt.Fprintf(os.Stderr, "jiaoag-server: %v\n", err)
+	fmt.Fprintf(os.Stderr, "jiaoag serve: %v\n", err)
 	os.Exit(1)
 }

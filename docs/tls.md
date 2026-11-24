@@ -31,10 +31,10 @@ TUI 连接：
 
 ```bash
 # 证书由可信 CA 签发（或用系统信任链验证通过）
-jiaoag-tui -url wss://my-host:8787/ws
+jiaoag tui -url wss://my-host:8787/ws
 
 # 自签证书：显式跳过校验
-jiaoag-tui -url wss://my-host:8787/ws -insecure
+jiaoag tui -url wss://my-host:8787/ws -insecure
 ```
 
 如果不传 `-url`，TUI 会按 `server.listen` 推导；配置了证书时自动用 `wss://`。

@@ -44,7 +44,7 @@ const (
 	TypeMCPList              = "mcp.list"               // C→S：列出 MCP server 与运行状态（供 /mcp 面板）
 	TypeMCPListResult        = "mcp.list.result"        // S→C
 	// TypeAuditTail 是只读的审计增量拉取：按 audit.id 游标向后取，供
-	// jiaoag-events 之类的导出/监控客户端使用。after_id 为负表示只取
+	// jiaoag events 之类的导出/监控客户端使用。after_id 为负表示只取
 	// 当前水位（不返回记录，只给 next_id）。
 	TypeAuditTail       = "audit.tail"        // C→S
 	TypeAuditTailResult = "audit.tail.result" // S→C

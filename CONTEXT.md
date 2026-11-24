@@ -49,7 +49,7 @@ _Avoid_: Remote Tool、Third-party API
 _Avoid_: Extension、Addon、Connector
 
 **规则 feed**:
-由发布方用 ed25519 签名、带版本与有效期的收紧规则集合；`jiaoag-policy sync` 验签后落盘，只能让命令更需要审批，不能放行。
+由发布方用 ed25519 签名、带版本与有效期的收紧规则集合；`jiaoag policy sync` 验签后落盘，只能让命令更需要审批，不能放行。
 _Avoid_: Ruleset、Policy Bundle
 
 **通知 (Notification)**:

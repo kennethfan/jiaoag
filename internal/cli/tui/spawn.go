@@ -1,9 +1,8 @@
-package main
+package tui
 
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -33,7 +31,7 @@ type serverProc struct {
 const spawnIdleExit = 30 * time.Second
 
 // ensureServer 保证本地服务端可用：已有实例则直接复用；连不上才在回环地址上
-// 拉起同目录（或 PATH）里的 jiaoag-server。返回的收尾函数只关闭日志句柄，
+// 拉起 `jiaoag serve`（同一份二进制的子命令）。返回的收尾函数只关闭日志句柄，
 // 不杀进程——服务端由自己的空闲倒计时负责退出。
 //
 // 只对回环地址自动拉起：-url 指向远端时不猜用户意图，仍然按原样连接。
@@ -114,32 +112,29 @@ func tcpReachable(hostport string, timeout time.Duration) bool {
 	return true
 }
 
-// resolveServerBinary 依次尝试：显式路径、PATH、TUI 同目录。
+// resolveServerBinary 返回用来跑 serve 子命令的可执行文件。
+//
+// 默认就是自己：服务端与 TUI 是同一个二进制，靠 `serve` 区分。不能再去找同目录
+// 的 jiaoag serve，也不能把符号链接当真——两种写法都会绕回 TUI 自己。
+// -server-bin 可以覆盖（同样按 `<bin> serve` 调用），用于调试别的构建。
 func resolveServerBinary(explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	if path, err := exec.LookPath("jiaoag-server"); err == nil {
-		return path, nil
-	}
 	exe, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("定位 TUI 可执行文件: %w", err)
+		return "", fmt.Errorf("定位 jiaoag 可执行文件: %w", err)
 	}
-	name := "jiaoag-server"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
 	}
-	path := filepath.Join(filepath.Dir(exe), name)
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		return path, nil
-	}
-	return "", errors.New("找不到 jiaoag-server：请先 make build，或用 -server-bin 指定路径")
+	return exe, nil
 }
 
 // startServer 启动服务端并把日志落到缓存目录。stdin 不继承，避免和 TUI 抢终端。
 func startServer(bin, cfgPath, listen string) (*serverProc, error) {
-	args := make([]string, 0, 6)
+	args := make([]string, 0, 7)
+	args = append(args, "serve")
 	if cfgPath != "" {
 		args = append(args, "-config", cfgPath)
 	}

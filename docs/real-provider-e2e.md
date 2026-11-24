@@ -38,7 +38,7 @@ go test -tags realprovider -count=1 -run TestRealProvider -v ./internal/server/
 
 ## 想直接看效果
 
-`make demo`（见 README）跑的是同一条真实链路，但换成一个临时小项目和一个极简 WS 客户端 `cmd/jiaoag-demo`：输出全量事件时间线、审批 diff 与命令，最后独立核验磁盘内容、重跑测试、打印审计。适合换供应商后用手眼确认「模型是否真的会读、会改、会跑测试」，也适合录屏演示。它与本测试互补——断言仍在 `realprovider` 测试里，`make demo` 只负责呈现。
+`make demo`（见 README）跑的是同一条真实链路，但换成一个临时小项目和一个极简 WS 客户端 `cmd/jiaoag`：输出全量事件时间线、审批 diff 与命令，最后独立核验磁盘内容、重跑测试、打印审计。适合换供应商后用手眼确认「模型是否真的会读、会改、会跑测试」，也适合录屏演示。它与本测试互补——断言仍在 `realprovider` 测试里，`make demo` 只负责呈现。
 
 ## 三条用例各断言什么
 

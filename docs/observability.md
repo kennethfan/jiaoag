@@ -1,6 +1,6 @@
 # 事件与审计导出
 
-`jiaoag-events` 是一个**只读**消费者：连上服务端，把一个会话的事件流和全库审计增量打到 stdout。它没有写入口，也不改任何状态。
+`jiaoag events` 是一个**只读**消费者：连上服务端，把一个会话的事件流和全库审计增量打到 stdout。它没有写入口，也不改任何状态。
 
 ## 用来做什么
 
@@ -12,19 +12,19 @@
 
 ```bash
 # 跟最近的会话 tail（Ctrl+C 退出）；默认只看新事件、新审计
-./bin/jiaoag-events -config ~/.config/jiaoag/config.yaml
+./bin/jiaoag events -config ~/.config/jiaoag/config.yaml
 
 # 只看某个会话
-./bin/jiaoag-events -session ses_xxx
+./bin/jiaoag events -session ses_xxx
 
 # 导出历史：从最开始，导出到启动时刻为止后退出
-./bin/jiaoag-events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
+./bin/jiaoag events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
 
 # 人类可读（长载荷截断，字段不承诺稳定）
-./bin/jiaoag-events -session ses_xxx -from 0 -format text
+./bin/jiaoag events -session ses_xxx -from 0 -format text
 
 # 远端 / 自签证书（token 仍从配置里解析，配置里可以写 file: 路径）
-./bin/jiaoag-events -url wss://host:8788/ws -insecure
+./bin/jiaoag events -url wss://host:8788/ws -insecure
 ```
 
 | 参数 | 默认 | 说明 |
@@ -57,10 +57,10 @@
 
 ```bash
 # 只看审计
-./bin/jiaoag-events -session ses_x -from 999999999 -audit-from 0 | jq -c 'select(.kind=="audit")'
+./bin/jiaoag events -session ses_x -from 999999999 -audit-from 0 | jq -c 'select(.kind=="audit")'
 
 # 只看命令批准
-./bin/jiaoag-events -session ses_x | jq -c 'select(.action? and (.action|startswith("exec.")))'
+./bin/jiaoag events -session ses_x | jq -c 'select(.action? and (.action|startswith("exec.")))'
 ```
 
 ## 语义与边界

@@ -25,9 +25,9 @@ policy:
 ## 同步
 
 ```bash
-./bin/jiaoag-policy sync          # 读配置里的 policy.feed
-./bin/jiaoag-policy sync -url file:///srv/policy/feed.yaml
-./bin/jiaoag-policy -verify       # 离线校验已安装的 feed，不联网
+./bin/jiaoag policy sync          # 读配置里的 policy.feed
+./bin/jiaoag policy sync -url file:///srv/policy/feed.yaml
+./bin/jiaoag policy -verify       # 离线校验已安装的 feed，不联网
 ```
 
 流程：下载 → 验签 → 检查有效期 → 挡回滚 → 原子写入 `policy.d/`。任何一步失败都

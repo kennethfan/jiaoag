@@ -20,8 +20,8 @@
 plugins:
   servers:
     - name: notes                     # 进工具名：plugin__notes__<tool>
-      command: jiaoag-plugin-example  # 必须在 PATH 里，或写绝对路径；不经 shell
-      args: []
+      command: jiaoag                 # 必须在 PATH 里，或写绝对路径；不经 shell
+      args: ["plugin-example"]        # 参考插件就是同一个二进制的子命令
       env:
         LOG_LEVEL: info               # 在继承环境的基础上追加
       dir: ~/code                     # 子进程工作目录，默认继承 server
@@ -118,7 +118,7 @@ process/propose_write，纯读调用也会被迫审批。
 
 ## 写一个插件
 
-参考实现：`cmd/jiaoag-plugin-example`（`make build` 会产出 `bin/jiaoag-plugin-example`）。
+参考实现：`cmd/jiaoag`（`make build` 会产出 `bin/jiaoag`）。
 它包含四个工具：`echo`（读）、`save_note`（在工作区根目录写 `note-<name>.md`）、`disk_usage`
 （命令 `du -sh .`）、`ping`（external）。
 

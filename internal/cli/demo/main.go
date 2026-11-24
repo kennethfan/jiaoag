@@ -1,10 +1,10 @@
-// Command jiaoag-demo 是人工验收用的最小客户端：连接真实服务端，建会话、
+// Command jiaoag demo 是人工验收用的最小客户端：连接真实服务端，建会话、
 // 订阅事件、提交任务，遇到审批按指定策略裁决，并把事件时间线打到 stdout。
 //
 // 它不替代 internal/server 的 realprovider 测试：测试断言状态机，这里只负责
 // 让人看见一轮真实任务长什么样（diff、命令、工具结果、token 用量）。
 // 典型入口是 scripts/demo.sh（make demo）。
-package main
+package demo
 
 import (
 	"context"
@@ -23,7 +23,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
-func main() {
+func Main() {
 	var (
 		url          = flag.String("url", "", "服务端 WS 地址，例如 ws://127.0.0.1:18787/ws")
 		token        = flag.String("token", "", "server.token")
@@ -45,7 +45,7 @@ func main() {
 	switch *decision {
 	case "allow_once", "allow_session", "deny":
 	default:
-		fmt.Fprintf(os.Stderr, "jiaoag-demo: 未知审批策略 %q\n", *decision)
+		fmt.Fprintf(os.Stderr, "jiaoag demo: 未知审批策略 %q\n", *decision)
 		os.Exit(2)
 	}
 
@@ -129,7 +129,7 @@ func dial(ctx context.Context, url, token string) (*websocket.Conn, protocol.Hel
 		return nil, protocol.HelloPayload{}, fmt.Errorf("协议版本不匹配：服务端 %d，客户端 %d", hp.ProtocolVersion, protocol.Version)
 	}
 	if err := send(ctx, conn, protocol.TypeClientHello, protocol.ClientHelloPayload{
-		ClientVersion: "jiaoag-demo", ProtocolVersion: protocol.Version,
+		ClientVersion: "jiaoag demo", ProtocolVersion: protocol.Version,
 	}); err != nil {
 		conn.CloseNow()
 		return nil, protocol.HelloPayload{}, err
@@ -299,6 +299,6 @@ func decode(raw json.RawMessage, v any) error {
 }
 
 func fail(err error) {
-	fmt.Fprintf(os.Stderr, "jiaoag-demo: %v\n", err)
+	fmt.Fprintf(os.Stderr, "jiaoag demo: %v\n", err)
 	os.Exit(1)
 }

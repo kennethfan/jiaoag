@@ -1,10 +1,9 @@
-package main
+package tui
 
 import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/kennethfan/jiaoag/internal/config"
@@ -65,25 +64,21 @@ func TestResolveServerBinaryExplicit(t *testing.T) {
 	}
 }
 
-func TestResolveServerBinaryFromPath(t *testing.T) {
-	dir := t.TempDir()
-	// Windows 的 LookPath 只认带 PATHEXT 后缀的文件，测试里的假二进制也得带 .exe。
-	name := "jiaoag-server"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+// 默认必须回到自己这个二进制：服务端是同一条命令的 serve 子命令。
+func TestResolveServerBinaryDefaultsToSelf(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir)
-
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
 	got, err := resolveServerBinary("")
 	if err != nil {
-		t.Fatalf("PATH 查找: %v", err)
+		t.Fatalf("默认解析: %v", err)
 	}
-	if got != path {
-		t.Fatalf("got %q，期望 %q", got, path)
+	if got != exe {
+		t.Fatalf("got %q，期望自己 %q", got, exe)
 	}
 }
 

@@ -581,7 +581,7 @@ func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("配置文件不存在：%s\n先运行 `jiaoag-server -init` 生成样例，再按注释填写", p)
+			return nil, fmt.Errorf("配置文件不存在：%s\n先运行 `jiaoag serve -init` 生成样例，再按注释填写", p)
 		}
 		return nil, fmt.Errorf("读取配置 %s 失败: %w", p, err)
 	}

@@ -1,4 +1,4 @@
-// jiaoag-plugin-example 是插件协议的参考实现。
+// jiaoag plugin-example 是插件协议的参考实现。
 //
 // 它同时是「怎么写插件」的活文档：一个换行分隔的 JSON-RPC 循环，四个方法
 // （initialize / tools/list / prepare / execute），prepare 只声明副作用，
@@ -9,10 +9,10 @@
 //	plugins:
 //	  servers:
 //	    - name: example
-//	      command: /absolute/path/to/jiaoag-plugin-example
+//	      command: /absolute/path/to/jiaoag plugin-example
 //
 // 然后模型就能看到 plugin__example__echo / __save_note / __disk_usage / __ping。
-package main
+package pluginexample
 
 import (
 	"bufio"
@@ -49,7 +49,7 @@ type toolSpec struct {
 	Schema      json.RawMessage `json:"schema"`
 }
 
-func main() {
+func Main() {
 	in := bufio.NewReaderSize(os.Stdin, 1<<20)
 	enc := json.NewEncoder(os.Stdout)
 	for {

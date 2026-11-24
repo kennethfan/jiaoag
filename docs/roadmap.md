@@ -35,7 +35,7 @@
 
 ### 运维与观测
 
-- `jiaoag-events` 没有 `--follow` 到文件轮转、没有按 action 前缀过滤（现在只能 `jq`）。
+- `jiaoag events` 没有 `--follow` 到文件轮转、没有按 action 前缀过滤（现在只能 `jq`）。
 - 没有内建的指标出口（`/healthz` 只给连接数与版本，且需令牌）。
 - 无审计保留策略：`events` / `audit` 表只增不删，长期运行要自己写清理。
 

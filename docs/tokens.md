@@ -21,7 +21,7 @@ server:
 - `value` 的写法与 `server.token` 一致：明文 / `$ENV_NAME` / `file:/abs/path`。
 - `token` 与 `tokens` 可以同时存在；`token` 视作名为 `default` 的可写令牌。
 - 至少要有一个令牌，否则服务端启动时报错。
-- 客户端（TUI / `jiaoag-events`）取第一个可写令牌：优先 `server.token`，否则 `tokens` 里第一个 `read_only: false`。只有只读令牌时客户端配置校验会失败，并提示补一个可写令牌。
+- 客户端（TUI / `jiaoag events`）取第一个可写令牌：优先 `server.token`，否则 `tokens` 里第一个 `read_only: false`。只有只读令牌时客户端配置校验会失败，并提示补一个可写令牌。
 
 ## 权限矩阵
 
@@ -43,7 +43,7 @@ server:
 改完配置发 `SIGHUP`：
 
 ```bash
-kill -HUP "$(pgrep -f 'jiaoag-server')"
+kill -HUP "$(pgrep -f 'jiaoag serve')"
 ```
 
 - 只重读令牌，监听地址、TLS 证书、并发上限仍需重启。

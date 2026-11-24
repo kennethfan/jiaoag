@@ -1,9 +1,9 @@
-// Command jiaoag-policy 同步签名规则 feed。
+// Command jiaoag policy 同步签名规则 feed。
 //
 // 它只做一件事：下载 → 验签 → 挡回滚 → 原子写入 policy.d/feed.yaml（及 .sig）。
 // 规则怎么生效由服务端启动时读取，所以更新时机是显式的：跑一次命令，重启或
 // 让下次启动生效。服务端不主动出网。
-package main
+package policy
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/policyfeed"
 )
 
-func main() {
+func Main() {
 	args := os.Args[1:]
 	// 允许把动作写成子命令（sync / verify），也允许 -verify 这种纯 flag 形式。
 	// 注意 flag.Parse 遇到第一个非 flag 参数就停，所以子命令必须先摘掉。
@@ -32,7 +32,7 @@ func main() {
 		}
 	}
 	if err := run(args, verifyMode); err != nil {
-		fmt.Fprintf(os.Stderr, "jiaoag-policy: %v\n", err)
+		fmt.Fprintf(os.Stderr, "jiaoag policy: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -47,7 +47,7 @@ func (k *keyList) Set(v string) error {
 }
 
 func run(args []string, verifyMode bool) error {
-	fs := flag.NewFlagSet("jiaoag-policy", flag.ExitOnError)
+	fs := flag.NewFlagSet("jiaoag policy", flag.ExitOnError)
 	var (
 		cfgPath = fs.String("config", "", "配置文件（默认 ~/.config/jiaoag/config.yaml）")
 		url     = fs.String("url", "", "覆盖 policy.feed.url")
@@ -136,7 +136,7 @@ func fmtTime(t time.Time) string {
 
 func expiredWarning(meta policyfeed.Metadata) error {
 	if !meta.ExpiresAt.IsZero() && time.Now().After(meta.ExpiresAt) {
-		fmt.Fprintf(os.Stderr, "jiaoag-policy: 注意：feed 已于 %s 过期，服务端将拒绝启动，请重新同步\n",
+		fmt.Fprintf(os.Stderr, "jiaoag policy: 注意：feed 已于 %s 过期，服务端将拒绝启动，请重新同步\n",
 			fmtTime(meta.ExpiresAt))
 	}
 	return nil

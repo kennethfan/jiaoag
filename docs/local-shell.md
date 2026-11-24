@@ -15,7 +15,7 @@
 | | `!命令`（本机） | `run_command`（agent） |
 |---|---|---|
 | 谁发起 | 人，直接敲 | 模型，经 `tool.requested` |
-| 在哪执行 | TUI 进程（客户端机器） | `jiaoag-server`（服务端机器） |
+| 在哪执行 | TUI 进程（客户端机器） | `jiaoag serve`（服务端机器） |
 | 审批 | 不需要 | 默认需要（或命中 argv 白名单） |
 | 审计 | 不写 | 写 `exec.*` |
 | 写白名单 / sandbox | 不适用 | 受 `exec.backend` 约束 |

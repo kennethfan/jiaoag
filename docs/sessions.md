@@ -61,7 +61,7 @@
 
 只有 `tasks` 与 `events` 声明了 `ON DELETE CASCADE`，其余四张表如果不显式删，会留下指向不存在会话的孤儿行——既没法追责也没法清理，比删掉更糟。
 
-**已知缺口**：审计没有 `session_id` 列，只能经工具调用反查归属。`context.compact` 这类没有工具调用的审计本来就无法归属到会话，删除后仍会留在库里。要留档请先用 `jiaoag-events` 导出。
+**已知缺口**：审计没有 `session_id` 列，只能经工具调用反查归属。`context.compact` 这类没有工具调用的审计本来就无法归属到会话，删除后仍会留在库里。要留档请先用 `jiaoag events` 导出。
 
 有未结束任务的会话不允许删除（服务端返回 `bad_request`，文案含「还有 N 个未结束任务」）：删掉以后正在跑的 agent 就没地方写事件了。
 
@@ -72,18 +72,18 @@
 `/sessions` 要在某个会话里才打不开——命令行工具没有会话上下文，所以它给出两种取工作区的方式：
 
 ```bash
-jiaoag-sessions list                    # 按当前目录筛（先绝对化再比对）
-jiaoag-sessions list -workspace ~/code/api
-jiaoag-sessions list -all               # 跨工作区全列，多一列工作区
-jiaoag-sessions list -format json       # 给脚本用
-jiaoag-sessions rename ses_8d64 修登录超时
-jiaoag-sessions rm ses_8d64 -yes
+jiaoag sessions list                    # 按当前目录筛（先绝对化再比对）
+jiaoag sessions list -workspace ~/code/api
+jiaoag sessions list -all               # 跨工作区全列，多一列工作区
+jiaoag sessions list -format json       # 给脚本用
+jiaoag sessions rename ses_8d64 修登录超时
+jiaoag sessions rm ses_8d64 -yes
 ```
 
 - **id 可以只给前缀**（`ses_8d64`）。列表里的短 id 只显示 12 位，手抄完整 16 位没有意义；前缀命中多条会报错并列出候选。
 - **删除必须显式 `-yes`**，否则只打印提醒并退出 1。`-yes` 写在 id 前后都行。
-- **要有一个在跑的服务端**。它走 WS 协议而不是直接读 SQLite：改名要落 `session.renamed` 事件、删除要受「有未结束任务不许删」保护，这两件事只有服务端知道。`jiaoag-tui` 自动拉起的那台也算，只要还在空闲计时内。
-- 通用标志 `-config` / `-url` / `-token` / `-insecure` 与 TUI、`jiaoag-events` 同义，写在子命令前后都行；子命令自己的标志要写在位置参数**前面**（`rm -yes` 例外，任意位置都认）。
+- **要有一个在跑的服务端**。它走 WS 协议而不是直接读 SQLite：改名要落 `session.renamed` 事件、删除要受「有未结束任务不许删」保护，这两件事只有服务端知道。`jiaoag tui` 自动拉起的那台也算，只要还在空闲计时内。
+- 通用标志 `-config` / `-url` / `-token` / `-insecure` 与 TUI、`jiaoag events` 同义，写在子命令前后都行；子命令自己的标志要写在位置参数**前面**（`rm -yes` 例外，任意位置都认）。
 - 路径比对会解析符号链接：`/tmp/x` 与 `/private/tmp/x` 是同一个目录，不会因为写法不同就查不到。
 
 服务端对 `session.manage` 的三种入参：带 `session_id` 时用该会话的工作区（TUI 面板）；`all` 跨工作区；否则用请求里的 `workspace`（会做绝对化）。命令行没有会话，只能走后两种——这需要有效令牌，而列表只回元数据、不含事件内容。

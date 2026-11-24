@@ -11,13 +11,13 @@
 启动 TUI 时挂载，可重复：
 
 ```bash
-jiaoag-tui -root lib=../shared-lib -root docs=~/notes/repo
+jiaoag tui -root lib=../shared-lib -root docs=~/notes/repo
 ```
 
-脚本与测试用 `jiaoag-demo`：
+脚本与测试用 `jiaoag demo`：
 
 ```bash
-jiaoag-demo -workspace . -root lib=../shared-lib -prompt "看看 lib:internal/x.go 怎么实现的"
+jiaoag demo -workspace . -root lib=../shared-lib -prompt "看看 lib:internal/x.go 怎么实现的"
 ```
 
 进了 TUI 以后用 `/roots` 看当前挂了什么。

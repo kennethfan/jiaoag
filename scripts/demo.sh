@@ -165,11 +165,10 @@ providers:
 EOF
 
 echo "构建中…"
-go build -o "$WORK/bin/jiaoag-server" ./cmd/jiaoag-server
-go build -o "$WORK/bin/jiaoag-demo" ./cmd/jiaoag-demo
+go build -o "$WORK/bin/jiaoag" ./cmd/jiaoag
 
 # ── 3. 起真实 server ──────────────────────────────────────────────────
-"$WORK/bin/jiaoag-server" -config "$WORK/config.yaml" >"$WORK/server.log" 2>&1 &
+"$WORK/bin/jiaoag" serve -config "$WORK/config.yaml" >"$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 80); do
@@ -191,7 +190,7 @@ echo "server 已就绪：127.0.0.1:${PORT}（provider=${PROVIDER_TYPE} model=${J
 echo
 
 # ── 4. 跑一轮真实任务 ─────────────────────────────────────────────────
-"$WORK/bin/jiaoag-demo" \
+"$WORK/bin/jiaoag" demo \
   -url "ws://127.0.0.1:${PORT}/ws" \
   -token demo-token \
   -workspace "$PROJECT" \

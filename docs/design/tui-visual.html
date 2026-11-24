@@ -145,7 +145,7 @@
 
   <h2>1 · 运行中（标准 100 列）</h2>
   <div class="term">
-    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">jiaoag-tui — ~/code/api</span></div>
+    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">jiaoag — ~/code/api</span></div>
 
     <div class="content">
       <div class="conv">
@@ -180,7 +180,7 @@
 
   <h2>2 · 等待审批（模态卡片 + 状态栏转 warn 色）</h2>
   <div class="term">
-    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">jiaoag-tui — 等待裁决</span></div>
+    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">jiaoag — 等待裁决</span></div>
 
     <div class="content">
       <div class="conv">
@@ -311,7 +311,7 @@
   <div class="grid2">
     <div class="note">
       <ul>
-        <li><b>全屏（alternate screen，vim/htop 那种）</b>：状态栏真正固定在终端最底行，内容区自己滚动（pgup/pgdn、鼠标滚轮）。代价是退出后 scrollback 里没有对话记录，复制长输出要靠内置选择或 <code>jiaoag-events</code>。</li>
+        <li><b>全屏（alternate screen，vim/htop 那种）</b>：状态栏真正固定在终端最底行，内容区自己滚动（pgup/pgdn、鼠标滚轮）。代价是退出后 scrollback 里没有对话记录，复制长输出要靠内置选择或 <code>jiaoag events</code>。</li>
         <li><b>内联（默认，保留 scrollback）</b>：状态栏钉在当前渲染块的底部——视觉上仍在最下方，但随着内容增长会往下推，终端自身可回滚。</li>
       </ul>
       <p class="tagline">实现上 bubbletea v2 用 <code>View.AltScreen</code> 切换，不需要额外依赖。建议：默认内联，<code>Ctrl+F</code>（或配置 <code>tui.fullscreen: true</code>）切全屏；全屏时状态栏与输入框永远贴底。</p>

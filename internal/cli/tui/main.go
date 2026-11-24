@@ -1,5 +1,5 @@
-// Command jiaoag-tui 是 jiaoag 的终端客户端：只负责渲染与审批。
-package main
+// Command jiaoag tui 是 jiaoag 的终端客户端：只负责渲染与审批。
+package tui
 
 import (
 	"context"
@@ -15,17 +15,17 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
-	"github.com/kennethfan/jiaoag/internal/tui"
+	tuipkg "github.com/kennethfan/jiaoag/internal/tui"
 )
 
-func main() {
+func Main() {
 	var (
 		cfgPath  = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
 		url      = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
 		check    = flag.Bool("check", false, "只做一次连接与心跳验证后退出（用于自检/脚本）")
 		sesID    string
 		noSpawn  = flag.Bool("no-spawn", false, "连不上时也不自动拉起本地服务端")
-		srvBin   = flag.String("server-bin", "", "jiaoag-server 路径（默认同目录或 PATH）")
+		srvBin   = flag.String("server-bin", "", "jiaoag serve 路径（默认同目录或 PATH）")
 		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 		inline   = flag.Bool("inline", false, "不用全屏：保留终端 scrollback，状态栏跟在内容末尾")
 		noMouse  = flag.Bool("no-mouse", false, "关闭鼠标滚轮（默认开启；开启时会占用终端原生选中，复制需按住 shift）")
@@ -65,7 +65,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	opts := tui.Options{
+	opts := tuipkg.Options{
 		URL: target, Token: token, SessionID: sesID, InsecureTLS: *insecure,
 		Roots: roots, Inline: *inline, Mouse: !*noMouse,
 		ContinueLast: *cont && sesID == "",
@@ -85,17 +85,17 @@ func main() {
 		defer cleanup()
 	}
 
-	if _, err := tea.NewProgram(tui.New(opts)).Run(); err != nil {
+	if _, err := tea.NewProgram(tuipkg.New(opts)).Run(); err != nil {
 		fatal(err)
 	}
 }
 
 // runCheck 在没有终端的场景下验证握手与一次 ping/pong 往返。
-func runCheck(opts tui.Options) {
+func runCheck(opts tuipkg.Options) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, hello, err := tui.Dial(ctx, opts)
+	conn, hello, err := tuipkg.Dial(ctx, opts)
 	if err != nil {
 		fatal(err)
 	}
@@ -134,7 +134,7 @@ func dialableAddr(listen string) string {
 }
 
 func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "jiaoag-tui: %v\n", err)
+	fmt.Fprintf(os.Stderr, "jiaoag tui: %v\n", err)
 	os.Exit(1)
 }
 

@@ -150,7 +150,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	newest := migrations[len(migrations)-1].version
 	if current > newest {
-		return fmt.Errorf("store: 数据库 %s 的结构版本 %d 高于当前程序支持的 %d，请升级 jiaoag-server", s.path, current, newest)
+		return fmt.Errorf("store: 数据库 %s 的结构版本 %d 高于当前程序支持的 %d，请升级 jiaoag serve", s.path, current, newest)
 	}
 	if err := s.verifyMigrationChecksums(ctx, migrations, current); err != nil {
 		return err
@@ -308,7 +308,7 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {
 			return fmt.Errorf(
-				"store: 数据库 %s 的结构与迁移版本 %d 不一致（%v）；请先备份该文件，再重建数据库或升级 jiaoag-server",
+				"store: 数据库 %s 的结构与迁移版本 %d 不一致（%v）；请先备份该文件，再重建数据库或升级 jiaoag serve",
 				s.path, version, err)
 		}
 		rows.Close()

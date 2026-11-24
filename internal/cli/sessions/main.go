@@ -1,11 +1,11 @@
-// Command jiaoag-sessions 在会话之外管理会话：列、改名、删除。
+// Command jiaoag sessions 在会话之外管理会话：列、改名、删除。
 //
 // TUI 里的 /sessions 面板只能在某个会话里打开，命令行工具没有会话上下文，
 // 所以列表要么按目录筛（默认当前目录），要么用 -all 跨工作区全列。
 //
 // 它通过 WS 协议说话而不是直接读 SQLite：改名要写 session.renamed 事件、
 // 删除要受「有未结束任务的会话不许删」保护，这两件事只有服务端知道。
-package main
+package sessions
 
 import (
 	"context"
@@ -29,13 +29,13 @@ import (
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
-func main() {
+func Main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	// 子命令之前的全局标志先剥掉：`jiaoag-sessions -config x list` 与
-	// `jiaoag-sessions list -config x` 都该能用。flag 包遇到第一个位置参数就停，
+	// 子命令之前的全局标志先剥掉：`jiaoag sessions -config x list` 与
+	// `jiaoag sessions list -config x` 都该能用。flag 包遇到第一个位置参数就停，
 	// 不先剥的话前者会把 "-config" 当成子命令。
 	rest := os.Args[1:]
 	var pre globalFlags
@@ -67,7 +67,7 @@ func main() {
 		format = fs.String("format", "text", "输出格式：text | json")
 	case "rm", "rename":
 	default:
-		fmt.Fprintf(os.Stderr, "jiaoag-sessions: 未知子命令 %q\n\n", command)
+		fmt.Fprintf(os.Stderr, "jiaoag sessions: 未知子命令 %q\n\n", command)
 		usage()
 		os.Exit(2)
 	}
@@ -132,7 +132,7 @@ func main() {
 		printTable(summaries, *all)
 	case "rename":
 		if len(args) < 2 {
-			fatal(errors.New("用法：jiaoag-sessions rename <会话 id> <新标题>"))
+			fatal(errors.New("用法：jiaoag sessions rename <会话 id> <新标题>"))
 		}
 		title := strings.Join(args[1:], " ")
 		id, err := resolveID(ctx, conn, args[0])
@@ -150,7 +150,7 @@ func main() {
 		fmt.Printf("已改名：%s → %s\n", sess.ID, sess.Title)
 	case "rm":
 		if len(args) != 1 {
-			fatal(errors.New("用法：jiaoag-sessions rm <会话 id> -yes"))
+			fatal(errors.New("用法：jiaoag sessions rm <会话 id> -yes"))
 		}
 		if !yesGiven {
 			fatal(errors.New("删除会连带任务、事件与审计一起抹掉且不可撤销；确认请加 -yes"))
@@ -176,7 +176,7 @@ type globalFlags struct {
 }
 
 func parseGlobal(args []string) globalFlags {
-	fs := flag.NewFlagSet("jiaoag-sessions", flag.ExitOnError)
+	fs := flag.NewFlagSet("jiaoag sessions", flag.ExitOnError)
 	cfg := fs.String("config", "", "配置文件路径")
 	url := fs.String("url", "", "服务端 WS 地址")
 	token := fs.String("token", "", "覆盖 server.token")
@@ -216,18 +216,18 @@ func stripYes(args []string) ([]string, bool) {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `jiaoag-sessions 在会话之外管理会话（标志写在位置参数之前）
+	fmt.Fprint(os.Stderr, `jiaoag sessions 在会话之外管理会话（标志写在位置参数之前）
 
-  jiaoag-sessions list [-all] [-workspace 目录] [-format text|json]
+  jiaoag sessions list [-all] [-workspace 目录] [-format text|json]
   （通用标志 -config/-url/-token/-insecure 写在子命令前后都行）
-  jiaoag-sessions rename <会话 id> <新标题>
-  jiaoag-sessions rm <会话 id> -yes
+  jiaoag sessions rename <会话 id> <新标题>
+  jiaoag sessions rm <会话 id> -yes
 
 通用标志：-config <文件> -url <ws 地址> -token <令牌> -insecure
 `)
 }
 
-// options 是连服务端需要的一切；与 jiaoag-events 同形，便于两边一起读。
+// options 是连服务端需要的一切；与 jiaoag events 同形，便于两边一起读。
 type options struct {
 	url      string
 	token    string
@@ -308,7 +308,7 @@ func dial(ctx context.Context, opts options) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("协议版本不匹配：服务端 %d，客户端 %d", hp.ProtocolVersion, protocol.Version)
 	}
 	env, err := protocol.New(protocol.TypeClientHello, protocol.ClientHelloPayload{
-		ClientVersion: "jiaoag-sessions", ProtocolVersion: protocol.Version,
+		ClientVersion: "jiaoag sessions", ProtocolVersion: protocol.Version,
 	})
 	if err != nil {
 		conn.CloseNow()
@@ -494,6 +494,6 @@ func when(ms int64) string {
 }
 
 func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "jiaoag-sessions: %v\n", err)
+	fmt.Fprintf(os.Stderr, "jiaoag sessions: %v\n", err)
 	os.Exit(1)
 }

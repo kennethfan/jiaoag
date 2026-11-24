@@ -395,7 +395,7 @@ func (a *Agent) failChange(ctx context.Context, task domain.Task, toolCall *doma
 // writeAudit 记录一次「已批准写入」的最终结局：落盘成功或失败。
 //
 // 为什么写操作也要进 audit 而不是只靠 proposal.* 事件：事件是会话内的，
-// 审计是跨会话的事后追责依据；只读导出（jiaoag-events）与 SQL 巡检都按
+// 审计是跨会话的事后追责依据；只读导出（jiaoag events）与 SQL 巡检都按
 // audit 表提问「谁在什么时候改了哪个文件」，缺了这条就只能靠人读懂事件流。
 // 未落盘的拒绝仍记 tool.denied，两者不重叠。
 func writeAudit(action string, toolCall *domain.ToolCall, approval *domain.Approval,

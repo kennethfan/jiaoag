@@ -99,6 +99,7 @@ graph TD
 | `internal/plugin` | 第三方 stdio 插件宿主：换行分隔 JSON-RPC，插件只声明副作用意图，写入/命令/外部调用由宿主中介（ADR-0034） |
 | `internal/policyfeed` | 签名规则 feed：ed25519 验签、有效期与回滚检查、原子落盘（ADR-0032） |
 | `internal/notify` | Webhook 通知：审批与任务终态，异步有界队列、重试与 HMAC 签名（ADR-0035） |
+| `internal/cli` | 命令行子命令的实现（`serve` / `tui` / `sessions` / `events` / `policy` / `demo` / `plugin-example`），由唯一的 `cmd/jiaoag` 按子命令分发；各包导出 `Main()`，仍按 `os.Args` 解析参数 |
 
 ---
 
@@ -328,7 +329,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 健康检查 | `/healthz` 匿名只回 `{"status":"ok"}`；`version` / `uptime_seconds` / `connections` 仅对持有效令牌的请求返回，探针本身不需要凭据 |
 | 通知 | 服务端把 `approval.requested` 与任务终态 POST 到 `notify.webhooks[]`；异步有界队列、3 次重试、可选 HMAC-SHA256（ADR-0035） | v2.23 已实现 |
 | 访问令牌 | `server.tokens[]` 命名令牌 + `read_only`；权限在握手时定格在连接上，写命令由消息循环统一拦（`forbidden`）；`SIGHUP` 只重载令牌，失败保留旧集合（ADR-0029） |
-| 会话管理 | `/sessions` 面板走 `session.manage`（同工作区 + 任务/token 计数）；切换先 `event.unsubscribe` 再 `subscribe from_seq=0`，两帧顺序写；改名只写标题并落 `session.renamed`；删除在一个事务里按序清七张表，有未结束任务时拒绝。会话之外用 `jiaoag-sessions list/rename/rm`（`session.manage` 另支持 `workspace` 与 `all` 两种入参，id 前缀补全）（ADR-0039） |
+| 会话管理 | `/sessions` 面板走 `session.manage`（同工作区 + 任务/token 计数）；切换先 `event.unsubscribe` 再 `subscribe from_seq=0`，两帧顺序写；改名只写标题并落 `session.renamed`；删除在一个事务里按序清七张表，有未结束任务时拒绝。会话之外用 `jiaoag sessions list/rename/rm`（`session.manage` 另支持 `workspace` 与 `all` 两种入参，id 前缀补全）（ADR-0039） |
 
 ---
 
@@ -383,7 +384,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 工具 | ✅ | `tools.Source`：builtin / MCP / stdio 插件；MCP 支持全局 `mcp.servers` 与工作区 `.jiaoag/mcp.yaml` 合并，可按 server 用 `tools.include/exclude` 过滤工具（只读接入），`/mcp` 面板只读展示已配置的 server 与运行状态；第三方 stdio 插件（`plugin__<server>__<tool>`）只声明意图，写入/命令/外部副作用由宿主中介（ADR-0034） | v1 留缝；v2 MCP 已实现（ADR-0014、ADR-0025、v2.12/v2.13 修订）；插件宿主已实现（ADR-0034） |
 | LLM 供应商 | ✅ | 按 `config.type` 构造，v1 switch → v2 注册表；多 key 轮询与冷却已实现（ADR-0020），模型列表与运行中切换已实现（ADR-0021），单次任务的模型覆盖已实现（ADR-0033），注册表未做 | v2 |
 | UI | ✅ | 协议客户端，Web / 移动端即另一个 WS 客户端 | 已成立 |
-| 事件消费者 / 审计导出 | ✅ | `event.subscribe` + `event.head` 订阅事件，`audit.tail` 按 id 游标拉审计；`jiaoag-events` 是参考实现（ADR-0027） | v2 |
+| 事件消费者 / 审计导出 | ✅ | `event.subscribe` + `event.head` 订阅事件，`audit.tail` 按 id 游标拉审计；`jiaoag events` 是参考实现（ADR-0027） | v2 |
 | 上下文压缩策略 | ✅ 仅进程内 | `agent.Compactor` | v2 已实现（ADR-0016） |
 | 跨会话记忆 | ✅ 仅工作区文件 | `MEMORY.md` + `remember` 工具 | v2 已实现（ADR-0018） |
 | 技能包 | ✅ 仅指令文本 | 机器级目录 + 工作区 `.jiaoag/skills` / `.agents/skills` 合并（项目级覆盖同名）；索引注入 + `skill` 工具按需取正文；`disable-model-invocation` 不进索引，用户可 `/skill` 指定并由服务端确定性注入 | v2 已实现（ADR-0023、ADR-0024、ADR-0025） |
@@ -418,7 +419,7 @@ type Spec struct {
 registry, errs := tools.NewRegistryFrom(ctx, sources...)
 ```
 
-已落地（v2.13）：`tools.Source` + `tools.StaticSource`（内置工具，以及按任务构造的 `remember` / `skill`）+ `mcp.Manager.Source()`（按工作区的 MCP 视图）。`Spec.Source` 由聚合时填充，MCP 工具保留更精确的 `mcp:<server>`。新增一种来源只需实现这个接口，`cmd/jiaoag-server` 的装配代码不必再动——之前是手工 `append(builtin, mcpTools...)`，每加一种来源都要改那里。
+已落地（v2.13）：`tools.Source` + `tools.StaticSource`（内置工具，以及按任务构造的 `remember` / `skill`）+ `mcp.Manager.Source()`（按工作区的 MCP 视图）。`Spec.Source` 由聚合时填充，MCP 工具保留更精确的 `mcp:<server>`。新增一种来源只需实现这个接口，`cmd/jiaoag` 的装配代码不必再动——之前是手工 `append(builtin, mcpTools...)`，每加一种来源都要改那里。
 
 `Close` 的语义按「谁拥有进程」划分：`StaticSource` 无事可做；MCP 视图是空操作，因为会话按 workspace root 缓存、跨任务复用，归 `Manager.Close` 统一回收——注册表是按任务装配的，装配结束不能杀掉别的任务还在用的进程。
 
@@ -464,13 +465,13 @@ v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过预算（�
 | 代码理解 | grep / glob 只做文本匹配：不懂 interface 满足关系、类型流、调用图；agent 的瓶颈八成在这里 | 已走 MCP 接入 LSP（`mcp-language-server` + gopls，见 `docs/mcp.md` 的「用 LSP 做代码理解」）；tree-sitter / semgrep / codegraph 作为同类 `tools.Source` 未做 |
 | 命令后果判断 | argv 白名单只判「长什么样」，判不了「会发生什么」：`make` 里的 `curl \| sh`、npm postinstall、git hooks | 规则数据 + 命令重写器 + 执行包装器 |
 | 执行隔离 | 无容器（ADR-0001），命令与 server 同权限 | `ExecBackend`（ADR-0011），仅宿主选择；v2 已实现 `sandbox-exec` / `bwrap`（ADR-0015） |
-| 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（ADR-0010 管道）：`jiaoag-policy sync` 验签后落 `policy.d/feed.yaml`，只能收紧（ADR-0032） |
+| 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（ADR-0010 管道）：`jiaoag policy sync` 验签后落 `policy.d/feed.yaml`，只能收紧（ADR-0032） |
 | 上下文与长期记忆 | 单任务压缩已落地（ADR-0016）；跨会话记忆是工作区文件，不做检索 | `Compactor` + 工作区 `MEMORY.md`（ADR-0018） |
 | 重启恢复 | `queued` 续跑已落地（ADR-0017）；执行中任务不重跑，审批等待不可恢复 | 工作流持久化（事件回放） |
 | 模型能力 | 只适配两家协议；没有本地推理 | 按任务选模型已落地（ADR-0033）、预算已按估算 token + 在线校准（ADR-0031）；供应商注册表与 tokenizer 精算不上算 |
 | 多仓库 / monorepo | 多根已落地（只读 A1 + 可写 A2，ADR-0036/0037）；worktree 池、跨根原子操作未做 | workspace provider（多根视图、worktree 池） |
 | 呈现与人机协作 | TUI 只有文本；hunk 级局部批准已落地（ADR-0028），仍无移动端审批 | 协议客户端 + 审批呈现层 |
-| 通知 / 集成 | IM / PR 评论 / 编辑器接入不属服务端职责 | 事件消费者（`jiaoag-events`，ADR-0027）与 webhook 通知（ADR-0035）已落地 |
+| 通知 / 集成 | IM / PR 评论 / 编辑器接入不属服务端职责 | 事件消费者（`jiaoag events`，ADR-0027）与 webhook 通知（ADR-0035）已落地 |
 | 合规解读 | 能记原始事实，判不了「这次变更加了 PII」 | 审计后处理器（只读） |
 
 开放顺序按「收益 / 风险」而不是「炫技程度」：
@@ -479,7 +480,7 @@ v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过预算（�
 |---|---|---|---|
 | P0 | ~~代码理解（LSP / tree-sitter）~~ | 已走 MCP 接入 LSP（`docs/mcp.md`）；tree-sitter 等同类来源未做 | — |
 | P1 | ~~执行后端（sandbox-exec / bwrap）~~ | 已落地（ADR-0015）；远程 runner 未做 | — |
-| P2 | ~~供应链 feed~~ | 已落地（ADR-0032，`jiaoag-policy sync`） | — |
+| P2 | ~~供应链 feed~~ | 已落地（ADR-0032，`jiaoag policy sync`） | — |
 | P3 | ~~记忆 / 压缩策略~~ | 单任务压缩（ADR-0016）与跨会话记忆（ADR-0018）均已落地；不做向量检索 | — |
 | P4 | UI / 通知 | TUI 改版（`docs/tui.md`）与 webhook 通知（ADR-0035）已落地；移动端审批见 issue #11 | 各自独立 |
 

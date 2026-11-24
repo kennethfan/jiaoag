@@ -90,5 +90,5 @@ curl -v -X POST https://example.com/jiaoag/hook \
 
 - 不做去重：网络重试可能让接收端收到同一条两次；需要幂等请按 `event + task_id + at` 判重。
 - 不做分级/静音/免打扰：要静音就 `enabled: false`。
-- 不推 diff、argv、工具输出：需要细节回 TUI，或用 `jiaoag-events` 导出。
+- 不推 diff、argv、工具输出：需要细节回 TUI，或用 `jiaoag events` 导出。
 - 提示词摘要会离开本机；敏感环境可以只订阅 `failed`。

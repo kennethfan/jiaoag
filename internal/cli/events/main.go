@@ -1,10 +1,10 @@
-// Command jiaoag-events 是只读的事件与审计消费者：连上服务端，把一个会话的
+// Command jiaoag events 是只读的事件与审计消费者：连上服务端，把一个会话的
 // 事件流和全库审计增量打到 stdout，默认每行一条 JSON（便于接日志系统/CI）。
 //
 // 它不写任何东西：没有「删除审计」「改状态」的入口，协议侧也只有
 // event.subscribe / audit.tail 两个只读命令。导出与监控是同一个程序，
 // 区别只在 -from / -audit-from 和 -until-now。
-package main
+package events
 
 import (
 	"context"
@@ -29,7 +29,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
-func main() {
+func Main() {
 	var (
 		cfgPath   = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
 		url       = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
@@ -46,7 +46,7 @@ func main() {
 	flag.StringVar(&sessionID, "session", "", "同 -s（保留旧写法）")
 	flag.Parse()
 	if *format != "json" && *format != "text" {
-		fmt.Fprintf(os.Stderr, "jiaoag-events: 未知输出格式 %q（json | text）\n", *format)
+		fmt.Fprintf(os.Stderr, "jiaoag events: 未知输出格式 %q（json | text）\n", *format)
 		os.Exit(2)
 	}
 	if *interval < 100*time.Millisecond {
@@ -345,7 +345,7 @@ func dial(ctx context.Context, opts options) (*websocket.Conn, protocol.HelloPay
 		return nil, protocol.HelloPayload{}, fmt.Errorf("协议版本不匹配：服务端 %d，客户端 %d", hp.ProtocolVersion, protocol.Version)
 	}
 	env, err := protocol.New(protocol.TypeClientHello, protocol.ClientHelloPayload{
-		ClientVersion: "jiaoag-events", ProtocolVersion: protocol.Version,
+		ClientVersion: "jiaoag events", ProtocolVersion: protocol.Version,
 	})
 	if err != nil {
 		conn.CloseNow()
@@ -377,7 +377,7 @@ func dialableAddr(listen string) string {
 }
 
 func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "jiaoag-events: %v\n", err)
+	fmt.Fprintf(os.Stderr, "jiaoag events: %v\n", err)
 	os.Exit(1)
 }
 
