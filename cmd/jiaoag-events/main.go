@@ -34,7 +34,7 @@ func main() {
 		cfgPath   = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
 		url       = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
 		token     = flag.String("token", "", "覆盖 server.token")
-		sessionID = flag.String("session", "", "会话 id（默认取最近活跃的会话）")
+		sessionID string
 		from      = flag.Int64("from", -1, "事件起始序号；-1 表示只看新事件，0 表示导出全部历史")
 		auditFrom = flag.Int64("audit-from", -1, "审计起始 id；-1 表示只看新审计，0 表示导出全部历史")
 		format    = flag.String("format", "json", "输出格式：json（每行一条）| text")
@@ -42,6 +42,8 @@ func main() {
 		interval  = flag.Duration("interval", time.Second, "审计轮询间隔")
 		insecure  = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 	)
+	flag.StringVar(&sessionID, "s", "", "会话 id（默认取最近活跃的会话）")
+	flag.StringVar(&sessionID, "session", "", "同 -s（保留旧写法）")
 	flag.Parse()
 	if *format != "json" && *format != "text" {
 		fmt.Fprintf(os.Stderr, "jiaoag-events: 未知输出格式 %q（json | text）\n", *format)
@@ -83,7 +85,7 @@ func main() {
 	defer stop()
 
 	opts := options{
-		url: target, token: *token, sessionID: *sessionID,
+		url: target, token: *token, sessionID: sessionID,
 		from: *from, auditFrom: *auditFrom,
 		format: *format, untilNow: *untilNow, interval: *interval,
 		insecure: *insecure,

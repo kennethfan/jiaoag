@@ -52,6 +52,7 @@ cd ~/agent/code/some-project
 
 TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。拉起时会给服务端传 `-exit-when-idle=30s`：最后一个客户端断开后 30 秒内没有新连接、也没有排队或运行中的任务，服务端自行优雅退出。所以多开 TUI 时，某一个退出不会踢掉其他人；如果已有服务端在跑则直接复用，也不会误杀。
 
+- `-s <id>`：回到指定会话（历史与工具调用会从事件回放）；`-session` 是同一参数的旧写法。
 - `-no-spawn`：不自动拉起，连不上就报错（脚本/CI 用）。
 - `-server-bin`：指定 `jiaoag-server` 路径，默认依次找 PATH 与 TUI 同目录。
 - `-insecure`：跳过 TLS 证书校验，只用于自签证书（见下）。
