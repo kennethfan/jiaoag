@@ -1,0 +1,23 @@
+# 项目级 MCP：把 gopls 变成 agent 的代码理解工具。
+#
+# 为什么需要它：grep 只能找到字符串，回答不了「这个类型在哪被创建」「改这个符号会影响谁」。
+# 这里只放行四个只读工具，写操作（edit_file / rename_symbol）被 exclude 挡掉，
+# 所以整台 server 可以 trust: allow，不逐次弹审批。
+#
+# 前置：
+#   go install github.com/isaacphi/mcp-language-server@latest   # 需要 ~/.local/bin 在 PATH 里
+#   go install golang.org/x/tools/gopls@latest
+#
+# 首次使用：TUI 里会提示检测到项目级扩展，输入 /trust 确认一次（内容变化会重新要求确认）。
+servers:
+  - name: lsp
+    command: mcp-language-server
+    # dir 让子进程的工作目录固定在本仓库根，因此 -workspace . 指的就是这个仓库。
+    dir: .
+    args: ["-workspace", ".", "-lsp", "gopls"]
+    # gopls 首次要加载整个 module，大仓库可以再放宽。
+    timeout_s: 120
+    trust: allow
+    tools:
+      include: [definition, references, hover, diagnostics]
+      exclude: [edit_file, rename_symbol]
