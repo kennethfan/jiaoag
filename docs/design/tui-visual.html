@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>jiaoag TUI · 视觉设计稿 v2（状态栏置底）</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --line: #222a35;
+    --fg: #e6e6e6;
+    --muted: #7f848e;
+    --accent: #56b6c2;
+    --ok: #98c379;
+    --warn: #e5c07b;
+    --err: #e06c75;
+    --add: rgba(152, 195, 121, 0.14);
+    --del: rgba(224, 108, 117, 0.14);
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang SC", "Noto Sans Mono CJK SC", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 40px 24px 64px; background: #07090d; color: #c9d1d9;
+         font-family: var(--mono); font-size: 14px; line-height: 1.55; }
+  .page { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 20px; color: #f0f6fc; margin: 0 0 6px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 34px; }
+  h2 { font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+       color: var(--muted); margin: 38px 0 12px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .term { background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+          overflow: hidden; box-shadow: 0 18px 40px rgba(0,0,0,.45);
+          display: flex; flex-direction: column; }
+  .chrome { display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+            background: #161b22; border-bottom: 1px solid var(--line); }
+  .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+  .chrome .name { margin-left: 8px; color: var(--muted); font-size: 12px; }
+
+  /* 内容区（会增长 / 可滚动） */
+  .content { padding: 12px 14px 4px; flex: 1 1 auto; }
+  .conv { white-space: normal; }
+  .turn { display: grid; grid-template-columns: 5.5ch 1fr; white-space: pre-wrap; }
+  .turn + .turn { margin-top: 2px; }
+  .who { color: var(--muted); font-size: 13px; }
+  .who.you { color: var(--accent); }
+  .who.ai { color: var(--fg); }
+  .body { color: #d5dbe2; }
+  .tool { display: grid; grid-template-columns: 5.5ch 1fr auto; gap: 10px; align-items: baseline;
+          color: var(--muted); font-size: 13px; padding: 1px 0; }
+  .tool .name { color: #c9d1d9; }
+  .tool .meta { color: var(--muted); white-space: nowrap; }
+  .tool .okmark { color: var(--ok); }
+  .tool .warnmark { color: var(--warn); }
+  code { background: #1b212b; border-radius: 3px; padding: 0 4px; color: #e5c07b; }
+  .caret { display: inline-block; width: .6ch; height: 1em; background: var(--accent);
+           vertical-align: -2px; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* 底部区：输入 + 状态栏 + 提示，钉在框底 */
+  .dock { border-top: 1px solid var(--line); background: #0a0e14; }
+  .inputrow { display: flex; gap: 10px; align-items: baseline; padding: 10px 14px 8px; }
+  .prompt { color: var(--accent); }
+  .typed { color: var(--fg); }
+  .ph { color: #4b535f; }
+  .statusbar { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline;
+               padding: 5px 14px; background: #141a23; border-top: 1px solid var(--line);
+               border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+  .statusbar .left { display: flex; gap: 14px; align-items: baseline; }
+  .statusbar .right { margin-left: auto; display: flex; gap: 14px; align-items: baseline; }
+  .on { color: var(--ok); } .off { color: var(--err); }
+  .model { color: var(--accent); }
+  .cwd { color: #c9d1d9; }
+  .cwd::before { content: "⌂ "; color: #4b535f; }
+  .root { color: var(--muted); }
+  .root::before { content: "↳ "; color: #39414d; }
+  .warnk { color: var(--warn); }
+  .chip { display: inline-block; padding: 0 7px; border-radius: 4px; font-size: 12px; line-height: 1.6; }
+  .chip.run  { background: rgba(86,182,194,.14); color: var(--accent); }
+  .chip.wait { background: rgba(229,192,123,.16); color: var(--warn); }
+  .chip.done { background: rgba(152,195,121,.14); color: var(--ok); }
+  .chip.fail { background: rgba(224,108,117,.14); color: var(--err); }
+  .chip.ghost{ background: #1b212b; color: var(--muted); }
+  .hints { padding: 5px 14px 7px; color: var(--muted); font-size: 12.5px; }
+  .hintline { color: var(--muted); font-size: 12.5px; margin-left: 6px; }
+  .hintline b, .hintline .k { color: var(--accent); font-weight: 600; }
+  .hints b { color: #c9d1d9; font-weight: 600; }
+  .hints .k { color: var(--accent); }
+  .hints .sep { color: #39414d; padding: 0 6px; }
+
+  /* 面板卡片 */
+  .card { margin: 6px 14px 12px; border: 1px solid #2b3441; border-radius: 8px; overflow: hidden; }
+  .card.tone-warn { border-color: rgba(229,192,123,.45); }
+  .card.tone-accent { border-color: rgba(86,182,194,.45); }
+  .cardhead { display: flex; justify-content: space-between; padding: 7px 12px;
+              background: #141a23; border-bottom: 1px solid #222a35; font-size: 13px; }
+  .cardhead .t { color: var(--accent); }
+  .cardhead .t.warn { color: var(--warn); }
+  .cardhead .c { color: var(--muted); }
+  .cardbody { padding: 8px 0; font-size: 13px; }
+  .row { display: grid; grid-template-columns: 3ch 1fr auto; gap: 8px; padding: 1px 12px; white-space: pre-wrap; }
+  .row.sel { background: #1a2230; }
+  .row .mk { color: var(--accent); }
+  .row .n { color: #c9d1d9; }
+  .row .meta { color: var(--muted); }
+  .row.dim { color: var(--muted); }
+  .cardfoot { padding: 6px 12px 8px; border-top: 1px solid #222a35; color: var(--muted); font-size: 12.5px; }
+  .cardfoot .k { color: var(--accent); }
+  .buttons { display: flex; gap: 8px; padding: 10px 12px 4px; }
+  .btn { flex: 0 0 auto; border: 1px solid #2b3441; border-radius: 6px; padding: 4px 14px;
+         color: #c9d1d9; font-size: 13px; display: flex; gap: 8px; align-items: baseline; }
+  .btn .kbdhint { color: #4b535f; font-size: 11.5px; }
+  .btn.sel { border-color: var(--accent); background: rgba(86,182,194,.14); color: #e6f6f8; }
+  .btn.sel .kbdhint { color: var(--accent); }
+  .btn.danger.sel { border-color: var(--err); background: rgba(224,108,117,.14); color: #ffd9dc; }
+  .btn.danger.sel .kbdhint { color: var(--err); }
+  .btnrow-note { padding: 0 12px 8px; color: #4b535f; font-size: 12px; }
+  .diff { padding: 6px 0; font-size: 12.5px; }
+  .dl { padding: 0 12px; white-space: pre; }
+  .dl.add { background: var(--add); color: #b8e0a0; }
+  .dl.del { background: var(--del); color: #f0a8ae; }
+  .dl.hunk { color: var(--accent); background: #141a23; }
+  .dl.ctx { color: #8b949e; }
+  .keys { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 2px 24px; padding: 8px 14px; font-size: 13px; }
+  .keys div { display: flex; gap: 10px; }
+  .keys kbd { color: var(--accent); min-width: 8ch; }
+  .keys span { color: #c9d1d9; }
+
+  .palette { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .sw { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #0b0f15; }
+  .sw .c { height: 30px; }
+  .sw .l { padding: 6px 9px; font-size: 12px; color: var(--muted); }
+  .sw .l b { color: #c9d1d9; display: block; font-weight: 600; }
+  .note { color: var(--muted); font-size: 12.5px; line-height: 1.8; }
+  .note li { margin-bottom: 4px; }
+  .note code { font-size: 12px; }
+  .before { opacity: .75; }
+  .tagline { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>jiaoag TUI · 视觉设计稿 v2</h1>
+  <div class="sub">状态栏按惯例放到底部，输入行紧贴它上面（中间不再夹分隔线），键位提示并进状态栏右侧。顶部不占用任何常驻行。</div>
+
+  <h2>1 · 运行中（标准 100 列）</h2>
+  <div class="term">
+    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">jiaoag-tui — ~/code/api</span></div>
+
+    <div class="content">
+      <div class="conv">
+        <div class="turn"><div class="who you">你</div><div class="body">把 stats.Sum 的循环边界修掉，再补一个空切片用例。</div></div>
+        <div class="tool"><div class="who">⚙</div><div><span class="name">read_file</span>  stats/stats.go</div><div class="meta">12 ms <span class="okmark">✓</span></div></div>
+        <div class="tool"><div class="who">⚙</div><div><span class="name">grep</span>  len(nums)  <span style="color:#39414d">·</span>  3 处</div><div class="meta">8 ms <span class="okmark">✓</span></div></div>
+        <div class="tool"><div class="who">⚙</div><div><span class="name">edit_file</span>  stats/stats.go</div><div class="meta">已批准（一次） <span class="okmark">✓</span></div></div>
+        <div class="turn" style="margin-top:6px"><div class="who ai">jiaoag</div><div class="body">修好了：循环改回 <code>i &lt; len(nums)</code>，空切片时不再漏掉最后一个元素。顺便补了 <code>TestSumEmpty</code>。<span class="caret"></span></div></div>
+      </div>
+    </div>
+
+    <div class="dock">
+      <div class="inputrow"><span class="prompt">›</span><span class="ph">输入任务，或 /help</span></div>
+      <div class="statusbar">
+        <div class="left">
+          <span><span class="on">●</span> 已连接</span>
+          <span class="cwd">~/code/api</span>
+          <span><span class="chip run">运行中</span></span>
+          <span>tsk_7a408a</span>
+          <span>第 3 轮</span>
+          <span>排队 1</span>
+          <span class="root">lib</span>
+        </div>
+        <div class="right"><span class="hintline"><span class="k">enter</span> 发送<span class="sep">·</span><span class="k">esc</span> 取消<span class="sep">·</span><span class="k">?</span> 键位<span class="sep">·</span><span class="k">ctrl+q</span> 队列</span></div>
+          <span class="model">agnes/agnes-3.0-flash</span>
+          <span>12.4k / 32k tok</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="tagline">版本号不再占第一行——它只在启动问候与 <code>?</code> 面板里出现。工作目录与当前附加根都在状态栏：<code>⌂ ~/code/api</code> 是会话根，<code>↳ lib</code> 表示这轮工具带 <code>root: lib</code>。</div>
+
+  <h2>2 · 等待审批（模态卡片 + 状态栏转 warn 色）</h2>
+  <div class="term">
+    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">jiaoag-tui — 等待裁决</span></div>
+
+    <div class="content">
+      <div class="conv">
+        <div class="turn"><div class="who you">你</div><div class="body">把重试的退避改成指数，并在文档里写清楚上限。</div></div>
+        <div class="tool"><div class="who">⚙</div><div><span class="name">read_file</span>  internal/llm/retry.go  <span style="color:#39414d">·</span>  1–120</div><div class="meta">9 ms <span class="okmark">✓</span></div></div>
+      </div>
+      <div class="card tone-warn">
+        <div class="cardhead"><span class="t warn">✎ 待审批 · internal/llm/retry.go</span><span class="c">+6 −2 · 2 块</span></div>
+        <div class="diff">
+          <div class="dl hunk">@@ -18,7 +18,11 @@ func backoff(attempt int) time.Duration</div>
+          <div class="dl ctx">  if attempt &lt;= 0 {</div>
+          <div class="dl ctx">      return 0</div>
+          <div class="dl ctx">  }</div>
+          <div class="dl del">- d := time.Duration(attempt) * baseDelay</div>
+          <div class="dl add">+ d := baseDelay &lt;&lt; (attempt - 1)</div>
+          <div class="dl add">+ if d &gt; maxDelay {</div>
+          <div class="dl add">+     d = maxDelay</div>
+          <div class="dl add">+ }</div>
+          <div class="dl ctx">  return d + jitter(d)</div>
+        </div>
+        <div class="buttons">
+          <div class="btn sel">批准一次<span class="kbdhint">enter</span></div>
+          <div class="btn">本会话内都批准<span class="kbdhint">a</span></div>
+          <div class="btn danger">拒绝<span class="kbdhint">n</span></div>
+        </div>
+        <div class="btnrow-note"><span class="k">tab</span> / <span class="k">shift+tab</span> 切换焦点<span class="sep">·</span><span class="k">←→</span> 也可<span class="sep">·</span><span class="k">enter</span> 执行<span class="sep">·</span><span class="k">v</span> 逐块审批<span class="sep">·</span><span class="k">esc</span> 收起卡片（不裁决）</div>
+      </div>
+    </div>
+
+    <div class="dock">
+      <div class="inputrow"><span class="prompt" style="color:#4b535f">›</span><span class="ph">等待裁决，输入已暂停</span></div>
+      <div class="statusbar">
+        <div class="left">
+          <span><span class="on">●</span> 已连接</span>
+          <span class="cwd">~/code/api</span>
+          <span><span class="chip wait">等待审批</span></span>
+          <span>tsk_7a408a</span>
+          <span>第 4 轮</span>
+          <span class="warnk">已等 42 s</span>
+        </div>
+        <div class="right"><span class="model">agnes/agnes-3.0-flash</span><span class="hintline"><span class="warnk">⚠</span> <span class="k">tab</span> 切换按钮<span class="sep">·</span><span class="k">enter</span> 确认<span class="sep">·</span><span class="k">y/a/n</span> 直选<span class="sep">·</span><span class="k">v</span> 逐块</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>3 · 面板态：模型选择 / 键位帮助</h2>
+  <div class="grid2">
+    <div class="term">
+      <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">/model</span></div>
+      <div class="content">
+        <div class="conv">
+          <div class="turn"><div class="who">·</div><div class="body" style="color:#7f848e">会话 ses_110993 · 空闲</div></div>
+        </div>
+        <div class="card tone-accent">
+          <div class="cardhead"><span class="t">⇄ 选择模型 · 只用于下一条任务</span><span class="c">13 个 · 来源 agnes</span></div>
+          <div class="cardbody">
+            <div class="row"><span class="mk">▶</span><span class="n">agnes-3.0-flash</span><span class="meta">(当前)</span></div>
+            <div class="row"><span class="mk"></span><span class="n">agnes-3.0-pro</span><span class="meta">~$2.4/M</span></div>
+            <div class="row sel"><span class="mk">▶</span><span class="n">agnes-2.5-flash</span><span class="meta">更快 · 便宜</span></div>
+            <div class="row"><span class="mk"></span><span class="n">agnes-2.5-pro</span><span class="meta"></span></div>
+            <div class="row dim"><span class="mk"></span><span class="n">agnes-2.5-pro-alpha</span><span class="meta">预览</span></div>
+          </div>
+          <div class="cardfoot"><span class="k">↑↓</span> 选择<span class="sep">·</span><span class="k">enter</span> 绑定下一条<span class="sep">·</span><span class="k">esc</span> 关闭</div>
+        </div>
+      </div>
+      <div class="dock">
+        <div class="inputrow"><span class="prompt" style="color:#4b535f">›</span><span class="ph">面板打开中</span></div>
+        <div class="statusbar">
+          <div class="left"><span><span class="on">●</span> 已连接</span><span class="cwd">~/code/api</span><span><span class="chip ghost">空闲</span></span><span>已绑定 <span class="warnk">agnes-2.5-flash</span>（提交后恢复）</span></div>
+          <div class="right"><span class="model">agnes/agnes-3.0-flash</span><span class="hintline"><span class="k">↑↓</span> 选择<span class="sep">·</span><span class="k">enter</span> 绑定<span class="sep">·</span><span class="k">esc</span> 关闭</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="term">
+      <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">?</span></div>
+      <div class="content">
+        <div class="card">
+          <div class="cardhead"><span class="t">⌨ 键位 · jiaoag 0.1.0-dev</span><span class="c">esc 关闭</span></div>
+          <div class="keys">
+            <div><kbd>enter</kbd><span>提交 / 确认</span></div>
+            <div><kbd>esc</kbd><span>取消 / 关闭</span></div>
+            <div><kbd>ctrl+q</kbd><span>队列面板</span></div>
+            <div><kbd>ctrl+r</kbd><span>重连</span></div>
+            <div><kbd>/models</kbd><span>会话模型</span></div>
+            <div><kbd>/model</kbd><span>单次模型</span></div>
+            <div><kbd>/skill</kbd><span>指定技能</span></div>
+            <div><kbd>/mcp</kbd><span>MCP 状态</span></div>
+            <div><kbd>/roots</kbd><span>附加根</span></div>
+            <div><kbd>!</kbd><span>本机命令</span></div>
+            <div><kbd>v</kbd><span>逐块审批</span></div>
+            <div><kbd>ctrl+c</kbd><span>退出</span></div>
+          </div>
+          <div class="cardfoot">版本、完整键位、当前策略版本都放在这里，不占常驻行。</div>
+        </div>
+      </div>
+      <div class="dock">
+        <div class="inputrow"><span class="prompt" style="color:#4b535f">›</span><span class="ph">帮助面板打开中</span></div>
+        <div class="statusbar">
+          <div class="left"><span><span class="on">●</span> 已连接</span><span class="cwd">~/code/api</span><span><span class="chip ghost">空闲</span></span></div>
+          <div class="right"><span>policy builtin-2+feed@2026-11-24.1</span><span class="hintline"><span class="k">esc</span> 关闭</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>4 · 窄屏 60 列（状态栏自动折叠）</h2>
+  <div class="term" style="max-width:620px">
+    <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">60 列</span></div>
+    <div class="content">
+      <div class="conv">
+        <div class="turn" style="grid-template-columns:3.5ch 1fr"><div class="who you">你</div><div class="body">修边界</div></div>
+        <div class="tool" style="grid-template-columns:3.5ch 1fr auto"><div class="who">⚙</div><div><span class="name">read_file</span> stats.go</div><div class="meta">12 ms ✓</div></div>
+        <div class="turn" style="grid-template-columns:3.5ch 1fr"><div class="who ai">ai</div><div class="body">改好了，并补了空切片用例。<span class="caret"></span></div></div>
+      </div>
+    </div>
+    <div class="dock">
+      <div class="inputrow"><span class="prompt">›</span><span class="ph">输入…</span></div>
+      <div class="statusbar">
+        <div class="left"><span><span class="on">●</span></span><span class="cwd">api</span><span><span class="chip run">运行中</span></span><span>tsk_7a40 · 轮 3 · 排队 1</span></div>
+        <div class="right"><span>12.4k/32k</span><span class="hintline"><span class="k">enter</span> 发送<span class="sep">·</span><span class="k">esc</span> 取消<span class="sep">·</span><span class="k">?</span> 更多</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="tagline">窄屏优先丢：token 分母、模型名（切到 <code>?</code> 面板看）；工作目录只留最后一段（<code>api</code>），状态 chip 与任务号永远保留。</div>
+
+  <h2>5 · 全屏 vs 内联：状态栏“钉底”的两种实现</h2>
+  <div class="grid2">
+    <div class="note">
+      <ul>
+        <li><b>全屏（alternate screen，vim/htop 那种）</b>：状态栏真正固定在终端最底行，内容区自己滚动（pgup/pgdn、鼠标滚轮）。代价是退出后 scrollback 里没有对话记录，复制长输出要靠内置选择或 <code>jiaoag-events</code>。</li>
+        <li><b>内联（默认，保留 scrollback）</b>：状态栏钉在当前渲染块的底部——视觉上仍在最下方，但随着内容增长会往下推，终端自身可回滚。</li>
+      </ul>
+      <p class="tagline">实现上 bubbletea v2 用 <code>View.AltScreen</code> 切换，不需要额外依赖。建议：默认内联，<code>Ctrl+F</code>（或配置 <code>tui.fullscreen: true</code>）切全屏；全屏时状态栏与输入框永远贴底。</p>
+    </div>
+    <div class="term" style="min-height:320px">
+      <div class="chrome"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">全屏：状态栏贴终端底行</span></div>
+      <div class="content" style="display:flex; flex-direction:column; justify-content:space-between;">
+        <div class="conv">
+          <div class="turn"><div class="who you">你</div><div class="body">重构 config 包</div></div>
+          <div class="tool"><div class="who">⚙</div><div><span class="name">glob</span> **/*.go  <span style="color:#39414d">·</span>  214 个</div><div class="meta">31 ms ✓</div></div>
+          <div class="tool"><div class="who">⚙</div><div><span class="name">read_file</span> internal/config/config.go</div><div class="meta">11 ms ✓</div></div>
+          <div class="turn"><div class="who ai">jiaoag</div><div class="body">先看 4 个文件的结构再动手。<span class="caret"></span></div></div>
+        </div>
+        <div class="tagline" style="text-align:center; padding-bottom:10px;">↑ 内容区在这块空间内滚动</div>
+      </div>
+      <div class="dock">
+        <div class="inputrow"><span class="prompt">›</span><span class="ph">输入…</span></div>
+        <div class="statusbar">
+          <div class="left"><span><span class="on">●</span> 已连接</span><span class="cwd">~/code/api</span><span><span class="chip run">运行中</span></span><span>tsk_7a408a · 轮 6</span></div>
+          <div class="right"><span class="model">agnes/agnes-3.0-flash</span><span>18.2k/32k</span><span class="hintline"><span class="k">enter</span> 发送<span class="sep">·</span><span class="k">pgup/pgdn</span> 滚动<span class="sep">·</span><span class="k">?</span> 键位<span class="sep">·</span><span class="k">ctrl+f</span> 退出全屏</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>6 · 调色板</h2>
+  <div class="palette">
+    <div class="sw"><div class="c" style="background:#56b6c2"></div><div class="l"><b>accent</b>提示符 · 焦点 · 选中</div></div>
+    <div class="sw"><div class="c" style="background:#98c379"></div><div class="l"><b>ok</b>成功 · diff 增 · 已连接</div></div>
+    <div class="sw"><div class="c" style="background:#e5c07b"></div><div class="l"><b>warn</b>等待审批 · 排队 · 高用量</div></div>
+    <div class="sw"><div class="c" style="background:#e06c75"></div><div class="l"><b>err</b>失败 · diff 删 · 断线</div></div>
+    <div class="sw"><div class="c" style="background:#7f848e"></div><div class="l"><b>muted</b>元信息 · 计数 · 路径</div></div>
+    <div class="sw"><div class="c" style="background:#e6e6e6"></div><div class="l"><b>strong</b>角色 · 标题 · 当前项</div></div>
+    <div class="sw"><div class="c" style="background:#0d1117;border-bottom:1px solid #222a35"></div><div class="l"><b>bg</b>0d1117 · 状态栏 141a23</div></div>
+    <div class="sw"><div class="c" style="background:linear-gradient(90deg,rgba(152,195,121,.35),rgba(224,108,117,.35))"></div><div class="l"><b>diff</b>增/删 整行底色</div></div>
+  </div>
+  <div class="note" style="margin-top:14px">
+    256 色：accent 44、ok 78、warn 214、err 203、muted 245。16 色降级用 cyan/green/yellow/red/brblack/white。状态栏底纹只比正文深一档，避免“两个界面”的割裂感。
+  </div>
+
+  <h2>7 · 审批按钮的焦点与降级</h2>
+  <div class="note">
+    <ul>
+      <li><b>三个按钮固定顺序</b>：批准一次 / 本会话内都批准 / 拒绝。默认焦点在「批准一次」，按 <code>tab</code> 顺序前移、<code>shift+tab</code> 后退、<code>←→</code> 同效，<code>enter</code> 执行当前焦点。</li>
+      <li><b>快捷键不废</b>：<code>y</code> / <code>a</code> / <code>n</code> 仍然直达对应动作，老习惯不用改；按钮上标出各自字母，一眼能对上。</li>
+      <li><b>拒绝键用 err 色</b>：焦点落在「拒绝」时边框与底色切成红色系，避免连按 <code>tab</code> 时手滑确认了拒绝。</li>
+      <li><b>无颜色降级</b>：<code>NO_COLOR</code> 或 16 色终端下，焦点用前后的 <code>▸ … ◂</code> 包裹 + 反显表示；按钮之间用两个空格分隔，仍然分得清三个槽。</li>
+      <li><b>逐块模式</b>：按 <code>v</code> 进入勾选后，底部按钮变成「应用选中块」/「取消」两个，<code>tab</code> 语义不变。</li>
+      <li><b>esc 不裁决</b>：只收起卡片回到对话视图（状态栏仍显示「等待审批」），避免误触把待办关掉；要拒绝请明确选「拒绝」或按 <code>n</code>。</li>
+    </ul>
+  </div>
+
+  <h2>8 · 落地顺序</h2>
+  <div class="note">
+    <ol>
+      <li><b>P0 骨架</b>：<code>internal/tui/style.go</code>（SGR token、NO_COLOR、显示宽度、截断）+ <code>View()</code> 重排为「内容 / 输入 / 状态栏 / 提示」四段，横线按视口宽。</li>
+      <li><b>P1 对话区</b>：gutter、工具调用折叠/展开、diff 整行着色、流式光标。</li>
+      <li><b>P2 状态栏</b>：窄屏折叠规则、上下文提示、<code>?</code> 键位面板、空状态与断线态。</li>
+      <li><b>P3 全屏模式</b>：<code>View.AltScreen</code> + 内部滚动（pgup/pgdn/滚轮）+ <code>ctrl+f</code> 切换。</li>
+      <li><b>P4 面板统一</b>：审批/队列/模型/技能/MCP 共用一套卡片渲染。</li>
+      <li><b>P5 回归</b>：60 / 80 / 120 列 golden 快照测试。</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

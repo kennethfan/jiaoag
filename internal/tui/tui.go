@@ -40,6 +40,11 @@ type Options struct {
 	InsecureTLS bool
 	// Roots 是要挂到新会话上的只读附加根（ADR-0036）。
 	Roots []protocol.SessionRootPayload
+	// Inline 关掉全屏：默认占满窗口、内容超出后自己滚（alt screen）；
+	// 内联模式保留终端 scrollback，但状态栏会被历史推着走。
+	Inline bool
+	// Mouse 打开鼠标滚轮滚动（会占用终端原生选中，需要 shift 才复制）。
+	Mouse bool
 }
 
 type (
@@ -103,6 +108,21 @@ type Model struct {
 	input    string
 	maxLines int
 
+	// width/height 是当前终端尺寸（WindowSizeMsg 更新）。宽度决定折行，
+	// 高度只在全屏时用来裁剪内容区：内联模式保留 scrollback，不该裁。
+	width int
+	// scroll 是全屏模式下从底部往回翻的行数；unseen 是翻页期间新增的行数。
+	scroll int
+	unseen int
+	// mouse 决定是否向终端申请鼠标事件（只为滚轮）。
+	mouse  bool
+	height int
+	// help 打开键位面板；fullscreen 决定是否用 alternate screen（状态栏
+	// 才会真正钉在终端底行）。两者都只是本地视图状态，不落库。
+	help       bool
+	fullscreen bool
+	styler     styler
+
 	// approval 非空表示有一个等裁决的变更提案：此时输入行让位给 diff 面板，
 	// 除翻页与 y/a/n 之外的按键一律忽略，避免用户一边审 diff 一边打字。
 	approval *approvalView
@@ -136,6 +156,12 @@ type approvalView struct {
 	selectMode bool
 	hunkSel    []bool
 	hunkCursor int
+	// collapsed 表示卡片被 esc 收起：审批仍然待处理，只是不占屏。
+	// 状态栏照旧显示「等待审批」，再按 esc 展开。
+	collapsed bool
+	// focus 是三个按钮里当前获得焦点的那一个（0 批准一次 / 1 本会话 / 2 拒绝）。
+	// tab 与 ←→ 改变它，enter 执行；y/a/n 仍然直达，不需要先移焦点。
+	focus int
 }
 
 // 审批面板一次显示多少行 diff。
@@ -168,10 +194,15 @@ func New(opts Options) *Model {
 		}
 	}
 	return &Model{
-		opts:      opts,
-		status:    "连接中…",
-		maxLines:  500,
-		sessionID: opts.SessionID,
+		opts:       opts,
+		status:     "连接中…",
+		maxLines:   500,
+		width:      100,
+		height:     30,
+		fullscreen: !opts.Inline,
+		mouse:      opts.Mouse,
+		styler:     newStyler(),
+		sessionID:  opts.SessionID,
 	}
 }
 
@@ -452,6 +483,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendLine("连接断开：" + errText(msg.err))
 		return m, nil
 
+	case tea.MouseWheelMsg:
+		if !m.fullscreen {
+			return m, nil
+		}
+		n := 3
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.scroll += n
+		case tea.MouseWheelDown:
+			m.scroll -= n
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+		default:
+			return m, nil
+		}
+		if m.scroll == 0 {
+			m.unseen = 0
+		}
+		return m, nil
+	case tea.WindowSizeMsg:
+		if msg.Width > 0 {
+			m.width = msg.Width
+		}
+		if msg.Height > 0 {
+			m.height = msg.Height
+		}
+		return m, nil
+
 	case connectErrMsg:
 		m.status = "连接失败（ctrl+r 重试 / ctrl+c 退出）"
 		m.appendLine(errText(msg.err))
@@ -466,6 +526,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key == "ctrl+c" {
 		m.close()
 		return m, tea.Quit
+	}
+	// ctrl+f 切全屏：全屏时状态栏才真正钉在终端底行，代价是退出后没有
+	// scrollback。属于显示偏好，任何面板打开时都可以切。
+	if key == "ctrl+f" {
+		m.fullscreen = !m.fullscreen
+		return m, nil
 	}
 	// ctrl+x 只终止本机命令：它是用户自己敲的，随时可以叫停，不该被
 	// 审批面板或会话状态挡住。
@@ -492,7 +558,50 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.mcpPanel != nil {
 		return m.handleMCPKey(key)
 	}
+	if m.help {
+		// 帮助是覆盖层：除了 ctrl+c / ctrl+f 与关闭键，其余按键都不该穿透。
+		switch key {
+		case "?", "esc":
+			m.help = false
+		}
+		return m, nil
+	}
 	switch key {
+	case "pgup", "pgdown", "ctrl+u", "ctrl+d", "home", "end":
+		// 只有全屏才需要自己滚：内联模式交给终端 scrollback。
+		if !m.fullscreen {
+			return m, nil
+		}
+		page := m.height - 8
+		if page < 5 {
+			page = 5
+		}
+		switch key {
+		case "pgup":
+			m.scroll += page
+		case "pgdown":
+			m.scroll -= page
+		case "ctrl+u":
+			m.scroll += page / 2
+		case "ctrl+d":
+			m.scroll -= page / 2
+		case "home":
+			// 回到最早的一屏：scroll 会被 View 夹到内容长度。
+			m.scroll = len(m.dialog)
+		case "end":
+			m.scroll = 0
+			m.unseen = 0
+		}
+		if m.scroll < 0 {
+			m.scroll = 0
+		}
+		if m.scroll == 0 {
+			m.unseen = 0
+		}
+		return m, nil
+	case "?":
+		m.help = true
+		return m, nil
 	case "ctrl+q":
 		if len(m.queue) == 0 {
 			m.appendLine("队列为空：当前没有排队任务")
@@ -1005,60 +1114,522 @@ func (m *Model) showApprovalRequest(a domain.ApprovalRequestedPayload, announce 
 }
 
 func (m *Model) View() tea.View {
-	var b strings.Builder
-	fmt.Fprintf(&b, "jiaoag %s  %s\n", version.Version, m.status)
-	fmt.Fprintf(&b, "任务 %s · 状态 %s · 第 %d 轮 · token %d", shortID(m.taskID), orDash(m.taskStatus), m.round, m.tokens)
-	if n := len(m.queue); n > 0 {
-		fmt.Fprintf(&b, " · 排队 %d", n)
+	width := m.width
+	if width <= 0 {
+		width = 100
 	}
-	if m.sessionModel != "" {
-		fmt.Fprintf(&b, " · %s", modelLabel(m.sessionProvider, m.sessionModel))
+	height := m.height
+	if height <= 0 {
+		height = 30
 	}
-	if len(m.forcedSkills) > 0 {
-		fmt.Fprintf(&b, " · 技能 %s", strings.Join(m.forcedSkills, ","))
-	}
-	if m.forcedModel != "" {
-		fmt.Fprintf(&b, " · 下一条 %s", m.forcedModel)
-	}
-	b.WriteByte('\n')
-	b.WriteString(strings.Repeat("─", 72))
-	b.WriteByte('\n')
-	b.WriteString(strings.Join(m.dialog, "\n"))
 
-	if m.stream != "" {
-		b.WriteString("\njiaoag: ")
-		b.WriteString(m.stream)
-		b.WriteByte('\n')
-	}
-	switch {
-	case m.approval != nil:
-		b.WriteByte('\n')
-		b.WriteString(m.renderApprovalPanel())
-	case m.queuePanel != nil:
-		b.WriteByte('\n')
-		b.WriteString(m.renderQueuePanel())
-	case m.modelPanel != nil:
-		b.WriteByte('\n')
-		b.WriteString(m.renderModelPanel())
-	case m.skillPanel != nil:
-		b.WriteByte('\n')
-		b.WriteString(m.renderSkillPanel())
-	case m.mcpPanel != nil:
-		b.WriteByte('\n')
-		b.WriteString(m.renderMCPPanel())
-	case m.sessionID != "":
-		b.WriteString("\n› ")
-		b.WriteString(m.input)
-		b.WriteString("▏\n")
-	}
-	if m.approval == nil && m.queuePanel == nil && m.modelPanel == nil && m.skillPanel == nil && m.mcpPanel == nil {
-		if m.local != nil {
-			b.WriteString("[enter] 发送  [ctrl+x] 终止本机命令  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [ctrl+c] 退出\n")
-		} else {
-			b.WriteString("[enter] 发送  [esc] 取消/退出  [ctrl+q] 队列  [ctrl+r] 重连  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [!] 本机命令  [ctrl+c] 退出\n")
+	// 一、内容：历史 + 正在流式的段落。样式只在渲染时施加，
+	// m.dialog 里始终是纯文本，回放与测试都不受颜色影响。
+	content := make([]string, 0, len(m.dialog)+1)
+	for _, line := range m.dialog {
+		// 一条历史里可能夹着换行（工具输出、面板摘要）。先拆开，否则下面
+		// 按「条目数」算高度会低估实际占用的行数，底部区就被推出屏幕。
+		for _, part := range strings.Split(line, "\n") {
+			content = append(content, m.styler.stylizeLine(part))
 		}
 	}
-	return tea.NewView(b.String())
+	if m.stream != "" {
+		// 流式文本里带换行是常态：按行拆开，首行带角色前缀，续行缩进两格。
+		// 只有这样，光标（▏）才会落在真正最后一行的末尾。
+		parts := strings.Split(m.stream, "\n")
+		for i, part := range parts {
+			var line string
+			if i == 0 {
+				line = m.styler.paint(styleStrong, "jiaoag") + m.styler.paint(styleMuted, ": ") + part
+			} else {
+				line = "  " + part
+			}
+			if i == len(parts)-1 && m.cancelable() {
+				line += m.styler.paint(styleAccent, "▏")
+			}
+			content = append(content, line)
+		}
+	}
+
+	// 二、模态区：审批 / 各面板 / ? 帮助。它们占住输入位置，
+	// 因为此刻按键语义已经不属于「输入文本」。
+	modal := true
+	var modalText string
+	switch {
+	case m.approval != nil && !m.approval.collapsed:
+		modalText = m.renderApprovalPanel()
+	case m.queuePanel != nil:
+		modalText = m.renderQueuePanel()
+	case m.modelPanel != nil:
+		modalText = m.renderModelPanel()
+	case m.skillPanel != nil:
+		modalText = m.renderSkillPanel()
+	case m.mcpPanel != nil:
+		modalText = m.renderMCPPanel()
+	case m.help:
+		modalText = m.renderHelpPanel()
+	default:
+		modal = false
+	}
+	var modalLines []string
+	if modalText != "" {
+		modalLines = strings.Split(strings.TrimRight(modalText, "\n"), "\n")
+	}
+	// 所有行都先折成视觉行：面板底栏、输入行也可能比屏幕宽，终端一折行，
+	// 整帧就比终端高一行，alt screen 会因此产生滚动backlog——用户往上滚
+	// 就会看到旧帧。折行后再统一按视觉行数排版。
+	wrapAll := func(lines []string) []string {
+		out := make([]string, 0, len(lines))
+		for _, line := range lines {
+			// 一条内容里可能还夹着换行——最典型的是流式输出：模型一个 delta
+			// 里带 \n 很常见，拼进 m.stream 之后就是一行里藏着断行。不先拆开，
+			// 终端会按真实换行渲染出更多行，帧高就比预期多一些，底部区被顶走。
+			for _, seg := range strings.Split(line, "\n") {
+				out = append(out, wrapStyled(seg, width)...)
+			}
+		}
+		return out
+	}
+
+	// 三、底部固定区：分隔线 + 输入行 + 状态栏。
+	//
+	// 输入行紧贴状态栏（编辑器与 IM 客户端的惯例）：最后一行永远是状态，
+	// 输入就在它上面一行，中间不再夹分隔线。键位提示并进状态栏右侧，
+	// 面板打开时由面板自己的底栏负责，不重复占一行。
+	// 底部区固定三行：分隔线、输入行、状态栏。输入行即使没有会话或面板
+	// 打开时也照样占位（换成灰色说明），这样底部高度不随状态变化，内容区
+	// 的可见行数也就稳定。
+	dock := make([]string, 0, dockRows)
+	dock = append(dock, m.styler.paint(styleMuted, strings.Repeat("-", width)))
+	dock = append(dock, m.renderInputRow(width, modal))
+	dock = append(dock, strings.Split(strings.TrimRight(m.renderStatusBar(width, !modal), "\n"), "\n")...)
+	dock = wrapAll(dock)
+	modalLines = wrapAll(modalLines)
+
+	// 四、全屏时按终端高度裁剪内容区：状态栏与输入必须真的贴底，
+	// 而不是被一堆历史行推到屏幕外。内联模式不裁——那正是它保留
+	// scrollback 的意义。
+	if m.fullscreen {
+		// 模态区前面会补一个空行，算预算时要一起扣掉，否则底部会整体上移一行。
+		extra := 0
+		if len(modalLines) > 0 {
+			extra = 1
+		}
+		avail := height - len(dock) - len(modalLines) - extra
+		if avail < 1 {
+			avail = 1
+		}
+		// 终端会按显示宽度折行：一行 200 字在实际屏幕上是两三行。只按条目数
+		// 裁剪会低估高度，底部区就被挤出屏幕——先把内容摊成视觉行，再按行开窗。
+		rows := wrapAll(content)
+		maxScroll := len(rows) - avail
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.scroll > maxScroll {
+			m.scroll = maxScroll
+		}
+		end := len(rows) - m.scroll
+		start := end - avail
+		if start < 0 {
+			start = 0
+		}
+		rows = rows[start:end]
+		if start > 0 {
+			rows[0] = m.styler.paint(styleMuted, fmt.Sprintf("… 上方还有 %d 行（pgup/pgdn 翻）", start))
+		}
+		for len(rows) < avail {
+			rows = append(rows, "")
+		}
+		content = rows
+	}
+
+	// 最终组装。极端窄屏或超长输入会让底部区自己就超过一屏：这时只能
+	// 从顶部裁，保证状态栏永远在最后一行——它被挤掉就等于失去了唯一的
+	// 状态读数。
+	out := make([]string, 0, len(content)+len(modalLines)+len(dock)+1)
+	out = append(out, content...)
+	if len(modalLines) > 0 {
+		out = append(out, "")
+		out = append(out, modalLines...)
+	}
+	out = append(out, dock...)
+	if m.fullscreen && height > 0 && len(out) > height {
+		out = out[len(out)-height:]
+	}
+
+	// 全屏模式下末尾不能再跟一个换行：渲染器按整个屏幕画帧，多出的空行
+	// 会让帧高变成 height+1，终端于是滚动一行，最后一行（状态栏）与它上面
+	// 的输入框会在滚动的那一瞬间被顶出屏幕——表现为「闪一下不见了」。
+	text := strings.Join(out, "\n")
+	if !m.fullscreen {
+		text += "\n"
+	}
+
+	view := tea.NewView(text)
+	view.AltScreen = m.fullscreen
+	if m.mouse && m.fullscreen {
+		view.MouseMode = tea.MouseModeCellMotion
+	}
+	return view
+}
+
+// renderStatusBar 是底部状态栏：左边是「在哪、在干什么」，右边是「用的是什么模型、花了多少 token」。
+//
+// 放底部是终端应用的惯例（vim、tmux、htop）：视线从内容往下扫就能确认状态，
+// 顶部第一行留给内容本身。
+// dockRows 是底部固定区的高度：分隔线 + 输入行 + 状态栏。
+const dockRows = 3
+
+// renderInputRow 永远返回一行的输入行。没有会话、或面板打开时用灰色说明
+// 占位，保证底部区高度恒定——布局不随输出或状态跳变。
+func (m *Model) renderInputRow(width int, modal bool) string {
+	s := m.styler
+	prefix := s.paint(styleAccent, "› ")
+	room := width - displayWidth("› ") - 1
+	if room < 4 {
+		room = 4
+	}
+	var text string
+	switch {
+	case modal:
+		return s.paint(styleMuted, "› ") + s.paint(styleMuted, "面板打开中，esc 返回")
+	case m.sessionID == "":
+		return s.paint(styleMuted, "› ") + s.paint(styleMuted, "等待会话…")
+	default:
+		text = m.input
+	}
+	if displayWidth(text) > room {
+		text = "…" + tailDisplay(text, room-1)
+	}
+	line := prefix + text + s.paint(styleAccent, "▏")
+	if displayWidth(line) > width {
+		line = truncateDisplay(line, width)
+	}
+	return line
+}
+
+func (m *Model) renderStatusBar(width int, withHints bool) string {
+	s := m.styler
+	// 左侧每项带一个“可丢弃”等级：放不下时先丢等级高的，而不是把模型名
+	// 这类最关键的信息先砍掉。
+	type segment struct {
+		text string
+		drop int
+	}
+	var left []segment
+	var right []string
+
+	conn := m.conn != nil
+	if conn {
+		left = append(left, segment{s.paint(styleOK, "●") + " " + s.paint(styleMuted, "已连接"), 0})
+	} else {
+		left = append(left, segment{s.paint(styleErr, "●") + " " + s.paint(styleMuted, "未连接"), 0})
+	}
+	if dir := m.abbrevWorkspace(); dir != "" {
+		left = append(left, segment{s.paint(styleStrong, "⌂ "+dir), 1})
+	}
+	left = append(left, segment{m.statusChip(), 0})
+	if m.taskID != "" {
+		left = append(left, segment{s.paint(styleMuted, shortID(m.taskID)), 3})
+	}
+	if m.round > 0 {
+		left = append(left, segment{s.paint(styleMuted, fmt.Sprintf("第 %d 轮", m.round)), 4})
+	}
+	if n := len(m.queue); n > 0 {
+		left = append(left, segment{s.paint(styleWarn, fmt.Sprintf("排队 %d", n)), 2})
+	}
+	if m.forcedModel != "" {
+		left = append(left, segment{s.paint(styleWarn, "下一条 "+m.forcedModel), 3})
+	}
+	if len(m.forcedSkills) > 0 {
+		left = append(left, segment{s.paint(styleMuted, "技能 "+strings.Join(m.forcedSkills, ",")), 5})
+	}
+	// 翻页状态：只在上翻时出现。有新输出时给一个「↓ N 新行」，
+	// 相当于聊天应用里那个回到最新的提示。
+	if m.scroll > 0 {
+		left = append(left, segment{s.paint(styleWarn, fmt.Sprintf("↕ 上翻 %d 行", m.scroll)), 2})
+	}
+	if m.unseen > 0 {
+		left = append(left, segment{s.paint(styleAccent, fmt.Sprintf("↓ %d 新行 · end 回底", m.unseen)), 1})
+	}
+
+	if m.sessionModel != "" {
+		right = append(right, s.paint(styleAccent, modelLabel(m.sessionProvider, m.sessionModel)))
+	}
+	if m.tokens > 0 {
+		right = append(right, s.paint(styleMuted, humanTokens(m.tokens)+" tok"))
+	}
+
+	joinLeft := func(segs []segment) string {
+		parts := make([]string, 0, len(segs))
+		for _, seg := range segs {
+			parts = append(parts, seg.text)
+		}
+		return strings.Join(parts, "  ")
+	}
+	// 右侧是「模型 + token」，都比左边那些计数更重要：先按等级丢左侧项去
+	// 腾位置，实在放不下才逐项丢右侧。
+	fullRight := strings.Join(right, "  ")
+	for displayWidth(joinLeft(left))+displayWidth(fullRight)+2 > width && len(left) > 3 {
+		worst := 1
+		for i, seg := range left {
+			if seg.drop > left[worst].drop {
+				worst = i
+			}
+		}
+		left = append(left[:worst], left[worst+1:]...)
+	}
+	var keptRight []string
+	for i := len(right) - 1; i >= 0; i-- {
+		candidate := append([]string{right[i]}, keptRight...)
+		if displayWidth(joinLeft(left))+displayWidth(strings.Join(candidate, "  "))+2 > width {
+			continue
+		}
+		keptRight = candidate
+	}
+	rightLine := strings.Join(keptRight, "  ")
+	for displayWidth(joinLeft(left))+displayWidth(rightLine)+2 > width && len(left) > 3 {
+		worst := 1
+		for i, seg := range left {
+			if seg.drop > left[worst].drop {
+				worst = i
+			}
+		}
+		left = append(left[:worst], left[worst+1:]...)
+	}
+	leftLine := joinLeft(left)
+	if displayWidth(leftLine) > width {
+		leftLine = truncateDisplay(leftLine, width)
+	}
+	gap := width - displayWidth(leftLine) - displayWidth(rightLine)
+	if gap < 1 {
+		gap = 1
+	}
+	line := leftLine + strings.Repeat(" ", gap) + rightLine
+	// 键位提示填在左块与右块之间的空隙里，紧挨着右侧。它是最先被牺牲的
+	// 信息：放不下就按项截断，一项都放不下就整段省略——绝不挤掉模型与用量。
+	if withHints {
+		if hint := m.fitHints(gap - 2); hint != "" {
+			// 提示必须连同最小间隔一起塞得进去，否则宁可整段不要：状态栏
+			// 多出一个字符就会被终端折成两行，整帧高度对不上，alt screen
+			// 跟着滚，底部固定区就保不住了。
+			if pad := gap - displayWidth(hint); pad >= 3 {
+				line = leftLine + strings.Repeat(" ", pad) + hint + rightLine
+			}
+		}
+	}
+	if displayWidth(line) > width {
+		line = truncateDisplay(line, width)
+	}
+	return line + "\n"
+}
+
+// statusChip 把任务状态翻成一个色块。状态词与事件里的英文值分开：
+// 界面说中文，日志与审计说英文，两边都能查。
+func (m *Model) statusChip() string {
+	s := m.styler
+	// 审批面板存在时状态就是「等裁决」：任务可能已被服务端标成
+	// waiting_approval，但本地拿到事件之前也不该显示成运行中。
+	if m.approval != nil {
+		return s.paint(styleWarn, "[等待审批]")
+	}
+	switch m.taskStatus {
+	case string(domain.TaskRunning):
+		return s.paint(styleAccent, "[运行中]")
+	case string(domain.TaskWaitingApproval):
+		return s.paint(styleWarn, "[等待审批]")
+	case string(domain.TaskQueued):
+		return s.paint(styleWarn, "[排队中]")
+	case string(domain.TaskCompleted):
+		return s.paint(styleOK, "[已完成]")
+	case string(domain.TaskFailed):
+		return s.paint(styleErr, "[失败]")
+	case string(domain.TaskCanceled):
+		return s.paint(styleMuted, "[已取消]")
+	}
+	return s.paint(styleMuted, "[空闲]")
+}
+
+// fitHints 按项往给定宽度里塞键位提示：整项放不下就停，不切断某一项
+// （半截的「enter 发」比没有更让人困惑）。
+func (m *Model) fitHints(max int) string {
+	if max <= 0 {
+		return ""
+	}
+	sep := m.styler.paint(styleMuted, " · ")
+	var kept []string
+	for _, part := range m.hintParts(0) {
+		candidate := part
+		if len(kept) > 0 {
+			candidate = strings.Join(kept, sep) + sep + part
+		}
+		if displayWidth(candidate) > max {
+			break
+		}
+		kept = append(kept, part)
+	}
+	if len(kept) < 2 {
+		return ""
+	}
+	return strings.Join(kept, sep)
+}
+
+// hintParts 是当前状态下的键位提示项，按重要性从高到低排列。
+// 面板打开时显示面板的键，审批时显示裁决的键。
+func (m *Model) hintParts(width int) []string {
+	s := m.styler
+	k := func(key, label string) string { return s.paint(styleAccent, key) + " " + label }
+
+	var parts []string
+	switch {
+	case m.approval != nil && m.approval.collapsed:
+		parts = []string{k("esc", "展开待审批"), k("y/a/n", "直选"), k("?", "键位")}
+	case m.approval != nil:
+		if m.approval.selectMode {
+			parts = []string{k("space", "勾选"), k("→←/jk", "换块"), k("y", "应用选中"), k("esc", "返回")}
+		} else {
+			parts = []string{k("tab", "切换按钮"), k("enter", "确认"), k("y/a/n", "直选"), k("v", "逐块")}
+		}
+	case m.queuePanel != nil:
+		parts = []string{k("↑↓", "选择"), k("d", "取消任务"), k("esc", "关闭")}
+	case m.modelPanel != nil:
+		parts = []string{k("↑↓", "选择"), k("enter", "应用"), k("esc", "关闭")}
+	case m.skillPanel != nil:
+		parts = []string{k("↑↓", "选择"), k("enter", "指定"), k("x", "清除"), k("esc", "关闭")}
+	case m.mcpPanel != nil:
+		parts = []string{k("↑↓", "选择"), k("esc", "关闭")}
+	case m.help:
+		parts = []string{k("esc", "关闭")}
+	case m.local != nil:
+		parts = []string{k("ctrl+x", "终止本机命令"), k("?", "键位"), k("ctrl+c", "退出")}
+	default:
+		parts = []string{k("enter", "发送"), k("esc", "取消"), k("?", "键位"), k("ctrl+q", "队列")}
+		if width >= 90 {
+			parts = append(parts, k("/models", "会话模型"), k("/model", "单次模型"), k("/skill", "技能"))
+		}
+	}
+	return parts
+}
+
+// renderHelpPanel 是 ? 面板：版本、会话、完整键位、当前策略都收在这里，
+// 不占常驻行。
+func (m *Model) renderHelpPanel() string {
+	s := m.styler
+	var b strings.Builder
+	b.WriteString(s.paint(styleAccent, "⌨ 键位与状态") + s.paint(styleMuted, fmt.Sprintf("  jiaoag %s", version.Version)) + "\n")
+	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)) + "\n")
+	rows := [][2]string{
+		{"enter", "提交任务 / 确认面板动作"},
+		{"esc", "取消运行中的任务 / 关闭面板 / 退出"},
+		{"?", "打开或关闭这个面板"},
+		{"ctrl+q", "队列面板"},
+		{"ctrl+r", "重连"},
+		{"ctrl+f", "切换全屏 / 内联（默认全屏，状态栏钉底）"},
+		{"pgup/pgdn", "全屏下翻页"},
+		{"ctrl+u/d", "全屏下半页翻"},
+		{"home/end", "跳到最早 / 回到最新"},
+		{"ctrl+x", "终止正在跑的 !本机命令"},
+		{"/models", "切换会话模型"},
+		{"/model", "只给下一条任务指定模型"},
+		{"/skill", "指定下一条任务加载的技能"},
+		{"/mcp", "MCP server 与工具数"},
+		{"/roots", "会话挂载的附加根"},
+		{"!cmd", "在本机执行命令（不进模型、不审计）"},
+		{"v", "审批时逐块选择"},
+		{"tab", "审批时切换三个按钮"},
+		{"ctrl+c", "退出"},
+	}
+	for _, row := range rows {
+		fmt.Fprintf(&b, "%s%s\n", padDisplay(s.paint(styleAccent, row[0]), 10), s.paint(stylePlain, row[1]))
+	}
+	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)) + "\n")
+	info := []string{}
+	if m.sessionID != "" {
+		info = append(info, "会话 "+m.sessionID)
+	}
+	if m.opts.Workspace != "" {
+		info = append(info, "工作区 "+m.opts.Workspace)
+	}
+	for _, r := range m.opts.Roots {
+		info = append(info, "附加根 "+r.Alias+"="+r.Path)
+	}
+	for _, line := range info {
+		b.WriteString(s.paint(styleMuted, line) + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// abbrevWorkspace 把工作区路径缩成 ~/... 形式。状态栏宽度有限，
+// 而仓库名在最右边——保留尾部比保留开头更有用。
+func (m *Model) abbrevWorkspace() string {
+	path := m.opts.Workspace
+	if path == "" {
+		return ""
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" && strings.HasPrefix(path, home) {
+		path = "~" + strings.TrimPrefix(path, home)
+	}
+	if displayWidth(path) <= 28 {
+		return path
+	}
+	return truncateMiddle(path, 28)
+}
+
+// humanTokens 把 token 数缩成 1.2k 形式：状态栏只需要量级，精确值在审计里。
+func humanTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// truncateMiddle 保留首尾、砍中间：路径里最重要的是开头（~ 还是绝对路径）
+// 与结尾（仓库名）。
+func truncateMiddle(s string, width int) string {
+	if displayWidth(s) <= width || width < 8 {
+		return truncateDisplay(s, width)
+	}
+	left := width / 2
+	right := width - left - 1
+	return headDisplay(s, left) + "…" + tailDisplay(s, right)
+}
+
+// headDisplay 按显示宽度取头部（不加省略号）。
+func headDisplay(s string, width int) string {
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		w := runeWidth(r)
+		if used+w > width {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String()
+}
+
+// tailDisplay 按显示宽度取尾部。
+func tailDisplay(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	used := 0
+	i := len(runes)
+	for i > 0 {
+		w := runeWidth(runes[i-1])
+		if used+w > width {
+			break
+		}
+		used += w
+		i--
+	}
+	return string(runes[i:])
 }
 
 // resetView 清空本地会话视图，只保留 sessionID。
@@ -1097,6 +1668,15 @@ func (m *Model) handleApprovalKey(key string) (tea.Model, tea.Cmd) {
 	}
 	total := len(strings.Split(strings.TrimRight(v.diff, "\n"), "\n"))
 	switch key {
+	case "esc":
+		// 收起而非关闭：审批还在，只是让出屏幕；再按 esc 展开。
+		v.collapsed = !v.collapsed
+	case "tab", "right", "l":
+		v.focus = (v.focus + 1) % 3
+	case "shift+tab", "left", "h":
+		v.focus = (v.focus + 2) % 3
+	case "enter":
+		return m.resolveApproval(approvalDecision(v.focus))
 	case "v":
 		// 逐块审批：只对多块 diff 开放，单块时全量面板已经够清楚。
 		if len(v.hunks) > 1 {
@@ -1125,12 +1705,12 @@ func (m *Model) handleApprovalKey(key string) (tea.Model, tea.Cmd) {
 			v.offset++
 		}
 	case "pgup":
-		v.offset -= diffPageStep
+		v.offset -= m.diffRows() - 2
 		if v.offset < 0 {
 			v.offset = 0
 		}
 	case "pgdown":
-		v.offset += diffPageStep
+		v.offset += m.diffRows() - 2
 		if v.offset > total-1 {
 			v.offset = total - 1
 		}
@@ -1188,6 +1768,75 @@ func renderDiff(diff string, offset, height int) (lines []string, hasMore bool) 
 	return all[offset:end], end < len(all)
 }
 
+// renderPanelHint 把一行键位提示按面板宽度折行输出（带换行）。
+//
+// 提示里混了中文与 ASCII：必须按显示宽度折，不能按 rune 数。
+func (m *Model) renderPanelHint(text string) string {
+	var b strings.Builder
+	for i, line := range wrapDisplay(text, panelWidth) {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(m.styler.paint(styleMuted, line))
+	}
+	return b.String()
+}
+
+// diffRows 是审批面板一次展示多少行 diff：默认 18，终端矮时跟着缩，
+// 否则卡片会顶掉输入行与状态栏。
+func (m *Model) diffRows() int {
+	h := m.height
+	if h <= 0 {
+		return diffPanelHeight
+	}
+	rows := h - 14
+	if rows < 6 {
+		rows = 6
+	}
+	if rows > diffPanelHeight {
+		rows = diffPanelHeight
+	}
+	return rows
+}
+
+// approvalDecision 把按钮焦点翻成裁决。抽成纯函数是为了让「第几个按钮」
+// 与「发什么决定」的映射能被直接测试，而不必真的连上服务端。
+func approvalDecision(focus int) domain.Decision {
+	switch focus {
+	case 1:
+		return domain.DecisionAllowSession
+	case 2:
+		return domain.DecisionDeny
+	}
+	return domain.DecisionAllowOnce
+}
+
+// renderApprovalButtons 画出三个按钮，焦点用 ▸ ◂ 包住。
+//
+// 为什么不是单选高亮块：终端里背景色不可靠（配色方案、无背景终端、屏幕
+// 阅读器），用可见的括选符号能把焦点表达在所有降级环境里。y/a/n 直选仍然
+// 有效，所以按钮上保留字母，老习惯不用改。
+func (m *Model) renderApprovalButtons(v *approvalView) string {
+	s := m.styler
+	buttons := []struct {
+		label string
+		kind  style
+	}{
+		{"[y] 批准一次", styleAccent},
+		{"[a] 本会话内都批准", styleAccent},
+		{"[n] 拒绝", styleErr},
+	}
+	parts := make([]string, 0, len(buttons))
+	for i, btn := range buttons {
+		if i == v.focus {
+			parts = append(parts, s.paint(styleStrong, "▸")+s.paint(btn.kind, btn.label)+s.paint(styleStrong, "◂"))
+			continue
+		}
+		parts = append(parts, s.paint(styleMuted, btn.label))
+	}
+	return strings.Join(parts, "   ")
+}
+
 // renderApprovalPanel 按审批类型渲染 diff 面板或命令面板。
 func (m *Model) renderApprovalPanel() string {
 	v := m.approval
@@ -1200,19 +1849,21 @@ func (m *Model) renderApprovalPanel() string {
 	if v.selectMode {
 		return m.renderHunkSelectPanel()
 	}
+	s := m.styler
 	var b strings.Builder
 	// 截断时 +N −M 只是前 256 KB 的统计，必须写在脸上。
 	suffix := ""
 	if v.truncated {
 		suffix = "，已截断"
 	}
-	fmt.Fprintf(&b, "✎ 待审批 %s（+%d −%d%s）\n", v.path, v.added, v.removed, suffix)
+	fmt.Fprintf(&b, "%s %s%s\n", s.paint(styleWarn, "✎ 待审批"), s.paint(styleStrong, v.path),
+		s.paint(styleMuted, fmt.Sprintf("（+%d −%d%s）", v.added, v.removed, suffix)))
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')
 
-	lines, hasMore := renderDiff(v.diff, v.offset, diffPanelHeight)
+	lines, hasMore := renderDiff(v.diff, v.offset, m.diffRows())
 	for _, line := range lines {
-		b.WriteString(line)
+		b.WriteString(s.stylizeDiffLine(line))
 		b.WriteByte('\n')
 	}
 	if hasMore {
@@ -1221,14 +1872,15 @@ func (m *Model) renderApprovalPanel() string {
 	if v.truncated {
 		b.WriteString("[diff 过长已截断，批准前请先用编辑器核对]\n")
 	}
-	b.WriteString(strings.Repeat("─", 72))
+	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)))
 	b.WriteByte('\n')
+	b.WriteString(m.renderApprovalButtons(v))
+	b.WriteByte('\n')
+	hint := "tab 切换 · enter 执行 · esc 收起 · ↑↓ 翻行 · [ctrl+r] 重连"
 	if len(v.hunks) > 1 {
-		b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝  [v] 逐块\n")
-	} else {
-		b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝\n")
+		hint += " · [v] 逐块"
 	}
-	b.WriteString("[↑↓] 翻行  [pgup/pgdn] 翻页  [ctrl+r] 重连  [ctrl+c] 退出\n")
+	b.WriteString(m.renderPanelHint(hint))
 	return b.String()
 }
 
@@ -1236,8 +1888,9 @@ func (m *Model) renderApprovalPanel() string {
 // 必须是「实际要跑的东西」，而不是一句「要不要执行命令」。
 func (m *Model) renderCommandPanel() string {
 	v := m.approval
+	s := m.styler
 	var b strings.Builder
-	b.WriteString("⌘ 待审批命令\n")
+	b.WriteString(s.paint(styleWarn, "⌘ 待审批命令") + "\n")
 	b.WriteString(strings.Repeat("─", panelWidth))
 	b.WriteByte('\n')
 	// 长 token（上限 4 KB）必须折行：审批面板是用户判断「这串到底是什么」的
@@ -1263,10 +1916,11 @@ func (m *Model) renderCommandPanel() string {
 	if v.reason != "" {
 		fmt.Fprintf(&b, "  判定      %s\n", v.reason)
 	}
-	b.WriteString(strings.Repeat("─", 72))
+	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)))
 	b.WriteByte('\n')
-	b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝\n")
-	b.WriteString("[ctrl+r] 重连  [ctrl+c] 退出\n")
+	b.WriteString(m.renderApprovalButtons(v))
+	b.WriteByte('\n')
+	b.WriteString(m.renderPanelHint("tab 切换 · enter 执行 · esc 收起 · [ctrl+r] 重连 · ctrl+c 退出"))
 	return b.String()
 }
 
@@ -1274,8 +1928,9 @@ func (m *Model) renderCommandPanel() string {
 // 只有「哪个来源的哪个工具、要带什么参数」——这三项必须完整可读。
 func (m *Model) renderExternalPanel() string {
 	v := m.approval
+	s := m.styler
 	var b strings.Builder
-	b.WriteString("⇄ 待审批外部工具\n")
+	b.WriteString(s.paint(styleWarn, "⇄ 待审批外部工具") + "\n")
 	b.WriteString(strings.Repeat("─", panelWidth))
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "  tool      %s\n", orDash(v.tool))
@@ -1290,10 +1945,11 @@ func (m *Model) renderExternalPanel() string {
 	if v.reason != "" {
 		fmt.Fprintf(&b, "  判定      %s\n", wrapOne(v.reason, panelWidth-12))
 	}
-	b.WriteString(strings.Repeat("─", 72))
+	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)))
 	b.WriteByte('\n')
-	b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝\n")
-	b.WriteString("[ctrl+r] 重连  [ctrl+c] 退出\n")
+	b.WriteString(m.renderApprovalButtons(v))
+	b.WriteByte('\n')
+	b.WriteString(s.paint(styleMuted, "tab 切换焦点 · enter 执行 · esc 收起（不裁决） · ctrl+c 退出"))
 	return b.String()
 }
 
@@ -1386,6 +2042,13 @@ func (m *Model) close() {
 }
 
 func (m *Model) appendLine(line string) {
+	// 用户正在往上翻时不能把视图拽回底部：scroll 跟着内容一起加，
+	// 看到的还是原来那几行，只把「下面又来了几行」记进 unseen。
+	// 停在底部（scroll==0）时自然继续跟尾。
+	if m.scroll > 0 {
+		m.scroll++
+		m.unseen++
+	}
 	m.dialog = append(m.dialog, line)
 	if len(m.dialog) > m.maxLines {
 		m.dialog = m.dialog[len(m.dialog)-m.maxLines:]

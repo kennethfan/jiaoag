@@ -85,7 +85,7 @@ func TestLocalCommandOutputIsIndentedAndWrapped(t *testing.T) {
 		if !strings.HasPrefix(line, outputIndent) {
 			t.Fatalf("输出行应带缩进：%q", line)
 		}
-		if n := len([]rune(line)); n > panelWidth {
+		if n := displayWidth(line); n > panelWidth {
 			t.Fatalf("输出行超宽（%d）：%q", n, line)
 		}
 	}

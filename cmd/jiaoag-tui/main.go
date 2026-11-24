@@ -27,6 +27,8 @@ func main() {
 		noSpawn  = flag.Bool("no-spawn", false, "连不上时也不自动拉起本地服务端")
 		srvBin   = flag.String("server-bin", "", "jiaoag-server 路径（默认同目录或 PATH）")
 		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
+		inline   = flag.Bool("inline", false, "不用全屏：保留终端 scrollback，状态栏跟在内容末尾")
+		noMouse  = flag.Bool("no-mouse", false, "关闭鼠标滚轮（默认开启；开启时会占用终端原生选中，复制需按住 shift）")
 	)
 	var rootFlags rootList
 	flag.Var(&rootFlags, "root", "只读附加根，形如 alias=path；可重复（ADR-0036）")
@@ -60,7 +62,10 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	opts := tui.Options{URL: target, Token: token, SessionID: *sesID, InsecureTLS: *insecure, Roots: roots}
+	opts := tui.Options{
+		URL: target, Token: token, SessionID: *sesID, InsecureTLS: *insecure,
+		Roots: roots, Inline: *inline, Mouse: !*noMouse,
+	}
 
 	if *check {
 		runCheck(opts)

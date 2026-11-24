@@ -24,7 +24,7 @@ func TestCommandApprovalPanelWrapsLongArgv(t *testing.T) {
 
 	var joined strings.Builder
 	for _, line := range strings.Split(strings.TrimRight(panel, "\n"), "\n") {
-		if n := len([]rune(line)); n > panelWidth {
+		if n := displayWidth(line); n > panelWidth {
 			t.Fatalf("面板行 %d rune 超过宽度 %d：%q", n, panelWidth, line)
 		}
 		if strings.HasPrefix(line, "  ") {

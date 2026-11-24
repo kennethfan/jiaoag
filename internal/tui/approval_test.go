@@ -158,7 +158,7 @@ func TestApprovalKeysScroll(t *testing.T) {
 		t.Fatalf("上翻应夹在 0，实际 %d", m.approval.offset)
 	}
 	m.handleApprovalKey("pgdown")
-	if m.approval.offset != diffPageStep {
+	if m.approval.offset != m.diffRows()-2 {
 		t.Fatalf("pgdown 后 offset = %d", m.approval.offset)
 	}
 	m.handleApprovalKey("pgup")

@@ -82,6 +82,8 @@ server:
 ```bash
 ./bin/jiaoag-server            # 默认监听 127.0.0.1:8787；需要自动退出时加 -exit-when-idle=30s
 ./bin/jiaoag-tui   # [enter] 发送  [esc] 取消运行中任务/退出  [ctrl+q] 队列  [/models] 会话模型  [/model] 单次模型  [/skill] 技能  [/mcp] MCP  [/trust] 项目扩展  [!] 本机命令  [ctrl+r] 重连  [ctrl+c] 退出
+
+界面是「对话 / 面板 / 输入 / 状态栏」四段：默认占满窗口（alternate screen），状态栏钉在终端底行，显示连接状态、工作目录、任务状态、轮次、队列、模型与 token（键位提示也在这一行的右侧，输入行紧贴其上）；内容超出视口用 `pgup/pgdn`、`home/end` 滚动，翻页时状态栏提示未读行数。`?` 打开键位与版本面板，`ctrl+f` 在内联/全屏间切换，`-inline` 启动即用内联（保留 scrollback）、鼠标滚轮默认由程序接管（`-no-mouse` 交还终端）。审批卡片有三个按钮，`tab` 切换焦点、`enter` 执行，`y`/`a`/`n` 仍可直选。布局与配色见 `docs/tui.md`。
 ```
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
@@ -219,6 +221,7 @@ make demo-mcp
 | v2.23 | Webhook 通知：`notify.webhooks[]`，只推审批与任务终态，异步 + 3 次重试 + 可选 HMAC 签名（ADR-0035） | ✅ |
 | v2.24 | 多仓库只读附加根：`-root alias=path`，`read_file`/`grep`/`glob` 用 `alias:path` 访问，写入与命令仍限主根（ADR-0036） | ✅ |
 | v2.25 | 附加根可写：写入走同一套 diff/审批/CAS，`run_command root=` 切换 cwd，sandbox 可写范围扩到所有根（ADR-0037） | ✅ |
+| v2.26 | TUI 改版：状态栏置底（连接/工作目录/状态/轮次/队列/模型/token）、语义色与 `NO_COLOR` 降级、审批三按钮 + `tab` 焦点、`?` 键位面板、默认全屏 + 内部滚动（`-inline`/`-no-mouse`）（docs/tui.md） | ✅ |
 
 ## 安全边界
 
