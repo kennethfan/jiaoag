@@ -37,7 +37,11 @@ func main() {
 	if err := cfg.ValidateClient(); err != nil {
 		fatal(err)
 	}
-	token, err := cfg.Server.Token.Resolve()
+	secret, err := cfg.Server.ClientToken()
+	if err != nil {
+		fatal(err)
+	}
+	token, err := secret.Resolve()
 	if err != nil {
 		fatal(fmt.Errorf("解析 server.token 失败: %w", err))
 	}

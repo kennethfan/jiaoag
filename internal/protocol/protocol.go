@@ -58,7 +58,9 @@ const (
 
 // 错误码。
 const (
-	CodeUnauthorized     = "unauthorized"
+	CodeUnauthorized = "unauthorized"
+	// CodeForbidden 表示令牌有效但权限不够，例如只读令牌发起写命令。
+	CodeForbidden        = "forbidden"
 	CodeBadRequest       = "bad_request"
 	CodeProtocolMismatch = "protocol_mismatch"
 	CodeUnsupported      = "unsupported_type"

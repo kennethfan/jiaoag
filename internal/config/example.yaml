@@ -5,7 +5,17 @@ server:
   # 默认只监听回环地址。需要远程访问时改 listen 并配置下面的 TLS（wss）。
   listen: 127.0.0.1:8787
   # 单用户 token，支持三种写法：明文 / $ENV_NAME / file:/abs/path
+  # 多令牌与只读权限用下面的 tokens；两者可同时存在，token 等价于名为 default 的可写令牌。
   token: $JIAOAG_TOKEN
+  # 命名令牌：改完 kill -HUP <server pid> 即热重载，连接不中断；删掉一条再 HUP 就是吊销。
+  # read_only 只能订阅事件、拉审计、列会话、看模型与 MCP 状态，
+  # 不能提交任务、裁决审批、改会话或信任项目（见 docs/tokens.md）。
+  # tokens:
+  #   - name: ops
+  #     value: file:~/.config/jiaoag/token
+  #   - name: viewer
+  #     value: $JIAOAG_READONLY_TOKEN
+  #     read_only: true
   # 可选：同时配置证书与私钥即启用 TLS（wss）。只配一个会启动报错。
   # 自签证书可用 openssl 生成，连接时 TUI 加 -insecure（见 docs/tls.md）。
   # tls_cert: ~/.config/jiaoag/tls/cert.pem

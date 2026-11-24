@@ -59,7 +59,11 @@ func main() {
 		fatal(err)
 	}
 	if *token == "" {
-		resolved, err := cfg.Server.Token.Resolve()
+		secret, err := cfg.Server.ClientToken()
+		if err != nil {
+			fatal(err)
+		}
+		resolved, err := secret.Resolve()
 		if err != nil {
 			fatal(fmt.Errorf("解析 server.token 失败: %w", err))
 		}

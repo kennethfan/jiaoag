@@ -157,11 +157,49 @@ const (
 // Server 是监听与鉴权配置。
 type Server struct {
 	Listen string `yaml:"listen"`
-	Token  Secret `yaml:"token"`
+	// Token 是单个访问令牌，等同于 tokens 里一条名为 default 的可写令牌。
+	Token Secret `yaml:"token"`
+	// Tokens 是命名令牌列表。与 Token 可同时存在；只读令牌只能看，不能改。
+	Tokens []ServerToken `yaml:"tokens"`
 	// TLSCert / TLSKey 同时配置才启用 TLS（wss）。只配一个会报错，
 	// 避免出现「以为加密了、其实是明文」的部署。
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
+}
+
+// ServerToken 是一个命名访问令牌。
+//
+// ReadOnly 的令牌只能读：订阅事件、拉审计、列会话、查模型与 MCP 状态；
+// 提交任务、裁决审批、改会话、信任项目一律拒绝。导出工具该用它。
+type ServerToken struct {
+	Name  string `yaml:"name"`
+	Value Secret `yaml:"value"`
+	// ReadOnly 为 true 时禁止一切写操作。默认 false（与历史行为一致）。
+	ReadOnly bool `yaml:"read_only"`
+}
+
+// AllTokens 把 token 与 tokens 合并成一份列表：token 视作名为 default 的可写令牌。
+func (s Server) AllTokens() []ServerToken {
+	var out []ServerToken
+	if s.Token != "" {
+		out = append(out, ServerToken{Name: "default", Value: s.Token})
+	}
+	out = append(out, s.Tokens...)
+	return out
+}
+
+// ClientToken 返回客户端默认使用的令牌：优先 server.token，否则第一个可写令牌。
+// 只配置了只读令牌时返回错误——那台服务端不接受写操作，客户端拿它没有意义。
+func (s Server) ClientToken() (Secret, error) {
+	if s.Token != "" {
+		return s.Token, nil
+	}
+	for _, t := range s.Tokens {
+		if !t.ReadOnly {
+			return t.Value, nil
+		}
+	}
+	return "", errors.New("server.token 未配置，且 server.tokens 里没有可写令牌")
 }
 
 // TLSEnabled 报告是否配置了证书对。
@@ -642,7 +680,62 @@ func (c *Config) ValidateServer() error {
 }
 
 // ValidateClient 只校验客户端连接所需字段：客户端不需要 provider 的密钥。
-func (c *Config) ValidateClient() error { return c.validateCommon() }
+func (c *Config) ValidateClient() error {
+	if err := c.validateCommon(); err != nil {
+		return err
+	}
+	token, err := c.Server.ClientToken()
+	if err != nil {
+		return fmt.Errorf("server.token: %w", err)
+	}
+	if _, err := token.Resolve(); err != nil {
+		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)
+	}
+	return nil
+}
+
+// validateTokens 校验 token 与 tokens 的形状，并逐个解析取值。
+// 启动时的解析失败要立刻报错，否则服务端会带着一个永远认证不上的令牌起来。
+func (c *Config) validateTokens() error {
+	seen := make(map[string]bool, len(c.Server.Tokens)+1)
+	total := 0
+	if c.Server.Token != "" {
+		if _, err := c.Server.Token.Resolve(); err != nil {
+			return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)
+		}
+		seen["default"] = true
+		total++
+	}
+	for i, t := range c.Server.Tokens {
+		prefix := fmt.Sprintf("server.tokens[%d]", i)
+		name := strings.TrimSpace(t.Name)
+		if name == "" {
+			return fmt.Errorf("%s.name 不能为空", prefix)
+		}
+		if len(name) > 32 {
+			return fmt.Errorf("%s.name 过长（最多 32 个字符）：%s", prefix, name)
+		}
+		for _, r := range name {
+			ok := r == '_' || r == '-' || r == '.' ||
+				(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			if !ok {
+				return fmt.Errorf("%s.name 只能包含字母、数字、_ - .，当前为 %q", prefix, name)
+			}
+		}
+		if seen[name] {
+			return fmt.Errorf("%s.name 重复：%s", prefix, name)
+		}
+		seen[name] = true
+		if _, err := t.Value.Resolve(); err != nil {
+			return fmt.Errorf("%s.value: %w（支持明文 / $ENV_NAME / file:/path）", prefix, err)
+		}
+		total++
+	}
+	if total == 0 {
+		return errors.New("server.token 或 server.tokens 至少要配置一个")
+	}
+	return nil
+}
 
 func (c *Config) validateCommon() error {
 	if c.Server.Listen == "" {
@@ -679,8 +772,8 @@ func (c *Config) validateCommon() error {
 	default:
 		return fmt.Errorf("project.mode 只支持 %q / %q / %q，当前为 %q", ProjectAsk, ProjectAuto, ProjectOff, c.Project.Mode)
 	}
-	if _, err := c.Server.Token.Resolve(); err != nil {
-		return fmt.Errorf("server.token: %w（支持明文 / $ENV_NAME / file:/path）", err)
+	if err := c.validateTokens(); err != nil {
+		return err
 	}
 	for name, p := range map[string]string{"storage.db_path": c.Storage.DBPath, "storage.output_dir": c.Storage.OutputDir} {
 		if p == "" {

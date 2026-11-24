@@ -63,6 +63,20 @@ server:
   tls_key: ~/.config/jiaoag/tls/key.pem
 ```
 
+令牌可以配多把，并区分只读。只读令牌只能订阅事件、拉审计、列会话、看模型与 MCP 状态，不能提交任务或裁决审批——`jiaoag-events` 这类观测入口用它就够：
+
+```yaml
+server:
+  tokens:
+    - name: ops
+      value: file:~/.config/jiaoag/token
+    - name: viewer
+      value: $JIAOAG_READONLY_TOKEN
+      read_only: true
+```
+
+改完 `kill -HUP <server pid>` 即热重载，连接不断；删掉一条再 HUP 就是吊销。权限矩阵与排障见 [`docs/tokens.md`](docs/tokens.md)。
+
 也可以手工分开跑（手工启动默认常驻，不会空闲退出）：
 
 ```bash
@@ -187,6 +201,7 @@ make demo-mcp
 | v2.14 | 传输加密：可选 `server.tls_cert/tls_key` 启用 wss，TUI `-insecure` 接自签，反代写法见 `docs/tls.md`（ADR-0026） | ✅ |
 | v2.15 | 事件与审计导出：`jiaoag-events`（只读 WS：`event.head`/`event.subscribe` + `audit.tail` 游标），JSONL 输出（ADR-0027） | ✅ |
 | v2.16 | hunk 级部分批准：`approval.resolve` 带 `hunks`，只写勾中的块，未选块丢弃并告知模型（ADR-0028） | ✅ |
+| v2.17 | 多令牌与只读权限：`server.tokens[]`（`read_only`），SIGHUP 热重载，吊销不用重启（ADR-0029） | ✅ |
 
 ## 安全边界
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -114,8 +115,60 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 	if cfg.Server.TLSEnabled() {
 		srv.SetTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
 	}
+	logTokenNames(log, srv)
+	go watchSIGHUP(ctx, cfgPath, srv, log)
 
 	return srv.ListenAndServe(ctx)
+}
+
+// logTokenNames 在启动时把令牌清单打出来（只打名字与读写属性）。
+//
+// 这一步是排障入口：连不上时先看服务端认哪几个名字，再看客户端用的是哪一个。
+func logTokenNames(log *slog.Logger, srv *server.Server) {
+	tokens := srv.TokenNames()
+	parts := make([]string, 0, len(tokens))
+	readOnly := 0
+	for _, t := range tokens {
+		label := t.Name
+		if t.ReadOnly {
+			label += "(只读)"
+			readOnly++
+		}
+		parts = append(parts, label)
+	}
+	log.Info("访问令牌已加载", "count", len(tokens), "read_only", readOnly,
+		"names", strings.Join(parts, ","))
+}
+
+// watchSIGHUP 收到 SIGHUP 就重读配置文件里的令牌，整体替换。
+//
+// 只重载令牌：监听地址、TLS 证书、并发上限这些都要重启才生效，混在一起会让
+// 「发个信号」变成不可预期的大动作。重载失败保留旧令牌，否则一次手滑的配置
+// 会把所有人挡在门外。
+func watchSIGHUP(ctx context.Context, cfgPath string, srv *server.Server, log *slog.Logger) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGHUP)
+	defer signal.Stop(ch)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ch:
+			cfg, err := config.Load(cfgPath)
+			if err == nil {
+				var tokens []server.Token
+				tokens, err = server.TokensFromConfig(cfg)
+				if err == nil {
+					err = srv.SetTokens(tokens)
+				}
+			}
+			if err != nil {
+				log.Error("令牌重载失败，继续使用旧令牌", "err", err)
+				continue
+			}
+			log.Info("令牌已重载", "count", len(srv.TokenNames()))
+		}
+	}
 }
 
 // newExecBackend 按配置选执行后端。sandbox 不可用时直接报错：降级必须

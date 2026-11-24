@@ -29,10 +29,14 @@ type Server struct {
 	cfg       *config.Config
 	log       *slog.Logger
 	version   string
-	token     string
 	startedAt time.Time
 	httpSrv   *http.Server
 	app       *app.App
+
+	// tokens 是当前的令牌集合。SIGHUP 会整体替换它，所以读写都要走锁；
+	// 认证循环不做短路，尽量让「匹配第几个令牌」不体现在耗时上。
+	tokensMu sync.RWMutex
+	tokens   []Token
 
 	mu    sync.Mutex
 	conns map[*clientConn]struct{}
@@ -56,6 +60,10 @@ type clientConn struct {
 	writeMu sync.Mutex
 	remote  string
 	version string
+
+	// tokenName / readOnly 来自握手时的令牌，决定这条连接能发哪些命令。
+	tokenName string
+	readOnly  bool
 
 	// subs 记录本连接上每个会话当前有效的推送协程。同一会话重复订阅时必须
 	// 先取消旧的，否则两条协程会各自回放并实时推送，客户端收到重复的 seq。
@@ -109,17 +117,41 @@ func (c *clientConn) sendError(ctx context.Context, code, msg string) {
 	_ = c.send(ctx, env)
 }
 
-// New 构造服务端；token 在这里解析失败会直接返回错误，避免带着空 token 启动。
+// Token 是一个已解析的访问令牌。
+type Token struct {
+	Name     string
+	Value    string
+	ReadOnly bool
+}
+
+// TokensFromConfig 把配置里的 token / tokens 解析成可用令牌集合。
+// 启动与 SIGHUP 重载共用这一条路径，避免两处规则漂移。
+func TokensFromConfig(cfg *config.Config) ([]Token, error) {
+	var out []Token
+	for _, t := range cfg.Server.AllTokens() {
+		value, err := t.Value.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("令牌 %q: %w", t.Name, err)
+		}
+		out = append(out, Token{Name: t.Name, Value: value, ReadOnly: t.ReadOnly})
+	}
+	if len(out) == 0 {
+		return nil, errors.New("没有可用的访问令牌")
+	}
+	return out, nil
+}
+
+// New 构造服务端；令牌解析失败会直接返回错误，避免带着空令牌启动。
 func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) {
-	token, err := cfg.Server.Token.Resolve()
+	tokens, err := TokensFromConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("解析 server.token 失败: %w", err)
+		return nil, fmt.Errorf("解析访问令牌失败: %w", err)
 	}
 	s := &Server{
 		cfg:       cfg,
 		log:       log,
 		version:   version,
-		token:     token,
+		tokens:    tokens,
 		startedAt: time.Now(),
 		conns:     make(map[*clientConn]struct{}),
 	}
@@ -232,7 +264,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
+	tok, ok := s.authorized(r)
+	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{
 			"error":   protocol.CodeUnauthorized,
@@ -250,7 +283,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(1 << 20)
 
-	c := &clientConn{conn: conn, remote: r.RemoteAddr}
+	c := &clientConn{conn: conn, remote: r.RemoteAddr, tokenName: tok.Name, readOnly: tok.ReadOnly}
 	s.addConn(c)
 	defer func() {
 		s.removeConn(c)
@@ -280,6 +313,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			s.log.Debug("连接结束", "remote", c.remote, "err", err)
 			return
 		}
+		// 只读令牌在这里统一拦住，比在每个 handler 里各判一次更不容易漏。
+		if c.readOnly && isWriteCommand(env.Type) {
+			c.sendError(ctx, protocol.CodeForbidden, "只读令牌不能执行 "+env.Type)
+			continue
+		}
 		switch env.Type {
 		case protocol.TypeClientHello:
 			var p protocol.ClientHelloPayload
@@ -294,7 +332,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			c.version = p.ClientVersion
-			s.log.Info("客户端已连接", "remote", c.remote, "client_version", p.ClientVersion)
+			s.log.Info("客户端已连接", "remote", c.remote, "client_version", p.ClientVersion,
+				"token", c.tokenName, "read_only", c.readOnly)
 
 		case protocol.TypePing:
 			pong, err := protocol.New(protocol.TypePong, nil)
@@ -346,15 +385,86 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// isWriteCommand 判断一条 C→S 消息是否会改变服务端状态。
+//
+// 只读令牌在这里被挡：订阅事件、拉审计、看模型与 MCP 状态都不算写，
+// 而任何会落库、起任务、动磁盘的动作都算。默认分支（未识别的类型）
+// 不在这里判，由路由层回 unsupported_type——新增只读命令时不需要改这里，
+// 新增写命令时则必须补一条。
+func isWriteCommand(typ string) bool {
+	switch typ {
+	case protocol.TypeSessionCreate,
+		protocol.TypeSessionUpdate,
+		protocol.TypeTaskSubmit,
+		protocol.TypeTaskCancel,
+		protocol.TypeApprovalResolve,
+		protocol.TypeProjectTrust,
+		protocol.TypeProjectRevoke:
+		return true
+	default:
+		return false
+	}
+}
+
 // authorized 只接受 Bearer token，且用常数时间比较。
-func (s *Server) authorized(r *http.Request) bool {
+//
+// 循环不做短路：多个令牌时，「匹配第几个」不该体现在耗时上。命中后返回
+// 该令牌的身份，调用方据此决定这条连接能做什么。
+func (s *Server) authorized(r *http.Request) (Token, bool) {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	if !strings.HasPrefix(h, prefix) {
-		return false
+		return Token{}, false
 	}
 	got := strings.TrimSpace(strings.TrimPrefix(h, prefix))
-	return subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) == 1
+	if got == "" {
+		return Token{}, false
+	}
+
+	s.tokensMu.RLock()
+	defer s.tokensMu.RUnlock()
+	var hit Token
+	found := false
+	for i := range s.tokens {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.tokens[i].Value)) == 1 {
+			hit = s.tokens[i]
+			found = true
+		}
+	}
+	if !found {
+		return Token{}, false
+	}
+	return hit, true
+}
+
+// SetTokens 原子替换令牌集合。SIGHUP 重载调用它；空集合会被拒绝，
+// 否则一次手滑的配置就能让服务端变成谁都连不上。
+func (s *Server) SetTokens(tokens []Token) error {
+	if len(tokens) == 0 {
+		return errors.New("令牌集合不能为空")
+	}
+	seen := make(map[string]bool, len(tokens))
+	for _, t := range tokens {
+		if strings.TrimSpace(t.Name) == "" || t.Value == "" {
+			return errors.New("令牌名与取值都不能为空")
+		}
+		if seen[t.Name] {
+			return fmt.Errorf("令牌名重复：%s", t.Name)
+		}
+		seen[t.Name] = true
+	}
+	cp := append([]Token(nil), tokens...)
+	s.tokensMu.Lock()
+	s.tokens = cp
+	s.tokensMu.Unlock()
+	return nil
+}
+
+// TokenNames 返回当前令牌的名字与只读标记，供启动日志与测试使用。
+func (s *Server) TokenNames() []Token {
+	s.tokensMu.RLock()
+	defer s.tokensMu.RUnlock()
+	return append([]Token(nil), s.tokens...)
 }
 
 func (s *Server) addConn(c *clientConn) {
