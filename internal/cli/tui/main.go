@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/coder/websocket/wsjson"
 
+	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 	tuipkg "github.com/kennethfan/jiaoag/internal/tui"
@@ -78,7 +79,7 @@ func Main() {
 
 	// 本地没有服务端时自动拉起一个，退出时再收掉；远端地址与 -no-spawn 不碰进程。
 	if !*noSpawn {
-		cleanup, err := ensureServer(context.Background(), cfg, *cfgPath, *srvBin, target)
+		cleanup, err := launchpkg.Ensure(context.Background(), cfg, *cfgPath, *srvBin, target)
 		if err != nil {
 			fatal(err)
 		}

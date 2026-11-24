@@ -1,4 +1,4 @@
-package tui
+package launch
 
 import (
 	"context"
@@ -25,17 +25,17 @@ type serverProc struct {
 	logPath string
 }
 
-// spawnIdleExit 是自动拉起的服务端的空闲退出时长。TUI 正常退出时不发中断，
+// IdleExit 是自动拉起的服务端的空闲退出时长。调用方正常退出时不发中断，
 // 让服务端在最后一个连接断开后再等一会儿：同一台机器上的其它 TUI 还能继续用，
 // 没人用时会自己退出，不留下孤儿进程。
-const spawnIdleExit = 30 * time.Second
+const IdleExit = 30 * time.Second
 
-// ensureServer 保证本地服务端可用：已有实例则直接复用；连不上才在回环地址上
+// Ensure 保证本地服务端可用：已有实例则直接复用；连不上才在回环地址上
 // 拉起 `jiaoag serve`（同一份二进制的子命令）。返回的收尾函数只关闭日志句柄，
 // 不杀进程——服务端由自己的空闲倒计时负责退出。
 //
 // 只对回环地址自动拉起：-url 指向远端时不猜用户意图，仍然按原样连接。
-func ensureServer(ctx context.Context, cfg *config.Config, cfgPath, serverBin, target string) (func(), error) {
+func Ensure(ctx context.Context, cfg *config.Config, cfgPath, serverBin, target string) (func(), error) {
 	addr, err := targetAddr(target)
 	if err != nil {
 		return nil, err
@@ -141,7 +141,7 @@ func startServer(bin, cfgPath, listen string) (*serverProc, error) {
 	if listen != "" {
 		args = append(args, "-listen", listen)
 	}
-	args = append(args, "-exit-when-idle", spawnIdleExit.String())
+	args = append(args, "-exit-when-idle", IdleExit.String())
 
 	logPath, err := serverLogPath()
 	if err != nil {

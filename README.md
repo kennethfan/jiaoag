@@ -60,6 +60,8 @@ TUI 连不上本地服务端时会用自己这个二进制拉起 `serve` 子命�
 - `-insecure`：跳过 TLS 证书校验，只用于自签证书（见下）。
 - `-url` 指向远端地址时不会拉起本地进程。
 
+`jiaoag sessions` 与 `jiaoag events` 同样会在本地连不上时自动拉起服务端（同样的 `-no-spawn` / `-server-bin` 开关）：它们只读数据，不该要求先手工起一个服务端。命令结束后服务端仍按 30 秒空闲自行退出。
+
 默认是本机明文连接。要远程访问或跨不可信网络，配置里同时给出证书与私钥即启用 TLS（`wss://`），TUI 会自动跟着换 scheme；自签证书加 `-insecure`。生成命令、反代写法和安全边界见 [`docs/tls.md`](docs/tls.md)：
 
 ```yaml
@@ -246,6 +248,7 @@ make demo-mcp
 | v2.29 | 命令行会话管理：`jiaoag sessions list/rename/rm`，`-all` 跨工作区、id 前缀补全、删除需 `-yes`（ADR-0039 修订） | ✅ |
 | v2.30 | 命令行收口：七个二进制合并为 `jiaoag` 一个入口（`serve` / `tui` / `sessions` / `events` / `policy` / `demo` / `plugin-example`），裸跑即 TUI；旧名 `jiaoag-*` 移除 | ✅ |
 | v2.31 | 修空闲退出：只认执行中与真正在内存队列里等槽的任务，库里孤立的 `queued` 不再把服务端拖住不退（ADR-0019 修订） | ✅ |
+| v2.32 | `sessions` / `events` 也会在本地连不上时自动拉起服务端（复用 TUI 那套 spawn + 空闲退出，`-no-spawn` 可关） | ✅ |
 
 ## 安全边界
 

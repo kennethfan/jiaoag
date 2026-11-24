@@ -25,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
@@ -41,6 +42,8 @@ func Main() {
 		untilNow  = flag.Bool("until-now", false, "导出到启动时刻为止后退出（适合定时导出）")
 		interval  = flag.Duration("interval", time.Second, "审计轮询间隔")
 		insecure  = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
+		noSpawn   = flag.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
+		serverBin = flag.String("server-bin", "", "拉起服务端用的可执行文件（默认就是自己）")
 	)
 	flag.StringVar(&sessionID, "s", "", "会话 id（默认取最近活跃的会话）")
 	flag.StringVar(&sessionID, "session", "", "同 -s（保留旧写法）")
@@ -83,6 +86,16 @@ func Main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// 只读导出同样不该要求先手工起服务端：本地连不上就拉一个，
+	// 命令结束后服务端按自己的空闲倒计时退出。
+	if !*noSpawn {
+		cleanup, err := launchpkg.Ensure(ctx, cfg, *cfgPath, *serverBin, target)
+		if err != nil {
+			fatal(err)
+		}
+		defer cleanup()
+	}
 
 	opts := options{
 		url: target, token: *token, sessionID: sessionID,

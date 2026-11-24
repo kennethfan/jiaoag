@@ -25,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
@@ -54,6 +55,8 @@ func Main() {
 	urlFlag := fs.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
 	tokenFlag := fs.String("token", "", "覆盖 server.token")
 	insecure := fs.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
+	noSpawn := fs.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
+	serverBin := fs.String("server-bin", "", "拉起服务端用的可执行文件（默认就是自己）")
 
 	var (
 		all       *bool
@@ -83,7 +86,7 @@ func Main() {
 	args := fs.Args()
 
 	// 子命令后的写法优先，其次才是子命令前的。
-	pre.apply(cfgPath, urlFlag, tokenFlag, insecure)
+	pre.apply(cfgPath, urlFlag, tokenFlag, insecure, noSpawn, serverBin)
 	opts, err := resolve(*cfgPath, *urlFlag, *tokenFlag, *insecure)
 	if err != nil {
 		fatal(err)
@@ -91,6 +94,16 @@ func Main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// 一个只会看数据的命令不该要求先手工起服务端：本地连不上就拉一个，
+	// 命令结束后服务端按自己的空闲倒计时退出。
+	if !*noSpawn {
+		cleanup, err := launchpkg.Ensure(ctx, opts.cfg, *cfgPath, *serverBin, opts.url)
+		if err != nil {
+			fatal(err)
+		}
+		defer cleanup()
+	}
 
 	conn, err := dial(ctx, opts)
 	if err != nil {
@@ -168,11 +181,13 @@ func Main() {
 
 // globalFlags 承接写在子命令之前的通用标志。
 type globalFlags struct {
-	cfg      string
-	url      string
-	token    string
-	insecure bool
-	args     []string
+	cfg       string
+	url       string
+	token     string
+	insecure  bool
+	noSpawn   bool
+	serverBin string
+	args      []string
 }
 
 func parseGlobal(args []string) globalFlags {
@@ -181,12 +196,17 @@ func parseGlobal(args []string) globalFlags {
 	url := fs.String("url", "", "服务端 WS 地址")
 	token := fs.String("token", "", "覆盖 server.token")
 	insecure := fs.Bool("insecure", false, "跳过 TLS 证书校验")
+	noSpawn := fs.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
+	serverBin := fs.String("server-bin", "", "拉起服务端用的可执行文件")
 	_ = fs.Parse(args)
-	return globalFlags{cfg: *cfg, url: *url, token: *token, insecure: *insecure, args: fs.Args()}
+	return globalFlags{
+		cfg: *cfg, url: *url, token: *token, insecure: *insecure,
+		noSpawn: *noSpawn, serverBin: *serverBin, args: fs.Args(),
+	}
 }
 
 // apply 只在子命令后没给时补位，避免前者覆盖后者。
-func (g globalFlags) apply(cfg, url, token *string, insecure *bool) {
+func (g globalFlags) apply(cfg, url, token *string, insecure, noSpawn *bool, serverBin *string) {
 	if *cfg == "" {
 		*cfg = g.cfg
 	}
@@ -198,6 +218,12 @@ func (g globalFlags) apply(cfg, url, token *string, insecure *bool) {
 	}
 	if !*insecure {
 		*insecure = g.insecure
+	}
+	if !*noSpawn {
+		*noSpawn = g.noSpawn
+	}
+	if *serverBin == "" {
+		*serverBin = g.serverBin
 	}
 }
 
@@ -223,7 +249,7 @@ func usage() {
   jiaoag sessions rename <会话 id> <新标题>
   jiaoag sessions rm <会话 id> -yes
 
-通用标志：-config <文件> -url <ws 地址> -token <令牌> -insecure
+通用标志：-config <文件> -url <ws 地址> -token <令牌> -insecure -no-spawn -server-bin
 `)
 }
 
@@ -232,6 +258,8 @@ type options struct {
 	url      string
 	token    string
 	insecure bool
+	// cfg 供自动拉起服务端时读 listen 与 TLS 设置。
+	cfg *config.Config
 }
 
 func resolve(cfgPath, urlFlag, tokenFlag string, insecure bool) (options, error) {
@@ -262,7 +290,7 @@ func resolve(cfgPath, urlFlag, tokenFlag string, insecure bool) (options, error)
 		}
 		target = scheme + "://" + dialableAddr(cfg.Server.Listen) + "/ws"
 	}
-	return options{url: target, token: token, insecure: insecure}, nil
+	return options{url: target, token: token, insecure: insecure, cfg: cfg}, nil
 }
 
 func dialableAddr(listen string) string {
