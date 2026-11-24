@@ -323,7 +323,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 跨会话并发上限 | 全局 `slots`（默认 4）：拿不到槽的任务回队首，槽释放后 `pumpLocked` 补位；会话内 FIFO 不变 |
 | provider 速率 | 令牌桶装饰器，链为 `retry(rate(timeout(adapter)))`：重试也计入配额；`rpm` / `tpm` 为 0 时不包装 |
 | 重启恢复 | 关闭时 `queued` 保持 `queued`；启动收尾跳过它们，按 `created_at,id` 重建每会话 FIFO 并重新拉起；`running` / `waiting_approval` 仍标 `canceled`（ADR-0017） |
-| server 生命周期 | 默认常驻；自动拉起时带 `-exit-when-idle=30s`：连接数归零后倒计时，仍无连接且无 `queued` / `running` 任务则优雅退出。`waiting_approval` 不算忙——已经没有客户端能裁决。生命周期按「还有没有人用」而不是「谁拉起的」判定（ADR-0019） |
+| server 生命周期 | 默认常驻；自动拉起时带 `-exit-when-idle=30s`：连接数归零后倒计时，仍无连接且没有执行中任务（库中 `running`）或真正在内存队列里等槽的任务则优雅退出。`waiting_approval` 与「只剩库里 `queued` 的孤立行」都不算忙——已经没有客户端能裁决、或那条任务永远不会前进。生命周期按「还有没有人用」而不是「谁拉起的」判定（ADR-0019） |
 | 附加根 | 会话可挂多个根：读写都用 `alias:path`，命令用 `root` 选根，sandbox 可写范围覆盖所有根（ADR-0036/ADR-0037） |
 | 传输安全 | 默认明文回环 + Bearer token；`server.tls_cert/tls_key` 同时配置才启用 wss，只配一个即启动报错；TUI 按配置推导 scheme，自签证书用 `-insecure`；反代终结 TLS 同样支持（ADR-0026） |
 | 健康检查 | `/healthz` 匿名只回 `{"status":"ok"}`；`version` / `uptime_seconds` / `connections` 仅对持有效令牌的请求返回，探针本身不需要凭据 |

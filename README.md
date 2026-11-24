@@ -245,6 +245,7 @@ make demo-mcp
 | v2.28 | 会话管理：`/sessions` 面板（切换/改名/删除），删除按序清关联数据，忙会话拒绝切换与删除（ADR-0039） | ✅ |
 | v2.29 | 命令行会话管理：`jiaoag sessions list/rename/rm`，`-all` 跨工作区、id 前缀补全、删除需 `-yes`（ADR-0039 修订） | ✅ |
 | v2.30 | 命令行收口：七个二进制合并为 `jiaoag` 一个入口（`serve` / `tui` / `sessions` / `events` / `policy` / `demo` / `plugin-example`），裸跑即 TUI；旧名 `jiaoag-*` 移除 | ✅ |
+| v2.31 | 修空闲退出：只认执行中与真正在内存队列里等槽的任务，库里孤立的 `queued` 不再把服务端拖住不退（ADR-0019 修订） | ✅ |
 
 ## 安全边界
 
