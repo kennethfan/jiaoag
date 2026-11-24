@@ -193,6 +193,7 @@ func (t *nodeTool) buildChange(rel string, content []byte) (*tools.Change, strin
 	}
 	change := &tools.Change{
 		Path:       clean,
+		Rel:        clean,
 		Exists:     exists,
 		NewHash:    patch.Hash(content),
 		NewContent: content,

@@ -88,7 +88,7 @@ func (t *rememberTool) Prepare(ctx context.Context, call Call) (Prepared, error)
 			"追加后 %s 会超过 %d 字节上限；请先删除或精简旧条目", memory.FileName, memory.MaxLoadBytes)
 	}
 
-	change, err := buildChange(call.Name, memory.FileName, old, exists, newContent)
+	change, err := buildChange(call.Name, memory.FileName, memory.FileName, "", old, exists, newContent)
 	if err != nil {
 		return Prepared{}, err
 	}

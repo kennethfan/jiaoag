@@ -33,6 +33,10 @@ func sandboxPolicyPaths(cmd Command) sandboxPaths {
 	}
 
 	add(cmd.Cwd)
+	// 会话挂载的附加根也可写：命令在根 A 里跑、改根 B 的文件是正常用法。
+	for _, p := range cmd.Writable {
+		add(p)
+	}
 	for _, key := range []string{"TMPDIR", "GOCACHE", "GOMODCACHE", "GOPATH", "GOTMPDIR"} {
 		add(envValue(cmd.Env, key))
 	}
@@ -46,7 +50,7 @@ func sandboxPolicyPaths(cmd Command) sandboxPaths {
 		for _, rel := range []string{"Library/Caches", "go", ".cache", ".npm"} {
 			add(filepath.Join(home, rel))
 		}
-		cwdPaths := canonicalPaths(cmd.Cwd)
+		writablePaths := append([]string(nil), out.writable...)
 		for _, rel := range []string{
 			".ssh", ".aws", ".gnupg", ".config", ".kube", ".docker",
 			".netrc", ".npmrc", ".git-credentials", ".password-store",
@@ -55,7 +59,7 @@ func sandboxPolicyPaths(cmd Command) sandboxPaths {
 			for _, p := range canonicalPaths(filepath.Join(home, rel)) {
 				// 工作区恰好落在敏感目录下时，宁可放弃这一条 deny，也不能让沙箱
 				// 把自己的工作区判定成禁区。
-				if anyContains(p, cwdPaths) {
+				if anyContains(p, writablePaths) {
 					continue
 				}
 				out.denied = append(out.denied, p)

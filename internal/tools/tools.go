@@ -77,7 +77,12 @@ type Prepared struct {
 // agent 调 workspace.Write 落盘。写入工具的 Execute 不碰磁盘，因此「谁写的」
 // 只有一条路径，CAS 也只需要在一处实现。
 type Change struct {
-	Path     string // 工作区相对路径
+	Path string // 展示用路径：主根下是相对路径，附加根下是 alias:相对路径
+	// Root 是附加根别名（空表示主根）。落盘与 CAS 需要它来选对工作区，
+	// Path 只负责给人看（ADR-0037）。
+	Root string
+	// Rel 是在 Root 内的相对路径；主根下与 Path 相同。
+	Rel      string
 	Exists   bool   // 原文件是否存在（决定 diff 头是 /dev/null 还是 a/<path>）
 	BaseHash string // 原文件 sha256；新建文件为空串
 	NewHash  string // 新内容 sha256

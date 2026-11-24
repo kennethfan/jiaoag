@@ -8,6 +8,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/patch"
 	"github.com/kennethfan/jiaoag/internal/tools"
+	"github.com/kennethfan/jiaoag/internal/workspace"
 )
 
 // waitingApprovalEvent 产生「任务开始等待审批」的状态事件。
@@ -186,6 +187,23 @@ func (a *Agent) rejectChange(ctx context.Context, task domain.Task, toolCall *do
 	}, nil
 }
 
+// changeTarget 把提案里的展示路径还原成「哪个工作区 + 根内相对路径」。
+//
+// 附加根的写提案带 Root 别名；没有别名或别名已卸载时退回主根。别名在提交
+// 任务时冻结在会话里，任务执行期间不会被改掉，所以这里不需要额外校验。
+func (a *Agent) changeTarget(change *tools.Change) (*workspace.Workspace, string) {
+	rel := change.Rel
+	if rel == "" {
+		rel = change.Path
+	}
+	if change.Root != "" && a.opts.Roots != nil {
+		if ws, ok := a.opts.Roots.Get(change.Root); ok {
+			return ws, rel
+		}
+	}
+	return a.opts.Workspace, rel
+}
+
 // applyChange 处理批准：先做 CAS 检查，再原子落盘。
 func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *domain.ToolCall,
 	approval *domain.Approval, proposal *domain.Proposal, change *tools.Change,
@@ -237,7 +255,8 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 
 	// CAS：用户审阅期间文件可能被别的进程改过。此时覆盖会静默丢掉别人的
 	// 改动，所以拒绝并要求模型重新读、重新出 diff。
-	hash, exists, err := a.opts.Workspace.Hash(change.Path)
+	target, rel := a.changeTarget(change)
+	hash, exists, err := target.Hash(rel)
 	if err != nil {
 		return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
 			fmt.Sprintf("检查 %s 的当前内容失败：%v", change.Path, err))
@@ -275,7 +294,7 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 	var applied []int
 	total := 0
 	if len(hunks) > 0 {
-		old, _, err := a.opts.Workspace.Snapshot(change.Path)
+		old, _, err := target.Snapshot(rel)
 		if err != nil {
 			return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
 				fmt.Sprintf("读取 %s 的当前内容失败：%v", change.Path, err))
@@ -304,7 +323,7 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		}
 	}
 
-	if err := a.opts.Workspace.Write(change.Path, change.NewContent); err != nil {
+	if err := target.Write(rel, change.NewContent); err != nil {
 		return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
 			fmt.Sprintf("写入 %s 失败：%v", change.Path, err))
 	}
@@ -388,6 +407,9 @@ func writeAudit(action string, toolCall *domain.ToolCall, approval *domain.Appro
 		"new_hash":  change.NewHash,
 		"bytes":     len(change.NewContent),
 		"decision":  string(approval.Decision),
+	}
+	if change.Root != "" {
+		detail["root"] = change.Root
 	}
 	if reason != "" {
 		detail["reason"] = reason

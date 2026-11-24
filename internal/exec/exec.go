@@ -25,6 +25,9 @@ type Command struct {
 	Env     []string
 	// Limits 是宿主要施加的资源约束；零值表示不限制（保持历史行为）。
 	Limits Limits
+	// Writable 是宿主为本次命令额外放行的可写目录（会话的附加根等）。
+	// 只有 sandbox 后端使用；direct 后端不读它，因为 direct 本身不隔离。
+	Writable []string
 }
 
 // Plan 是后端给出的最终执行计划：既要真的执行，也要进审批与审计。

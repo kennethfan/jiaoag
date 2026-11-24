@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/kennethfan/jiaoag/internal/patch"
@@ -24,7 +23,7 @@ const (
 // 审批通过后由 agent 调 workspace.Write。
 func NewWriteFile(ws *workspace.Workspace) Tool { return &writeFileTool{ws: ws} }
 
-// NewWriteFileWithRoots 额外拒绝 alias: 前缀：附加根只读（ADR-0036）。
+// NewWriteFileWithRoots 支持 alias: 前缀：附加根可写（ADR-0037）。
 func NewWriteFileWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
 	return &writeFileTool{ws: ws, roots: roots}
 }
@@ -32,7 +31,7 @@ func NewWriteFileWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool
 // NewEditFile 返回按片段替换的工具，同样只产出提案。
 func NewEditFile(ws *workspace.Workspace) Tool { return &editFileTool{ws: ws} }
 
-// NewEditFileWithRoots 与 NewWriteFileWithRoots 同理：写入只限主根。
+// NewEditFileWithRoots 与 NewWriteFileWithRoots 同理。
 func NewEditFileWithRoots(ws *workspace.Workspace, roots *workspace.Roots) Tool {
 	return &editFileTool{ws: ws, roots: roots}
 }
@@ -65,16 +64,23 @@ func (t *writeFileTool) Spec() Spec {
 	}
 }
 
-// rejectReadOnlyRoot 是写入类工具的统一守门：路径指向附加根时明确报错，
-// 而不是把一个带冒号的文件名写进主根。
-func rejectReadOnlyRoot(roots *workspace.Roots, path string) error {
-	if roots == nil {
-		return nil
+// resolveWriteTarget 把工具参数里的路径解析成「哪个工作区 + 根内相对路径」。
+//
+// 不做只读判断：附加根在 A2 之后可写（ADR-0037）。校验仍由各 Workspace 的
+// Resolve 完成——绝对路径与 .. 越界都在那里挡住。
+func resolveWriteTarget(ws *workspace.Workspace, roots *workspace.Roots, path string) (target *workspace.Workspace, rel, alias string, err error) {
+	if roots != nil {
+		return roots.Resolve(path)
 	}
-	if _, _, alias, err := roots.Resolve(path); err == nil && alias != "" {
-		return fmt.Errorf("%w：%s 是只读附加根，只能读不能写", workspace.ErrReadOnlyRoot, alias)
+	return ws, path, "", nil
+}
+
+// displayPath 生成审批与审计里给人看的路径：附加根带 alias: 前缀。
+func displayPath(alias, rel string) string {
+	if alias == "" {
+		return rel
 	}
-	return nil
+	return alias + ":" + rel
 }
 
 func (t *writeFileTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
@@ -85,14 +91,15 @@ func (t *writeFileTool) Prepare(ctx context.Context, call Call) (Prepared, error
 	if strings.TrimSpace(args.Path) == "" {
 		return Prepared{}, invalidArgs(call.Name, "path 不能为空")
 	}
-	if err := rejectReadOnlyRoot(t.roots, args.Path); err != nil {
-		return Prepared{}, invalidArgs(call.Name, "%v", err)
-	}
-	abs, err := t.ws.Resolve(args.Path)
+	target, rel, alias, err := resolveWriteTarget(t.ws, t.roots, args.Path)
 	if err != nil {
 		return Prepared{}, err
 	}
-	old, exists, err := t.ws.Snapshot(args.Path)
+	abs, err := target.Resolve(rel)
+	if err != nil {
+		return Prepared{}, err
+	}
+	old, exists, err := target.Snapshot(rel)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -101,7 +108,7 @@ func (t *writeFileTool) Prepare(ctx context.Context, call Call) (Prepared, error
 		// 保留原文件的换行风格：把一个 CRLF 文件整体改成 LF 会污染整篇 diff。
 		newContent = patch.Normalize(newContent, patch.LineEndings(old))
 	}
-	change, err := buildChange(call.Name, args.Path, old, exists, newContent)
+	change, err := buildChange(call.Name, displayPath(alias, rel), rel, alias, old, exists, newContent)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -155,26 +162,27 @@ func (t *editFileTool) Prepare(ctx context.Context, call Call) (Prepared, error)
 	if strings.TrimSpace(args.Path) == "" {
 		return Prepared{}, invalidArgs(call.Name, "path 不能为空")
 	}
-	if err := rejectReadOnlyRoot(t.roots, args.Path); err != nil {
-		return Prepared{}, invalidArgs(call.Name, "%v", err)
-	}
 	if args.OldString == "" {
 		return Prepared{}, invalidArgs(call.Name, "old_string 不能为空；要整文件覆盖请用 write_file")
 	}
-	abs, err := t.ws.Resolve(args.Path)
+	target, rel, alias, err := resolveWriteTarget(t.ws, t.roots, args.Path)
 	if err != nil {
 		return Prepared{}, err
 	}
-	old, exists, err := t.ws.Snapshot(args.Path)
+	abs, err := target.Resolve(rel)
+	if err != nil {
+		return Prepared{}, err
+	}
+	old, exists, err := target.Snapshot(rel)
 	if err != nil {
 		return Prepared{}, err
 	}
 	if !exists {
-		return Prepared{}, invalidArgs(call.Name, "文件 %s 不存在；新建文件请用 write_file", args.Path)
+		return Prepared{}, invalidArgs(call.Name, "文件 %s 不存在；新建文件请用 write_file", displayPath(alias, rel))
 	}
 	if len(old) > maxEditBytes {
 		return Prepared{}, invalidArgs(call.Name,
-			"文件 %s 有 %d 字节，超过 edit_file 的 %d 字节上限；请用 write_file", args.Path, len(old), maxEditBytes)
+			"文件 %s 有 %d 字节，超过 edit_file 的 %d 字节上限；请用 write_file", displayPath(alias, rel), len(old), maxEditBytes)
 	}
 
 	endings := patch.LineEndings(old)
@@ -186,12 +194,12 @@ func (t *editFileTool) Prepare(ctx context.Context, call Call) (Prepared, error)
 	hits := strings.Count(text, needle)
 	switch {
 	case hits == 0:
-		return Prepared{}, invalidArgs(call.Name, "在 %s 里没有找到 old_string；请先 read_file 确认原文", args.Path)
+		return Prepared{}, invalidArgs(call.Name, "在 %s 里没有找到 old_string；请先 read_file 确认原文", displayPath(alias, rel))
 	case hits > 1 && !args.ReplaceAll:
 		// 唯一性检查是「改对地方」的唯一保障：多处命中时随便挑一处改，
 		// 用户很难从 diff 里看出改的是不是他要的那处。
 		return Prepared{}, invalidArgs(call.Name,
-			"old_string 在 %s 里出现了 %d 次；请给更长的上下文让它唯一，或设置 replace_all=true", args.Path, hits)
+			"old_string 在 %s 里出现了 %d 次；请给更长的上下文让它唯一，或设置 replace_all=true", displayPath(alias, rel), hits)
 	}
 
 	limit := 1
@@ -201,7 +209,7 @@ func (t *editFileTool) Prepare(ctx context.Context, call Call) (Prepared, error)
 	updated := strings.Replace(text, needle, repl, limit)
 	newContent := patch.Normalize([]byte(updated), endings)
 
-	change, err := buildChange(call.Name, args.Path, old, exists, newContent)
+	change, err := buildChange(call.Name, displayPath(alias, rel), rel, alias, old, exists, newContent)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -217,11 +225,11 @@ func (t *editFileTool) Execute(ctx context.Context, p Prepared) (Result, error) 
 
 // buildChange 是两种写入工具共用的提案构造：没有变化时直接报错，
 // 避免让用户去批准一份空 diff。
-func buildChange(tool, rel string, old []byte, exists bool, newContent []byte) (*Change, error) {
+func buildChange(tool, display, rel, root string, old []byte, exists bool, newContent []byte) (*Change, error) {
 	if exists && bytes.Equal(old, newContent) {
-		return nil, invalidArgs(tool, "%s 的内容没有变化，不需要写入", rel)
+		return nil, invalidArgs(tool, "%s 的内容没有变化，不需要写入", display)
 	}
-	diff, truncated, err := patch.Unified(rel, old, newContent, exists)
+	diff, truncated, err := patch.Unified(display, old, newContent, exists)
 	if err != nil {
 		return nil, err
 	}
@@ -231,10 +239,12 @@ func buildChange(tool, rel string, old []byte, exists bool, newContent []byte) (
 		if !exists && len(newContent) == 0 {
 			return nil, invalidArgs(tool, "新建空文件没有可审内容；如确实需要空文件，请让用户手工创建")
 		}
-		return nil, invalidArgs(tool, "%s 与原文只差结尾换行，行级 diff 无法展示这种改动", rel)
+		return nil, invalidArgs(tool, "%s 与原文只差结尾换行，行级 diff 无法展示这种改动", display)
 	}
 	change := &Change{
-		Path:       rel,
+		Path:       display,
+		Root:       root,
+		Rel:        rel,
 		Exists:     exists,
 		NewHash:    patch.Hash(newContent),
 		NewContent: newContent,

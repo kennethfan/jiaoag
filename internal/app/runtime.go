@@ -221,6 +221,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		Provider:       provider,
 		Tools:          registry,
 		Workspace:      ws,
+		Roots:          roots,
 		Recorder:       a,
 		Model:          model,
 		Memory:         memoryText,

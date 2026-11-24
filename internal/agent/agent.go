@@ -85,9 +85,12 @@ type SkillBody struct {
 }
 
 type Options struct {
-	Provider      llm.Provider
-	Tools         *tools.Registry
-	Workspace     *workspace.Workspace
+	Provider  llm.Provider
+	Tools     *tools.Registry
+	Workspace *workspace.Workspace
+	// Roots 是会话挂载的全部根（主根 + 附加根）。写入类工具产出的 Change
+	// 带 Root 别名，落盘与 CAS 靠它选对工作区；nil 表示只有 Workspace。
+	Roots         *workspace.Roots
 	Recorder      Recorder
 	Model         string
 	MaxRounds     int

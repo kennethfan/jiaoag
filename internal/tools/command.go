@@ -42,6 +42,11 @@ type Command struct {
 	// Backend 由宿主注入的工具环境填写，仅供审批面板与审计展示；
 	// 模型无权指定（ADR-0011）。
 	Backend string
+	// Root 是命令所在根的别名（空表示主根），同样只用于展示与审计。
+	Root string
+	// Writable 是本次命令可写的根（主根 + 附加根），交给隔离后端算权限；
+	// direct 后端不读它。
+	Writable []string
 }
 
 // RuntimeEnv 是命令类工具的宿主依赖。工具不自己构造执行后端，也不自己
@@ -64,7 +69,7 @@ type RuntimeEnv struct {
 	// ProjectServers 是工作区里已确认的 MCP server（ADR-0025）；由宿主
 	// 转换成 mcp.Server 后与全局配置一起启动。
 	ProjectServers []project.Server
-	// Roots 是会话挂载的只读附加根（ADR-0036）；nil 表示只有主根。
+	// Roots 是会话挂载的根集合（ADR-0036/ADR-0037）；nil 表示只有主根。
 	Roots *workspace.Roots
 }
 
@@ -88,6 +93,8 @@ type commandTool struct {
 type commandArgs struct {
 	Argv     []string `json:"argv"`
 	TimeoutS *int     `json:"timeout_s,omitempty"`
+	// Root 指定在哪个附加根下执行；省略即主根。
+	Root string `json:"root,omitempty"`
 }
 
 func (t *commandTool) name() string {
@@ -106,7 +113,8 @@ func (t *commandTool) Spec() Spec {
   "type": "object",
   "properties": {
     "argv":      {"type": "array", "items": {"type": "string"}, "description": "逐 token 的 argv，例如 [\"go\",\"test\",\"./...\"]；不要传 shell 字符串"},
-    "timeout_s": {"type": "integer", "description": "超时秒数，默认 120，范围 1-600"}
+    "timeout_s": {"type": "integer", "description": "超时秒数，默认 120，范围 1-600"},
+    "root":      {"type": "string", "description": "在哪个附加根下执行（别名）；省略表示主根"}
   },
   "required": ["argv"]
 }`
@@ -170,12 +178,30 @@ func (t *commandTool) Prepare(ctx context.Context, call Call) (Prepared, error) 
 	argv := make([]string, len(args.Argv))
 	copy(argv, args.Argv)
 
+	// 命令的 cwd 决定 path_args 的判定边界：在附加根里跑就在那个根里判定，
+	// 不能拿主根去卡另一个仓的路径。
+	target := t.ws
+	rootAlias := ""
+	if alias := strings.TrimSpace(args.Root); alias != "" {
+		if t.env.Roots == nil {
+			return Prepared{}, invalidArgs(call.Name, "会话没有挂载附加根，root=%q 无法使用", alias)
+		}
+		ws, ok := t.env.Roots.Get(alias)
+		if !ok {
+			return Prepared{}, invalidArgs(call.Name, "%v：%q", workspace.ErrUnknownRoot, alias)
+		}
+		target = ws
+		rootAlias = alias
+	}
+
 	cmd := &Command{
-		Argv:    argv,
-		Cwd:     t.ws.Root(),
-		Timeout: timeout,
-		Env:     commandEnv(os.Environ()),
-		Backend: backend,
+		Argv:     argv,
+		Cwd:      target.Root(),
+		Timeout:  timeout,
+		Env:      commandEnv(os.Environ()),
+		Backend:  backend,
+		Root:     rootAlias,
+		Writable: writableRoots(t.ws, t.env.Roots),
 	}
 	return Prepared{
 		Call:    call,
@@ -199,11 +225,12 @@ func (t *commandTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 	}
 
 	plan, err := t.env.Backend.Prepare(ctx, execpkg.Command{
-		Argv:    cmd.Argv,
-		Cwd:     cmd.Cwd,
-		Timeout: cmd.Timeout,
-		Env:     cmd.Env,
-		Limits:  t.env.Limits,
+		Argv:     cmd.Argv,
+		Cwd:      cmd.Cwd,
+		Timeout:  cmd.Timeout,
+		Env:      cmd.Env,
+		Limits:   t.env.Limits,
+		Writable: cmd.Writable,
 	})
 	if err != nil {
 		return Result{}, err
@@ -331,6 +358,20 @@ func clipLogError(msg string) string {
 		cut--
 	}
 	return msg[:cut] + "…"
+}
+
+// writableRoots 返回会话可写的根目录（主根 + 附加根），给隔离后端用。
+func writableRoots(primary *workspace.Workspace, roots *workspace.Roots) []string {
+	out := []string{primary.Root()}
+	if roots == nil {
+		return out
+	}
+	for _, alias := range roots.Aliases() {
+		if ws, ok := roots.Get(alias); ok {
+			out = append(out, ws.Root())
+		}
+	}
+	return out
 }
 
 func clampTimeout(d time.Duration) time.Duration {

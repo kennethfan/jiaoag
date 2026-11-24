@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/workspace"
 )
@@ -86,29 +88,77 @@ func TestGrepAndGlobReachAdditionalRoot(t *testing.T) {
 	}
 }
 
-func TestWriteToolsRejectAdditionalRoot(t *testing.T) {
+func TestWriteToolsTargetAdditionalRoot(t *testing.T) {
 	primary, roots := rootsFixture(t)
 
 	write := tools.NewWriteFileWithRoots(primary, roots)
-	if _, err := write.Prepare(context.Background(), tools.Call{
-		ID: "c1", Name: "write_file", Args: []byte(`{"path":"lib:b.txt","content":"x"}`),
-	}); err == nil {
-		t.Fatal("write_file 写附加根应当报错")
-	} else if !strings.Contains(err.Error(), "只读") {
-		t.Fatalf("错误应说明只读：%v", err)
+	p, err := write.Prepare(context.Background(), tools.Call{
+		ID: "c1", Name: "write_file", Args: []byte(`{"path":"lib:b.txt","content":"beta-2\n"}`),
+	})
+	if err != nil {
+		t.Fatalf("write_file 写附加根应当通过：%v", err)
+	}
+	if p.Change == nil {
+		t.Fatal("应当产出写入提案")
+	}
+	if p.Change.Root != "lib" || p.Change.Rel != "b.txt" || p.Change.Path != "lib:b.txt" {
+		t.Fatalf("附加根提案的路径不对：%+v", *p.Change)
+	}
+	if len(p.Paths) != 1 || !strings.HasSuffix(p.Paths[0], "b.txt") {
+		t.Fatalf("绝对路径应指向附加根：%v", p.Paths)
+	}
+	// 提案阶段不落盘。
+	if data, err := os.ReadFile(filepath.Join(roots.Primary().Root(), "b.txt")); err == nil {
+		t.Fatalf("附加根的文件不该出现在主根：%q", data)
 	}
 
 	edit := tools.NewEditFileWithRoots(primary, roots)
-	if _, err := edit.Prepare(context.Background(), tools.Call{
-		ID: "c2", Name: "edit_file", Args: []byte(`{"path":"lib:b.txt","old_string":"beta","new_string":"x"}`),
-	}); err == nil {
-		t.Fatal("edit_file 改附加根应当报错")
+	p, err = edit.Prepare(context.Background(), tools.Call{
+		ID: "c2", Name: "edit_file", Args: []byte(`{"path":"lib:b.txt","old_string":"beta","new_string":"BETA"}`),
+	})
+	if err != nil {
+		t.Fatalf("edit_file 改附加根应当通过：%v", err)
+	}
+	if p.Change.Root != "lib" {
+		t.Fatalf("edit_file 提案缺少根别名：%+v", *p.Change)
 	}
 
-	// 主根照旧可写。
-	if _, err := write.Prepare(context.Background(), tools.Call{
+	// 主根照旧可写，且不带别名。
+	p, err = write.Prepare(context.Background(), tools.Call{
 		ID: "c3", Name: "write_file", Args: []byte(`{"path":"c.txt","content":"gamma"}`),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("主根写入不该受影响：%v", err)
+	}
+	if p.Change.Root != "" || p.Change.Path != "c.txt" {
+		t.Fatalf("主根提案不应带别名：%+v", *p.Change)
+	}
+}
+
+func TestRunCommandUsesAdditionalRoot(t *testing.T) {
+	primary, roots := rootsFixture(t)
+	env := tools.RuntimeEnv{Roots: roots, Backend: execpkg.NewDirect(), Timeout: 30 * time.Second}
+	cmd := tools.NewCheckCommand(primary, env)
+
+	p, err := cmd.Prepare(context.Background(), tools.Call{
+		ID: "c1", Name: "check_command", Args: []byte(`{"argv":["pwd"],"root":"lib"}`),
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if p.Command.Root != "lib" {
+		t.Fatalf("命令应记录根别名：%+v", *p.Command)
+	}
+	if p.Command.Cwd == primary.Root() {
+		t.Fatalf("cwd 应切到附加根：%s", p.Command.Cwd)
+	}
+	if len(p.Command.Writable) != 2 {
+		t.Fatalf("可写根应包含主根与附加根：%v", p.Command.Writable)
+	}
+
+	if _, err := cmd.Prepare(context.Background(), tools.Call{
+		ID: "c2", Name: "check_command", Args: []byte(`{"argv":["pwd"],"root":"nope"}`),
+	}); err == nil {
+		t.Fatal("未知根别名应当报错")
 	}
 }

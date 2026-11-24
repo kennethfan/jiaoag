@@ -34,6 +34,7 @@ const (
 type execAuditDetail struct {
 	Argv           []string        `json:"argv"`
 	Cwd            string          `json:"cwd"`
+	Root           string          `json:"root,omitempty"`
 	Backend        string          `json:"backend,omitempty"`
 	BackendVersion string          `json:"backend_version,omitempty"`
 	PolicyVersion  string          `json:"policy_version,omitempty"`
@@ -128,6 +129,7 @@ func commandAudit(action, actor string, prepared tools.Prepared, result tools.Re
 	if cmd := prepared.Command; cmd != nil {
 		detail.Argv = cmd.Argv
 		detail.Cwd = cmd.Cwd
+		detail.Root = cmd.Root
 		detail.Backend = cmd.Backend
 	}
 	raw, err := json.Marshal(detail)
