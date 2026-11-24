@@ -770,3 +770,99 @@ func TestPluginsValidation(t *testing.T) {
 		})
 	}
 }
+
+func notifyBlock(section string) string {
+	return strings.Replace(minimalYAML, "providers:", section+"providers:", 1)
+}
+
+func TestNotifyValidation(t *testing.T) {
+	ok := `notify:
+  webhooks:
+    - name: ops
+      url: https://example.com/hook
+      secret: $HOOK_SECRET
+      events: [approval, failed]
+      timeout_s: 5
+`
+	t.Setenv("HOOK_SECRET", "s3cr3t")
+	cfg, err := Load(writeTemp(t, notifyBlock(ok)))
+	if err != nil {
+		t.Fatalf("加载配置: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("合法通知配置不该报错: %v", err)
+	}
+	if len(cfg.Notify.Webhooks) != 1 {
+		t.Fatalf("应解析出 1 个端点，实际 %d", len(cfg.Notify.Webhooks))
+	}
+	if got := cfg.Notify.Webhooks[0].TimeoutSeconds; got != 5 {
+		t.Fatalf("timeout 应为 5，实际 %d", got)
+	}
+
+	cases := []struct {
+		name   string
+		body   string
+		expect string
+	}{
+		{
+			name: "缺名字",
+			body: `notify:
+  webhooks:
+    - url: https://example.com/hook
+`,
+			expect: "notify.webhooks[0].name",
+		},
+		{
+			name: "重名",
+			body: `notify:
+  webhooks:
+    - name: ops
+      url: https://example.com/a
+    - name: ops
+      url: https://example.com/b
+`,
+			expect: "重复",
+		},
+		{
+			name: "非 http 地址",
+			body: `notify:
+  webhooks:
+    - name: ops
+      url: ftp://example.com/hook
+`,
+			expect: "必须是 http(s) 地址",
+		},
+		{
+			name: "未知事件",
+			body: `notify:
+  webhooks:
+    - name: ops
+      url: https://example.com/hook
+      events: [approval, everything]
+`,
+			expect: "只支持 approval / completed / failed / canceled",
+		},
+		{
+			name: "超时越界",
+			body: `notify:
+  webhooks:
+    - name: ops
+      url: https://example.com/hook
+      timeout_s: 120
+`,
+			expect: "timeout_s",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := Load(writeTemp(t, notifyBlock(c.body)))
+			if err != nil {
+				t.Fatalf("加载配置: %v", err)
+			}
+			err = cfg.ValidateServer()
+			if err == nil || !strings.Contains(err.Error(), c.expect) {
+				t.Fatalf("应报含 %q 的错误，实际 %v", c.expect, err)
+			}
+		})
+	}
+}

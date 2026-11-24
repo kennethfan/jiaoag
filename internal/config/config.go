@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	notifypkg "github.com/kennethfan/jiaoag/internal/notify"
 	"github.com/kennethfan/jiaoag/internal/policyfeed"
 )
 
@@ -34,6 +36,7 @@ type Config struct {
 	Exec      Exec       `yaml:"exec"`
 	Providers []Provider `yaml:"providers"`
 	MCP       MCP        `yaml:"mcp"`
+	Notify    Notify     `yaml:"notify"`
 	Plugins   Plugins    `yaml:"plugins"`
 	Project   Project    `yaml:"project"`
 }
@@ -151,6 +154,30 @@ type PluginServer struct {
 
 // IsEnabled 返回插件是否启用；未写视为启用。
 func (p PluginServer) IsEnabled() bool { return p.Enabled == nil || *p.Enabled }
+
+// Notify 配置需要人关注时的 webhook。
+type Notify struct {
+	Webhooks []Webhook `yaml:"webhooks"`
+}
+
+// Webhook 是一个外部通知端点。
+//
+// 只推「等人审批」和「任务终态」两类事件：它们是人不在电脑前时需要知道的，
+// 其余事件看一眼 TUI 就够了，推出去只是噪音。
+type Webhook struct {
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
+	// Secret 非空时会用 HMAC-SHA256 对请求体签名，接收方可用同一 secret 校验
+	// 来源；不配也能用，只是接收方无法区分是不是伪造的请求。
+	Secret Secret `yaml:"secret"`
+	// Events 取 approval / completed / failed / canceled，留空表示全部。
+	Events         []string `yaml:"events"`
+	TimeoutSeconds int      `yaml:"timeout_s"`
+	Enabled        *bool    `yaml:"enabled"`
+}
+
+// IsEnabled 报告该端点是否启用（未配置视为启用）。
+func (w Webhook) IsEnabled() bool { return w.Enabled == nil || *w.Enabled }
 
 // Exec 是命令执行的约束。
 type Exec struct {
@@ -640,6 +667,11 @@ func (c *Config) applyDefaults() {
 			s.TimeoutSeconds = 60
 		}
 	}
+	for i := range c.Notify.Webhooks {
+		if c.Notify.Webhooks[i].TimeoutSeconds <= 0 {
+			c.Notify.Webhooks[i].TimeoutSeconds = 10
+		}
+	}
 	for i := range c.MCP.Servers {
 		s := &c.MCP.Servers[i]
 		if s.TimeoutSeconds <= 0 {
@@ -748,6 +780,44 @@ func validMCPName(s string) bool {
 }
 
 // ValidateServer 校验服务端启动所需的全部字段。
+// validateNotify 校验 webhook 配置。URL 只接受 http/https：其它 scheme 要么
+// 需要额外依赖（如 mailto），要么会让配置看起来生效但其实发不出去。
+func (c *Config) validateNotify() error {
+	known := make(map[string]bool, 4)
+	for _, k := range notifypkg.Kinds() {
+		known[string(k)] = true
+	}
+	seen := make(map[string]bool, len(c.Notify.Webhooks))
+	for i, w := range c.Notify.Webhooks {
+		prefix := fmt.Sprintf("notify.webhooks[%d]", i)
+		if !validMCPName(w.Name) {
+			return fmt.Errorf("%s.name %q 不合法：只允许字母、数字、下划线与短横线，长度 1–32", prefix, w.Name)
+		}
+		if seen[w.Name] {
+			return fmt.Errorf("%s.name 重复：%s", prefix, w.Name)
+		}
+		seen[w.Name] = true
+		u, err := url.Parse(strings.TrimSpace(w.URL))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%s.url 必须是 http(s) 地址，当前为 %q", prefix, w.URL)
+		}
+		if w.Secret != "" {
+			if _, err := w.Secret.Resolve(); err != nil {
+				return fmt.Errorf("%s.secret: %w（支持明文 / $ENV_NAME / file:/path）", prefix, err)
+			}
+		}
+		for j, e := range w.Events {
+			if !known[strings.TrimSpace(e)] {
+				return fmt.Errorf("%s.events[%d] 只支持 approval / completed / failed / canceled，当前为 %q", prefix, j, e)
+			}
+		}
+		if w.TimeoutSeconds < 1 || w.TimeoutSeconds > 60 {
+			return fmt.Errorf("%s.timeout_s 必须在 1–60 之间，当前为 %d", prefix, w.TimeoutSeconds)
+		}
+	}
+	return nil
+}
+
 func (c *Config) ValidateServer() error {
 	if err := c.validateCommon(); err != nil {
 		return err
@@ -756,6 +826,9 @@ func (c *Config) ValidateServer() error {
 		return err
 	}
 	if err := c.validatePlugins(); err != nil {
+		return err
+	}
+	if err := c.validateNotify(); err != nil {
 		return err
 	}
 	if len(c.Providers) == 0 {

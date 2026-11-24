@@ -26,6 +26,9 @@ import (
 type App struct {
 	store Store
 	hub   *event.Hub
+	// notify 是可选的旁路回调（webhook 通知）；在 commit 内同步调用，
+	// 实现必须自身异步，不得阻塞。
+	notify func(domain.Event)
 
 	// commitMu 保证「提交顺序 = 广播顺序」。
 	//
@@ -83,6 +86,12 @@ func (a *App) commit(fn func() ([]domain.Event, error)) error {
 		return err
 	}
 	a.hub.Publish(stored)
+	// 通知在落库与广播之后触发：投递失败只该少一条提醒，不该影响任务。
+	if a.notify != nil {
+		for _, ev := range stored {
+			a.notify(ev)
+		}
+	}
 	return nil
 }
 

@@ -20,6 +20,7 @@ import (
 	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	"github.com/kennethfan/jiaoag/internal/llm"
 	mcppkg "github.com/kennethfan/jiaoag/internal/mcp"
+	notifypkg "github.com/kennethfan/jiaoag/internal/notify"
 	"github.com/kennethfan/jiaoag/internal/perm"
 	pluginpkg "github.com/kennethfan/jiaoag/internal/plugin"
 	"github.com/kennethfan/jiaoag/internal/server"
@@ -112,7 +113,13 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 		Version: version.Version,
 	})
 	defer pluginManager.Close()
-	if err := application.ConfigureRuntime(runtimeDeps(cfg, log, backend, ruleset, mcpManager, pluginManager)); err != nil {
+
+	notifier := notifypkg.New(notifyHooks(cfg, log), log)
+	defer notifier.Close()
+
+	deps := runtimeDeps(cfg, log, backend, ruleset, mcpManager, pluginManager)
+	deps.Notify = notifier.Observe
+	if err := application.ConfigureRuntime(deps); err != nil {
 		return err
 	}
 	log.Info("数据已就绪", "db", cfg.Storage.DBPath)
@@ -130,6 +137,38 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 	go watchSIGHUP(ctx, cfgPath, srv, log)
 
 	return srv.ListenAndServe(ctx)
+}
+
+// notifyHooks 把配置翻译成通知端点。secret 解析失败只跳过该端点：
+// 通知是旁路能力，不该因为它配错而让服务端起不来（配置校验已先挡过一遍）。
+func notifyHooks(cfg *config.Config, log *slog.Logger) []notifypkg.Hook {
+	var hooks []notifypkg.Hook
+	for _, w := range cfg.Notify.Webhooks {
+		if !w.IsEnabled() {
+			continue
+		}
+		secret := ""
+		if w.Secret != "" {
+			v, err := w.Secret.Resolve()
+			if err != nil {
+				log.Error("通知 secret 解析失败，跳过该端点", "hook", w.Name, "err", err)
+				continue
+			}
+			secret = v
+		}
+		events := make(map[notifypkg.Kind]bool, len(w.Events))
+		for _, e := range w.Events {
+			events[notifypkg.Kind(strings.TrimSpace(e))] = true
+		}
+		hooks = append(hooks, notifypkg.Hook{
+			Name:    w.Name,
+			URL:     w.URL,
+			Secret:  secret,
+			Events:  events,
+			Timeout: time.Duration(w.TimeoutSeconds) * time.Second,
+		})
+	}
+	return hooks
 }
 
 // logTokenNames 在启动时把令牌清单打出来（只打名字与读写属性）。

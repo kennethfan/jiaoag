@@ -178,3 +178,21 @@ plugins:
   #   # 单次 prepare/execute 的超时秒数，默认 60，范围 0-600。
   #   timeout_s: 60
   #   enabled: true
+
+# 需要人关注时的 webhook 通知（ADR-0035）。
+#
+# 只推两类事件：approval（等你裁决）与任务终态（completed / failed / canceled）。
+# 投递是异步的，失败重试 3 次（4xx 不重试），队列满了宁可丢通知也不阻塞任务。
+# 载荷含 session/task id、状态、工具名与提示词前 120 字；配了 secret 时
+# 请求头带 X-Jiaoag-Signature: sha256=<HMAC-SHA256(secret, body)>。
+notify:
+  webhooks: []
+  # - name: ops
+  #   url: https://example.com/jiaoag/hook
+  #   # 可选：用于签名与接收方验签，支持明文 / $ENV_NAME / file:/path。
+  #   secret: $JIAOAG_HOOK_SECRET
+  #   # 可选：只订阅部分事件，留空表示全部。
+  #   events: [approval, failed]
+  #   # 单次投递超时，默认 10，范围 1-60。
+  #   timeout_s: 10
+  #   enabled: true

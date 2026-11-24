@@ -54,6 +54,8 @@ type RuntimeDeps struct {
 	// SkillDirs 是技能包目录（`~` 已展开的写法或工作区相对路径）；非空时
 	// 把索引注入系统提示并注册 skill 工具。
 	SkillDirs []string
+	// Notify 是提交后的旁路回调（webhook 通知）；nil 表示不发通知。
+	Notify func(domain.Event)
 	// ProjectMode 控制工作区级扩展（AGENTS.md、.jiaoag/、.agents/skills）：
 	// ask 需确认（默认）、auto 直接生效、off 完全忽略。
 	ProjectMode string
@@ -91,6 +93,7 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	a.runtime = &deps
 	// 全局限流与队列上限随运行时配置一起生效。slots 为 nil 表示不限并发。
 	a.maxQueueDepth = deps.MaxQueueDepth
+	a.notify = deps.Notify
 	if deps.MaxConcurrentTasks > 0 {
 		a.slots = make(chan struct{}, deps.MaxConcurrentTasks)
 	}
