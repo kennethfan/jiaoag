@@ -245,6 +245,7 @@ func mcpServers(cfg *config.Config) []mcppkg.Server {
 		for _, k := range keys {
 			env = append(env, k+"="+s.Env[k])
 		}
+		include, exclude := s.ToolFilter()
 		out = append(out, mcppkg.Server{
 			Name:    s.Name,
 			Argv:    argv,
@@ -252,6 +253,8 @@ func mcpServers(cfg *config.Config) []mcppkg.Server {
 			Dir:     dir,
 			Timeout: time.Duration(s.TimeoutSeconds) * time.Second,
 			Trust:   s.Trust == "allow",
+			Include: include,
+			Exclude: exclude,
 		})
 	}
 	return out

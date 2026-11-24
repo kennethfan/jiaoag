@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -541,5 +542,45 @@ func TestProjectModeDefaultsAndValidation(t *testing.T) {
 	}
 	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "project.mode") {
 		t.Fatalf("非法项目模式应校验失败，得到 %v", err)
+	}
+}
+
+func TestMCPServerToolFilter(t *testing.T) {
+	yaml := minimalYAML + `mcp:
+  servers:
+    - name: lsp
+      command: /bin/true
+      tools:
+        include: [definition, " references "]
+        exclude: [edit_file, rename_symbol]
+`
+	cfg, err := Load(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+	include, exclude := cfg.MCP.Servers[0].ToolFilter()
+	if !reflect.DeepEqual(include, []string{"definition", "references"}) {
+		t.Fatalf("include = %v，期望去掉空白后的两项", include)
+	}
+	if !reflect.DeepEqual(exclude, []string{"edit_file", "rename_symbol"}) {
+		t.Fatalf("exclude = %v", exclude)
+	}
+
+	bad := minimalYAML + `mcp:
+  servers:
+    - name: lsp
+      command: /bin/true
+      tools:
+        include: [""]
+`
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "tools.include") {
+		t.Fatalf("空工具名应报错，得到 %v", err)
 	}
 }

@@ -71,12 +71,41 @@ type MCPServer struct {
 	TimeoutSeconds int `yaml:"timeout_s"`
 	// Trust 取 allow（默认：配置即信任，调用免审但记审计）或 ask（每次审批）。
 	Trust string `yaml:"trust"`
+	// Tools 过滤这台 server 暴露的工具，名字用 server 自己的原名（不含 mcp__ 前缀）。
+	Tools MCPServerTools `yaml:"tools"`
 	// Enabled 默认 true；显式 false 用于临时停用而不删配置。
 	Enabled *bool `yaml:"enabled"`
 }
 
+// MCPServerTools 决定哪些工具能进注册表。Include 非空时只保留列出的，
+// 再减去 Exclude；两个列表都为空表示全部保留。过滤发生在连接之后、进注册表之前，
+// 被剔掉的工具模型根本看不见（用来做只读接入，如 LSP server 的 edit_file）。
+type MCPServerTools struct {
+	Include []string `yaml:"include"`
+	Exclude []string `yaml:"exclude"`
+}
+
 // IsEnabled 返回是否启用，未配置视为启用。
 func (s MCPServer) IsEnabled() bool { return s.Enabled == nil || *s.Enabled }
+
+// ToolFilter 返回去掉空白的工具过滤列表。名字按 server 自己的原名精确匹配
+// （大小写敏感），不含 mcp__ 前缀。
+func (s MCPServer) ToolFilter() (include, exclude []string) {
+	return trimNames(s.Tools.Include), trimNames(s.Tools.Exclude)
+}
+
+func trimNames(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, name := range in {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
 
 // Policy 是本地权限规则的位置。外部规则只能收紧（ADR-0010）。
 type Policy struct {
@@ -487,6 +516,19 @@ func (c *Config) validateMCP() error {
 		}
 		if s.TimeoutSeconds < 0 || s.TimeoutSeconds > 600 {
 			return fmt.Errorf("%s.timeout_s 必须在 0–600 之间，当前为 %d", prefix, s.TimeoutSeconds)
+		}
+		for _, list := range []struct {
+			key   string
+			items []string
+		}{
+			{"include", s.Tools.Include},
+			{"exclude", s.Tools.Exclude},
+		} {
+			for j, name := range list.items {
+				if strings.TrimSpace(name) == "" {
+					return fmt.Errorf("%s.tools.%s[%d] 不能为空", prefix, list.key, j)
+				}
+			}
 		}
 		if s.Dir != "" {
 			if _, err := ExpandHome(s.Dir); err != nil {

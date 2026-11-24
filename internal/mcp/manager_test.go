@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -339,4 +340,83 @@ func contains(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestManagerFiltersToolsPerServer(t *testing.T) {
+	cases := []struct {
+		name    string
+		server  mcppkg.Server
+		want    []string
+		comment string
+	}{
+		{
+			name:    "include 只留列出的",
+			server:  mcppkg.Server{Name: "fs", Include: []string{"echo"}},
+			want:    []string{"mcp__fs__echo"},
+			comment: "列进 include 的工具必须保留",
+		},
+		{
+			name:    "include 里的名字不存在",
+			server:  mcppkg.Server{Name: "fs", Include: []string{"read_file"}},
+			want:    nil,
+			comment: "写错名字应当一个都不留，而不是退回全放行",
+		},
+		{
+			name:    "exclude 剔掉写工具",
+			server:  mcppkg.Server{Name: "fs", Exclude: []string{"echo"}},
+			want:    nil,
+			comment: "exclude 在 include 之后应用",
+		},
+		{
+			name:    "include 与 exclude 同时命中去掉",
+			server:  mcppkg.Server{Name: "fs", Include: []string{"echo"}, Exclude: []string{"echo"}},
+			want:    nil,
+			comment: "exclude 优先于 include",
+		},
+		{
+			name:    "空过滤保留全部",
+			server:  mcppkg.Server{Name: "fs"},
+			want:    []string{"mcp__fs__echo"},
+			comment: "不配置 tools 时不改变行为",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, _ := managerWith(t, tc.server)
+			list := m.Tools(context.Background(), "/repo")
+			var got []string
+			for _, tool := range list {
+				got = append(got, tool.Spec().Name)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("工具 = %v，期望 %v（%s）", got, tc.want, tc.comment)
+			}
+		})
+	}
+}
+
+func TestManagerRebuildsWhenToolFilterChanges(t *testing.T) {
+	var connects int32
+	opts := mcppkg.Options{
+		Logger: nil,
+		Connect: func(context.Context, mcppkg.Server) (*sdk.ClientSession, error) {
+			atomic.AddInt32(&connects, 1)
+			return fakeSession(t), nil
+		},
+	}
+	opts.Servers = []mcppkg.Server{{Name: "fs"}}
+	m := mcppkg.NewManager(opts)
+	t.Cleanup(func() { _ = m.Close() })
+
+	if list := m.ToolsWith(context.Background(), "/repo", nil); len(list) != 1 {
+		t.Fatalf("过滤前工具数 = %d，期望 1", len(list))
+	}
+	// 项目级配置改动过滤条件后，同一 root 必须重建，否则 exclude 要等到重启才生效。
+	filtered := []mcppkg.Server{{Name: "fs", Exclude: []string{"echo"}}}
+	if list := m.ToolsWith(context.Background(), "/repo", filtered); len(list) != 0 {
+		t.Fatalf("过滤后工具数 = %d，期望 0", len(list))
+	}
+	if got := atomic.LoadInt32(&connects); got != 2 {
+		t.Fatalf("connect 次数 = %d，期望 2（过滤条件进指纹）", got)
+	}
 }

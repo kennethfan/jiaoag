@@ -65,6 +65,82 @@ mcp:
 
 这是提示注入的护栏：server 返回的文本（尤其是项目级 `.jiaoag/mcp.yaml` 引入的第三方 server）可能包含「忽略之前的指令」这类内容，模型需要知道那是数据而不是命令。
 
+## 只读接入：过滤工具
+
+一台 server 往往同时提供读和写。想让模型只能读，用 `tools` 白名单把它裁到只读：
+
+```yaml
+mcp:
+  servers:
+    - name: lsp
+      command: mcp-language-server
+      args: ["-workspace", "/Users/me/code", "-lsp", "gopls"]
+      tools:
+        include: [definition, references, hover, diagnostics]
+        exclude: [edit_file, rename_symbol]
+```
+
+规则：
+
+- `include` 非空时只保留列出的工具，再减去 `exclude`；两个都为空表示全部保留。
+- 名字用 **server 自己的工具名**（`read_text_file`），不是模型看到的 `mcp__fs__read_text_file`，大小写敏感。
+- 过滤发生在连接之后、进注册表之前：被剔掉的工具模型根本看不见，也就不会去调。这和 `trust: ask` 不同——那里是看得见但每次要批。
+- 写错名字不会退回全放行，只会让这台 server 一个工具都不剩；日志会点出来：`MCP 配置里的 include 工具不存在 server=lsp tool=rename`。
+- 过滤条件参与工作区指纹：改了 `.jiaoag/mcp.yaml` 的 `tools`，下一次任务就重建，不用重启。
+- 项目级 `.jiaoag/mcp.yaml` 支持同样的 `tools` 字段。
+
+## 用 LSP 做代码理解
+
+grep 只能做文本匹配，`references` 能给到类型级别的调用链。接一台 LSP server 是当前性价比最高的「让 agent 更懂代码」的做法。
+
+```bash
+# 1. 装 server（一个 Go 二进制，8 MB）
+GOBIN=~/.local/bin go install github.com/isaacphi/mcp-language-server@latest
+
+# 2. 语言服务器按语言装，Go 就是 gopls，必须在 PATH 上
+go install golang.org/x/tools/gopls@latest
+```
+
+配置（workspace 一定要写项目的绝对路径，server 会拉起 gopls 索引这个目录）：
+
+```yaml
+mcp:
+  servers:
+    - name: lsp
+      command: ~/.local/bin/mcp-language-server
+      args: ["-workspace", "/Users/me/code/myproj", "-lsp", "gopls"]
+      timeout_s: 120
+      tools:
+        include: [definition, references, hover, diagnostics]
+```
+
+`args` 里的 `~` 不展开，`command` 支持 `~`，所以路径长的话建议 `GOBIN` 装到固定位置、写绝对路径。
+
+能力与代价：
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `definition` | `{symbolName}` | 定义位置 |
+| `references` | `{symbolName}` | 全部引用，返回带代码上下文 |
+| `hover` | `{filePath, line, column}` | 行列 1-based，类型与文档 |
+| `diagnostics` | `{filePath, contextLines?}` | 该文件的编译/类型错误 |
+
+- 启动约 1.6 秒（200 多个文件的项目），单次查询 30–700 ms。
+- 首次任务会慢一点：gopls 要先加载整个包图。之后按 workspace 缓存复用。
+- **`symbolName` 要写限定名**：`references: {symbolName: "domain.ApprovalKind"}` 能找全，写裸名 `ApprovalKind` 会漏掉跨包的类型转换（实测漏了 `records.go` 里的一处）。方法必须写 `Type.Method`。
+
+### 让模型用对工具
+
+工具能给到，但不代表模型会优先用它——实测里模型拿到 `references` 结果后又退回 grep。在项目根 `AGENTS.md` 里写一段就行（项目级提示会被自动发现）：
+
+```markdown
+## 代码检索
+
+- 查某个符号的定义、引用、调用链：用 `mcp__lsp__references` / `definition`，符号写限定名（`domain.ApprovalKind`、`App.HasBusyTasks`）。
+- 编译错误、类型错误：用 `mcp__lsp__diagnostics`。
+- 只在找字符串、注释、配置文件时用 `grep`；需要在未知文件里大范围搜索时再用 `glob` + `grep`。
+```
+
 ## 审批与信任模型
 
 MCP server 与 jiaoag 同权限运行，**不是沙箱**（ADR-0001）。因此边界画在配置面上：

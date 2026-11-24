@@ -56,6 +56,9 @@ servers:
     dir: sub
     timeout_s: 30
     trust: allow
+    tools:
+      include: [read_file]
+      exclude: [write_file, edit_file]
   - name: off
     command: true
     enabled: false
@@ -89,6 +92,9 @@ servers:
 	}
 	if !srv.Trust {
 		t.Fatal("trust: allow 应映射为 true")
+	}
+	if !equal(srv.Include, []string{"read_file"}) || !equal(srv.Exclude, []string{"write_file", "edit_file"}) {
+		t.Fatalf("工具过滤没解析出来：include=%v exclude=%v", srv.Include, srv.Exclude)
 	}
 	if p.Summary() != "提示 3 个、技能 2 个、MCP 1 台" {
 		t.Fatalf("摘要不对：%q", p.Summary())
@@ -144,6 +150,7 @@ func TestDiscoverRejectsBadMCPDoc(t *testing.T) {
 		"缺少命令":      "servers:\n  - name: ok\n",
 		"超时越界":      "servers:\n  - name: ok\n    command: x\n    timeout_s: 601\n",
 		"信任值非法":     "servers:\n  - name: ok\n    command: x\n    trust: maybe\n",
+		"过滤项为空":     "servers:\n  - name: ok\n    command: x\n    tools:\n      include: [\"\"]\n",
 		"名称重复":      "servers:\n  - name: ok\n    command: x\n  - name: ok\n    command: y\n",
 		"yaml 解析失败": "servers: [\n",
 	}

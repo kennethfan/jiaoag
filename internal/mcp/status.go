@@ -114,6 +114,8 @@ func ServersFromProject(list []project.Server) []Server {
 			Dir:     srv.Dir,
 			Timeout: srv.Timeout,
 			Trust:   srv.Trust,
+			Include: srv.Include,
+			Exclude: srv.Exclude,
 		})
 	}
 	return out

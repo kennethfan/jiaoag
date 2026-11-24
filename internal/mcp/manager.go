@@ -52,6 +52,28 @@ type Server struct {
 	// Trust 为真表示本地配置放行（配置即信任，默认），调用免审批但仍记审计；
 	// 为假对应 trust: ask，逐次人工批准。
 	Trust bool
+	// Include 非空时只保留列出的工具；Exclude 再从结果里减掉。名字是 server
+	// 自己的工具名（不含 mcp__ 前缀），精确匹配。
+	Include []string
+	Exclude []string
+}
+
+// toolAllowed 判断 server 的某个工具是否进注册表。过滤在连接后、装配前做，
+// 被剔掉的工具模型看不见，也不会因此少一次审批。
+func (srv Server) toolAllowed(name string) bool {
+	if len(srv.Include) > 0 && !containsName(srv.Include, name) {
+		return false
+	}
+	return !containsName(srv.Exclude, name)
+}
+
+func containsName(list []string, name string) bool {
+	for _, item := range list {
+		if item == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Options 构造 Manager。Connect 仅用于测试注入 in-memory transport。
@@ -162,6 +184,8 @@ func serversKey(servers []Server) string {
 			srv.Dir,
 			srv.Timeout.String(),
 			fmt.Sprint(srv.Trust),
+			strings.Join(srv.Include, "\x00"),
+			strings.Join(srv.Exclude, "\x00"),
 		}, "\x00"))
 	}
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
@@ -229,11 +253,18 @@ func (m *Manager) listTools(ctx context.Context, sess *sdk.ClientSession, srv Se
 
 	var out []tools.Tool
 	names := make(map[string]string)
+	seenAll := make(map[string]bool)
+	var dropped []string
 	for tool, err := range sess.Tools(ctx, nil) {
 		if err != nil {
 			return out, err
 		}
 		if tool == nil || tool.Name == "" {
+			continue
+		}
+		seenAll[tool.Name] = true
+		if !srv.toolAllowed(tool.Name) {
+			dropped = append(dropped, tool.Name)
 			continue
 		}
 		display := displayName(srv.Name, tool.Name)
@@ -269,6 +300,15 @@ func (m *Manager) listTools(ctx context.Context, sess *sdk.ClientSession, srv Se
 			timeout: timeout,
 			log:     m.log,
 		})
+	}
+	if len(dropped) > 0 {
+		m.log.Info("MCP 工具已按配置过滤",
+			"server", srv.Name, "kept", len(out), "dropped", fmt.Sprintf("%q", dropped))
+	}
+	for _, want := range srv.Include {
+		if !seenAll[want] {
+			m.log.Warn("MCP 配置里的 include 工具不存在", "server", srv.Name, "tool", want)
+		}
 	}
 	return out, nil
 }

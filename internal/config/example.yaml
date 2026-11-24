@@ -126,4 +126,10 @@ mcp:
   #   timeout_s: 60
   #   # allow（默认，配置即信任，免审并记 external.allow 审计）或 ask（逐次审批）。
   #   trust: allow
+  #   # 只让部分工具进注册表；名字是 server 自己的工具名，不含 mcp__ 前缀。
+  #   # include 非空时只保留列出的，再减去 exclude；都为空表示全部保留。
+  #   # 典型用法：只读接入 LSP server，把 edit_file / rename_symbol 挡在外面。
+  #   tools:
+  #     include: [definition, references, hover, diagnostics]
+  #     exclude: [edit_file, rename_symbol]
   #   enabled: true

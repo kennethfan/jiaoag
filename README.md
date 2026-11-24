@@ -155,6 +155,7 @@ make demo-mcp
 | v2.10 | 主动调起技能：`disable-model-invocation` 不进索引，`/skill` 指定后正文直接进该任务系统提示（ADR-0024） | ✅ |
 | v2.11 | 项目级扩展：工作区 `AGENTS.md` / `.jiaoag/{prompts,skills,mcp.yaml}` / `.agents/skills`，一次确认覆盖三者、内容变化重新确认（ADR-0025） | ✅ |
 | v2.12 | MCP 可观测性：`/mcp` 面板（只读，服务器 / 工具数 / 信任 / 版本），提示词申明外部工具返回内容只当数据 | ✅ |
+| v2.13 | MCP 工具过滤：`tools.include/exclude`，配套 LSP 只读接入配方（`docs/mcp.md`） | ✅ |
 
 ## 安全边界
 

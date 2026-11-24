@@ -60,6 +60,8 @@ type Server struct {
 	Dir     string
 	Timeout time.Duration
 	Trust   bool
+	Include []string
+	Exclude []string
 }
 
 // Project 是一次发现的结果。零值（Empty 为真）表示这个工作区没有项目级扩展。
@@ -271,8 +273,28 @@ type mcpDoc struct {
 		Dir     string            `yaml:"dir"`
 		Timeout int               `yaml:"timeout_s"`
 		Trust   string            `yaml:"trust"`
-		Enabled *bool             `yaml:"enabled"`
+		Tools   struct {
+			Include []string `yaml:"include"`
+			Exclude []string `yaml:"exclude"`
+		} `yaml:"tools"`
+		Enabled *bool `yaml:"enabled"`
 	} `yaml:"servers"`
+}
+
+// toolNames 去掉空白并拒绝空项：工具名写错时宁可启动报错，也别静默当成「全放行」。
+func toolNames(label, server, key string, in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	for i, name := range in {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("project: %s 里 server %q 的 tools.%s[%d] 不能为空", label, server, key, i)
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }
 
 func readServers(root string) ([]Server, error) {
@@ -317,6 +339,14 @@ func readServers(root string) ([]Server, error) {
 		default:
 			return nil, fmt.Errorf("project: %s 里 server %q 的 trust 只支持 ask 或 allow", label, name)
 		}
+		include, err := toolNames(label, name, "include", srv.Tools.Include)
+		if err != nil {
+			return nil, err
+		}
+		exclude, err := toolNames(label, name, "exclude", srv.Tools.Exclude)
+		if err != nil {
+			return nil, err
+		}
 		dir := strings.TrimSpace(srv.Dir)
 		if dir != "" {
 			if strings.HasPrefix(dir, "~") {
@@ -337,7 +367,9 @@ func readServers(root string) ([]Server, error) {
 			Dir:     dir,
 			Timeout: time.Duration(timeout) * time.Second,
 			// 项目级默认 ask：仓库内容不该默认为可信，ADR-0025。
-			Trust: srv.Trust == "allow",
+			Trust:   srv.Trust == "allow",
+			Include: include,
+			Exclude: exclude,
 		})
 	}
 	return out, nil
