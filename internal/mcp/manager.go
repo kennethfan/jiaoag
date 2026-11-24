@@ -261,6 +261,7 @@ func (m *Manager) listTools(ctx context.Context, sess *sdk.ClientSession, srv Se
 				Description: desc,
 				Schema:      schema,
 				Effects:     []tools.Effect{tools.EffectProcess},
+				Source:      "mcp:" + srv.Name,
 				Version:     fmt.Sprintf("mcp:%s@%s#%s", srv.Name, serverVersion, shortHash(schema)),
 			},
 			source:  "mcp:" + srv.Name,

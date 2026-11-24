@@ -105,3 +105,19 @@ C 级只影响质量、不影响安全；一旦让它参与安全判定，等级
 - 加工具 = 新 `Source` 实现，不改 `agent` / `app`；加供应商 = 新适配器 + 一套映射测试。
 - 任何人不能通过插件放宽权限，放宽只能改本地配置（ADR-0010），灵活性换可审计性。
 - 对外的扩展承诺有明确边界，避免「插件能改一切」的错误预期。
+
+## 修订（v2.13）：`tools.Source` 落地为真接口
+
+ADR 原文写的是「v1 只留接口不实现宿主」，实际结果反了过来：接口没落地，实现先来了——MCP 直接返回 `[]tools.Tool`，`main.go` 手工 `append(builtin, mcpTools...)`。结果是每加一种来源都要改宿主装配代码，且 `Spec.Source` 这个字段根本不存在（来源信息只藏在 `Prepared.External.Source` 里）。
+
+现在补上：
+
+- `tools.Source`：`Name() / Tools(ctx) / Close()`，与 ADR 原文一致。
+- `tools.StaticSource`：已在内存里的工具（内置工具、按任务构造的 `remember` / `skill`）。
+- `mcp.Manager.Source(root, extra)`：某个工作区的 MCP 工具视图。
+- `tools.NewRegistryFrom(ctx, sources...)`：按来源聚合；来源失败、工具重名都只跳过并返回错误列表，由宿主记日志——插件不得成为运行前提这条不变。
+- `Spec.Source` 由聚合时填充；工具自己声明了来源（MCP 写 `mcp:<server>`）则以它为准，粒度更细。
+
+`Close` 的归属按「谁拥有进程」划分：静态来源无事可做，MCP 视图是空操作（会话归 `Manager.Close`）。注册表是按任务装配的，装配结束顺手关掉子进程会误杀其他任务。
+
+第三方 stdio 插件宿主（`initialize` / `tools/list` / `tools/prepare` / `tools/execute`）仍未实现；现在它有落点：实现一个 `Source` 即可，不用再动 `agent` / `app` / `cmd`。

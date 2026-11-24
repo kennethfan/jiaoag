@@ -35,7 +35,10 @@ type Spec struct {
 	Description string
 	Schema      json.RawMessage // JSON Schema，直接转给供应商
 	Effects     []Effect
-	Version     string // 进 extensions_digest：schema 变了就要变
+	// Source 是工具来源（builtin | mcp:foo | plugin:bar），审计与审批面板靠它
+	// 定位「这是谁提供的工具」。注册表聚合时由 Source 填充，工具自己不必关心。
+	Source  string
+	Version string // 进 extensions_digest：schema 变了就要变
 }
 
 // Call 是一次工具调用的原始输入。
@@ -138,6 +141,87 @@ type Tool interface {
 	Execute(ctx context.Context, p Prepared) (Result, error)
 }
 
+// Source 是一组同源工具的提供者。Registry 由若干 Source 聚合而成，
+// 因此新增一种来源（MCP server、第三方插件）只需要实现这个接口，
+// 宿主装配代码不必跟着改。
+//
+// 契约：Tools 失败只影响该来源，宿主跳过后其余工具照常可用——
+// 插件不得成为运行前提（ADR-0009）。
+type Source interface {
+	// Name 是来源标识，形如 builtin / mcp:foo / plugin:bar；会填进
+	// Spec.Source 并随审计落库。
+	Name() string
+	// Tools 返回该来源当前可用的工具。
+	Tools(ctx context.Context) ([]Tool, error)
+	// Close 释放来源持有的资源（子进程、连接）。重复调用应当安全。
+	Close() error
+}
+
+// StaticSource 是已在内存里的工具集合：内置工具，以及按任务构造的
+// remember / skill 这类依赖运行期上下文的工具。
+type StaticSource struct {
+	name  string
+	tools []Tool
+}
+
+// NewStaticSource 把一组工具打包成来源。
+func NewStaticSource(name string, ts ...Tool) *StaticSource {
+	return &StaticSource{name: name, tools: ts}
+}
+
+// Name 实现 Source。
+func (s *StaticSource) Name() string { return s.name }
+
+// Tools 返回副本：调用方通常要 append 进自己的列表，不该动到来源内部状态。
+func (s *StaticSource) Tools(context.Context) ([]Tool, error) {
+	out := make([]Tool, len(s.tools))
+	copy(out, s.tools)
+	return out, nil
+}
+
+// Close 无事可做：这些工具没有子进程或连接。
+func (s *StaticSource) Close() error { return nil }
+
+// sourcedTool 给工具补上来源标识。工具自己声明了 Source 时以它为准
+// （例如 MCP 工具要精确到 mcp:<server>）。
+type sourcedTool struct {
+	Tool
+	source string
+}
+
+func (t sourcedTool) Spec() Spec {
+	spec := t.Tool.Spec()
+	if spec.Source == "" {
+		spec.Source = t.source
+	}
+	return spec
+}
+
+// Collect 按顺序聚合来源，失败只记录不中断。
+func Collect(ctx context.Context, sources ...Source) ([]Tool, []error) {
+	var (
+		out  []Tool
+		errs []error
+	)
+	for _, src := range sources {
+		if src == nil {
+			continue
+		}
+		batch, err := src.Tools(ctx)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("tools: 来源 %s 不可用：%w", src.Name(), err))
+			continue
+		}
+		for _, t := range batch {
+			if t == nil {
+				continue
+			}
+			out = append(out, sourcedTool{Tool: t, source: src.Name()})
+		}
+	}
+	return out, errs
+}
+
 // ErrInvalidArgs 表示模型给的参数不合法。它属于工具错误，不是任务错误。
 type ErrInvalidArgs struct {
 	Tool    string
@@ -186,6 +270,31 @@ func NewRegistry(ts ...Tool) (*Registry, error) {
 	}
 	sort.Strings(r.names)
 	return r, nil
+}
+
+// NewRegistryFrom 从来源聚合注册表。
+//
+// 与 NewRegistry 的差别：来源失败、工具名为空、跨来源重名都只跳过并记进
+// 返回值，不返回错误——MCP / 插件是增强，不能因为一台 server 起不来就让
+// 任务构造失败（ADR-0009）。调用方负责把 errs 记进日志。
+func NewRegistryFrom(ctx context.Context, sources ...Source) (*Registry, []error) {
+	ts, errs := Collect(ctx, sources...)
+	r := &Registry{byName: make(map[string]Tool, len(ts))}
+	for _, t := range ts {
+		spec := t.Spec()
+		if spec.Name == "" {
+			errs = append(errs, fmt.Errorf("tools: 来源 %s 有工具未命名，已跳过", spec.Source))
+			continue
+		}
+		if _, ok := r.byName[spec.Name]; ok {
+			errs = append(errs, fmt.Errorf("tools: 工具 %q 重复注册（来源 %s），已跳过", spec.Name, spec.Source))
+			continue
+		}
+		r.byName[spec.Name] = t
+		r.names = append(r.names, spec.Name)
+	}
+	sort.Strings(r.names)
+	return r, errs
 }
 
 // Get 按名字取工具。

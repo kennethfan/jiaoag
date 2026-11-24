@@ -83,6 +83,41 @@ func managerWith(t *testing.T, servers ...mcppkg.Server) (*mcppkg.Manager, *int3
 	return m, &connects
 }
 
+// TestManagerSourceImplementsToolsSource 保证 MCP 能和内置工具走同一套
+// 来源聚合，而不是让宿主为它写专门的装配代码。
+func TestManagerSourceImplementsToolsSource(t *testing.T) {
+	m, connects := managerWith(t, mcppkg.Server{Name: "fs", Timeout: time.Second})
+	src := m.Source("/repo", nil)
+	if src.Name() != "mcp" {
+		t.Fatalf("来源名 = %q，期望 mcp", src.Name())
+	}
+	reg, errs := tools.NewRegistryFrom(context.Background(), src)
+	if len(errs) != 0 {
+		t.Fatalf("聚合出错：%v", errs)
+	}
+	spec, ok := reg.Get("mcp__fs__echo")
+	if !ok {
+		t.Fatalf("工具没有注册：%v", reg.Names())
+	}
+	if spec.Spec().Source != "mcp:fs" {
+		t.Fatalf("Source = %q，期望保留 mcp:fs", spec.Spec().Source)
+	}
+	// Close 是空操作：会话归 Manager 所有，装配结束不能杀进程。
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reg2, errs := tools.NewRegistryFrom(context.Background(), m.Source("/repo", nil))
+	if len(errs) != 0 {
+		t.Fatalf("Close 后聚合出错：%v", errs)
+	}
+	if _, ok := reg2.Get("mcp__fs__echo"); !ok {
+		t.Fatal("Close 之后工具消失了，说明来源误关共享会话")
+	}
+	if got := atomic.LoadInt32(connects); got != 1 {
+		t.Fatalf("connect 次数 = %d，期望 1（同一 workspace 复用会话）", got)
+	}
+}
+
 func TestManagerListsToolsAndNamesThemBySource(t *testing.T) {
 	m, connects := managerWith(t, mcppkg.Server{Name: "fs", Timeout: time.Second})
 	list := m.Tools(context.Background(), "/repo")
@@ -101,6 +136,9 @@ func TestManagerListsToolsAndNamesThemBySource(t *testing.T) {
 	}
 	if len(spec.Effects) != 1 || spec.Effects[0] != tools.EffectProcess {
 		t.Fatalf("effects = %v，期望 process", spec.Effects)
+	}
+	if spec.Source != "mcp:fs" {
+		t.Fatalf("Source = %q，期望 mcp:fs（审计与面板靠它定位来源）", spec.Source)
 	}
 	// 同一 workspace 只连一次：每个任务都会调用 Tools()。
 	_ = m.Tools(context.Background(), "/repo")

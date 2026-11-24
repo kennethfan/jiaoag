@@ -174,10 +174,17 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 			if env.Skills != nil {
 				base = append(base, tools.NewSkill(env.Skills))
 			}
-			// MCP 是增强不是前提：server 起不来时 Tools 返回空列表，内置工具照常。
+			// MCP 是增强不是前提：server 起不来时该来源给出空列表，内置工具照常。
 			// 项目级 server 与全局同名时覆盖全局（mergeServers 统一处理）。
-			mcpTools := mcpManager.ToolsWith(context.Background(), ws.Root(), mcppkg.ServersFromProject(env.ProjectServers))
-			return tools.NewRegistry(append(base, mcpTools...)...)
+			sources := []tools.Source{
+				tools.NewStaticSource("builtin", base...),
+				mcpManager.Source(ws.Root(), mcppkg.ServersFromProject(env.ProjectServers)),
+			}
+			registry, errs := tools.NewRegistryFrom(context.Background(), sources...)
+			for _, err := range errs {
+				log.Warn("工具来源部分不可用", "workspace", ws.Root(), "err", err)
+			}
+			return registry, nil
 		},
 		MCPServers: func(root string, extra []mcppkg.Server) []mcppkg.ServerStatus {
 			return mcpManager.Status(root, extra)

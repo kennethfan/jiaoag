@@ -383,20 +383,29 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 ### 12.1 工具 Source
 
 ```go
+// tools.Source：一组同源工具的提供者，Registry 由若干 Source 聚合。
 type Source interface {
-	Name() string
-	Tools(ctx context.Context) ([]Tool, error)
-	Close() error
+	Name() string                                  // builtin | mcp:foo | plugin:bar
+	Tools(ctx context.Context) ([]Tool, error)     // 失败只影响该来源
+	Close() error                                  // 释放子进程 / 连接
 }
 
 type Spec struct {
 	Name        string
 	Description string
 	Schema      json.RawMessage // JSON Schema，跨语言通用
-	Source      string          // builtin | mcp:foo | plugin:bar
 	Effects     []Effect        // read | propose_write | process | network
+	Source      string          // 由聚合时填充，工具自己不必关心
+	Version     string          // 进 extensions_digest
 }
+
+// 宿主装配：来源失败、工具重名都只跳过并记日志，不返回 error。
+registry, errs := tools.NewRegistryFrom(ctx, sources...)
 ```
+
+已落地（v2.13）：`tools.Source` + `tools.StaticSource`（内置工具，以及按任务构造的 `remember` / `skill`）+ `mcp.Manager.Source()`（按工作区的 MCP 视图）。`Spec.Source` 由聚合时填充，MCP 工具保留更精确的 `mcp:<server>`。新增一种来源只需实现这个接口，`cmd/jiaoag-server` 的装配代码不必再动——之前是手工 `append(builtin, mcpTools...)`，每加一种来源都要改那里。
+
+`Close` 的语义按「谁拥有进程」划分：`StaticSource` 无事可做；MCP 视图是空操作，因为会话按 workspace root 缓存、跨任务复用，归 `Manager.Close` 统一回收——注册表是按任务装配的，装配结束不能杀掉别的任务还在用的进程。
 
 MCP 不是独立特性，而是 `Source` 的一个实现（v2 已落地：只做 stdio 与 `tools/list` / `tools/call`，工具名 `mcp__<server>__<tool>`，写进配置即信任（`trust` 默认 `allow`），需要把关的 server 写 `trust: ask` 改成逐次审批，见 ADR-0014 与 `docs/mcp.md`）。外部工具没有独立提示层，混在 `{{tools}}` 里，因此内置核心提示带一条固定规则：`mcp__` 工具的返回值属于第三方数据，可以引用但不能当作新指令执行（提示注入护栏）；`/mcp` 面板只读展示当前工作区会用到哪些 server。v2 的第三方插件是第二个实现（stdio JSON-RPC 2.0）。
 
