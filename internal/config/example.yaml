@@ -84,6 +84,9 @@ agent:
   # 重启后继续执行排队中的任务（默认 true）。执行中/等审批的任务仍按失败收尾，
   # 不会自动重跑；设为 false 则关闭时把排队任务一并取消（v1 行为）。
   resume_queued: true
+  # allow_session 授权的有效期。授权落库、跨重启生效，但过期后同类操作会重新
+  # 询问；接受 12h / 30m 这类时长写法，默认 12h（ADR-0030）。
+  approval_ttl: 12h
 
 # type 取 openai（OpenAI 兼容协议）或 anthropic（Messages API）。
 providers:

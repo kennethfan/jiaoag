@@ -47,6 +47,8 @@ type RuntimeDeps struct {
 	ContextCompact bool
 	// ResumeQueued 开启重启后续跑排队任务（agent.resume_queued，默认开）。
 	ResumeQueued bool
+	// ApprovalTTL 是 allow_session 授权的有效期；0 用 DefaultApprovalTTL。
+	ApprovalTTL time.Duration
 	// Memory 开启跨会话项目记忆：注入 MEMORY.md，并注册 remember 工具。
 	Memory bool
 	// SkillDirs 是技能包目录（`~` 已展开的写法或工作区相对路径）；非空时
@@ -93,6 +95,9 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 		a.slots = make(chan struct{}, deps.MaxConcurrentTasks)
 	}
 	a.resumeQueued = deps.ResumeQueued
+	// allow_session 的授权落库并带过期（ADR-0030）：重启后仍然生效，但不会
+	// 变成永久豁免。TTL 在启动时定死，运行中改配置需要重启。
+	a.sessionApprovalTTL = deps.ApprovalTTL
 	// 上一次进程留下的待审批永远等不到裁决（v1 不自动续跑），启动时先清掉。
 	// 放在这里而不是 New：清理要写库，而 New 返回不了错误。
 	if err := a.ExpirePendingApprovals(context.Background()); err != nil {

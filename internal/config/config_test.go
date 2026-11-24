@@ -380,6 +380,44 @@ func TestResumeQueuedDefaultsAndOverride(t *testing.T) {
 	}
 }
 
+func TestApprovalTTLDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.ApprovalTTL != DefaultApprovalTTL {
+		t.Fatalf("approval_ttl 默认应为 %q，实际 %q", DefaultApprovalTTL, cfg.Agent.ApprovalTTL)
+	}
+	if got := cfg.Agent.ApprovalTTLDuration(); got != 12*time.Hour {
+		t.Fatalf("默认时长应为 12h，实际 %v", got)
+	}
+
+	custom := strings.Replace(minimalYAML, "providers:", "agent:\n  approval_ttl: 30m\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, custom))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("approval_ttl: 30m 应合法：%v", err)
+	}
+	if got := cfg.Agent.ApprovalTTLDuration(); got != 30*time.Minute {
+		t.Fatalf("时长应为 30m，实际 %v", got)
+	}
+
+	// 授权必须有过期时间：0 或负数不能当作「永不过期」放过去。
+	for _, bad := range []string{"0", "-1h", "forever"} {
+		src := strings.Replace(minimalYAML, "providers:",
+			"agent:\n  approval_ttl: "+bad+"\nproviders:", 1)
+		cfg, err = Load(writeTemp(t, src))
+		if err != nil {
+			t.Fatalf("Load(%q): %v", bad, err)
+		}
+		if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "approval_ttl") {
+			t.Fatalf("approval_ttl: %q 应校验失败，得到 %v", bad, err)
+		}
+	}
+}
+
 func TestMemoryDefaultsAndValidation(t *testing.T) {
 	cfg, err := Load(writeTemp(t, minimalYAML))
 	if err != nil {

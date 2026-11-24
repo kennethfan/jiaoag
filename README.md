@@ -202,7 +202,7 @@ make demo-mcp
 | v2.15 | 事件与审计导出：`jiaoag-events`（只读 WS：`event.head`/`event.subscribe` + `audit.tail` 游标），JSONL 输出（ADR-0027） | ✅ |
 | v2.16 | hunk 级部分批准：`approval.resolve` 带 `hunks`，只写勾中的块，未选块丢弃并告知模型（ADR-0028） | ✅ |
 | v2.17 | 多令牌与只读权限：`server.tokens[]`（`read_only`），SIGHUP 热重载，吊销不用重启（ADR-0029） | ✅ |
-| v2.18 | `/healthz` 信息分级（匿名只回 ok，运行态细节需令牌）、Windows `!命令` 整树终止（Job Object） | ✅ |
+| v2.18 | 收尾三件：`/healthz` 信息分级（匿名只回 ok）、Windows `!命令` 整树终止（Job Object）、`allow_session` 授权落库 + 12h 过期（ADR-0030） | ✅ |
 
 ## 安全边界
 

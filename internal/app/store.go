@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 )
@@ -69,6 +70,13 @@ type Store interface {
 	TrustProject(ctx context.Context, workspace, digest string) error
 	// RevokeProjectTrust 撤销工作区的项目扩展信任。
 	RevokeProjectTrust(ctx context.Context, workspace string) error
+
+	// SessionApproval 判断会话内是否已放行过这组「工具 + 参数原文」。
+	SessionApproval(ctx context.Context, sessionID, key string, now time.Time) (bool, error)
+	// RememberSessionApproval 记录一次 allow_session 及其过期时间。
+	RememberSessionApproval(ctx context.Context, sessionID, key string, now, expiresAt time.Time) error
+	// PruneSessionApprovals 删除已过期的授权，返回删除条数。
+	PruneSessionApprovals(ctx context.Context, now time.Time) (int64, error)
 
 	Close() error
 }

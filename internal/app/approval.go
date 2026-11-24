@@ -8,24 +8,26 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/kennethfan/jiaoag/internal/agent"
 	"github.com/kennethfan/jiaoag/internal/domain"
 )
 
-// approvalState 保存审批的等待者与会话级白名单。
+// approvalState 保存审批的等待者。
 //
-// 这两样都只在内存里：等待者依附于正在运行的协程，进程一死就没有意义；
-// allow_session 是「本次会话内别再问我」的临时便利，落盘会让它变成一条
-// 永久豁免，而 AGENTS 的核心主张恰恰是「每次写入都要有人负责」。
+// 等待者依附于正在运行的协程，进程一死就没有意义，所以只在内存里。
+// allow_session 的授权不在这里：它要跨重启存活，落在 session_approvals 表，
+// 并带过期时间（ADR-0030）。
+// DefaultApprovalTTL 是 allow_session 授权未配置时的有效期。
+const DefaultApprovalTTL = 12 * time.Hour
+
 type approvalState struct {
 	mu      sync.Mutex
 	waiters map[domain.ApprovalID]*approvalWait
 	// resolved 暂存「已经裁决、但等待的协程还没来取」的结果。
 	// 没有它就有丢裁决的窗口：事件先广播，用户可能比协程先看到并按下 y。
 	resolved map[domain.ApprovalID]agent.ApprovalResult
-	// sessions[session][key] 是已放行的 tool+args 摘要。
-	sessions map[domain.SessionID]map[string]bool
 }
 
 type approvalWait struct {
@@ -41,13 +43,14 @@ func (a *App) AwaitApproval(ctx context.Context, req agent.ApprovalRequest) (age
 	if !req.ApprovalID.Valid() {
 		return agent.ApprovalResult{}, fmt.Errorf("app: 审批 id 为空")
 	}
-	key := approvalKey(req.Tool, req.Args)
-
-	a.approvals.mu.Lock()
-	if a.approvals.sessions[req.SessionID][key] {
-		a.approvals.mu.Unlock()
+	// 会话白名单在库里：重启后同一会话的同类调用不该再问一遍。
+	// 读失败按「没授权」处理——多问一次比误放行安全，真正的写失败会在
+	// ResolveApproval 里暴露出来。
+	if approved, err := a.store.SessionApproval(ctx, string(req.SessionID), approvalKey(req.Tool, req.Args), domain.Now()); err == nil && approved {
 		return agent.ApprovalResult{Decision: domain.DecisionAllowSession, Source: domain.SourcePolicy}, nil
 	}
+
+	a.approvals.mu.Lock()
 	if done, ok := a.approvals.resolved[req.ApprovalID]; ok {
 		delete(a.approvals.resolved, req.ApprovalID)
 		a.approvals.mu.Unlock()
@@ -140,23 +143,24 @@ func (a *App) ResolveApproval(ctx context.Context, sessionID domain.SessionID,
 		if err != nil {
 			return err
 		}
-		a.rememberApproval(task.SessionID, approvalKey(call.Name, call.Args))
+		now := domain.Now()
+		if err := a.store.RememberSessionApproval(ctx, string(task.SessionID),
+			approvalKey(call.Name, call.Args), now, now.Add(a.approvalTTL())); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (a *App) rememberApproval(sessionID domain.SessionID, key string) {
-	a.approvals.mu.Lock()
-	defer a.approvals.mu.Unlock()
-	if a.approvals.sessions == nil {
-		a.approvals.sessions = make(map[domain.SessionID]map[string]bool)
+// approvalTTL 是 allow_session 授权的有效期。未配置或非正数时用默认 12 小时：
+// 便利可以有，但不能变成一条永不过期的豁免。
+func (a *App) approvalTTL() time.Duration {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	if a.sessionApprovalTTL > 0 {
+		return a.sessionApprovalTTL
 	}
-	set := a.approvals.sessions[sessionID]
-	if set == nil {
-		set = make(map[string]bool)
-		a.approvals.sessions[sessionID] = set
-	}
-	set[key] = true
+	return DefaultApprovalTTL
 }
 
 // approvalKey 是 allow_session 的键：工具名 + 参数原文的摘要。

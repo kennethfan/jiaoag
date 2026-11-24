@@ -295,6 +295,9 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 	if version >= 3 {
 		probes = append(probes, `SELECT workspace, digest FROM project_trust LIMIT 1`)
 	}
+	if version >= 4 {
+		probes = append(probes, `SELECT session_id, key, expires_at FROM session_approvals LIMIT 1`)
+	}
 	for _, query := range probes {
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {

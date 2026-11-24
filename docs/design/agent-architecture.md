@@ -208,6 +208,8 @@ CAS 发生在批准之后、落盘之前：重算目标文件 sha256 与提案 `
 
 裁决可以只覆盖部分块（ADR-0028）：`approval.resolve.hunks` 给 0 起下标时，服务端用 `patch.ApplyHunks` 从磁盘旧内容逐块重放，未选块保持原样，重算 `new_hash` 后落盘，并在 `proposal.applied` / `write.applied` 里记下块号。`allow_session` 与 `hunks` 同时出现时降级为 `allow_once`——白名单放行的是「整份写入」，不是「这次只写第二块」。
 
+`allow_session` 的授权从 v2.18 起落 `session_approvals` 表（`session_id + 工具/参数摘要` 主键，`expires_at` 默认 12 小时，`agent.approval_ttl` 可调，ADR-0030）：重启后同会话同类调用不再询问；读取时按 `expires_at` 判定，读失败按未授权处理（fail closed），写入时顺手清理过期行。
+
 写入目标必须是**普通文件**：目标本身是符号链接时 `Snapshot`/`Write` 一律拒绝。`rename` 替换的是链接自身，而 diff 是按链接指向的内容算的，放行一次就是「批准的和落盘的」两件事。同理，行级 diff 表达不了的改动（新建空文件、只差结尾换行）在 `Prepare` 阶段就拒绝——空 diff 进审批等于让用户盲批。
 
 ### 5.3 任务运行时与连接解耦（ADR-0007）

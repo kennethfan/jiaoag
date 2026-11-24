@@ -56,6 +56,9 @@ type App struct {
 	// slots 是跨会话的并发槽，容量即同时执行的任务数上限；nil 表示不限。
 	// 槽只在 startLocked 里获取，拿不到就把任务放回队首，等有人让出槽再拉起。
 	slots chan struct{}
+	// sessionApprovalTTL 是 allow_session 授权的有效期，受 runtimeMu 保护。
+	// 它只影响新写入的授权，已有记录按各自的 expires_at 生效。
+	sessionApprovalTTL time.Duration
 	// closed 表示 Close 已经开始：之后提交的任务一律拒绝。它与「接受提交」
 	// 共用一把锁，因此不存在「已经通过忙检查、在关库之后才落库」的提交。
 	closed bool

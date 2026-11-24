@@ -255,6 +255,9 @@ type Agent struct {
 	// ResumeQueued 控制服务端重启后是否继续执行排队中的任务。
 	// 默认开启；执行中/等审批的任务仍按失败收尾，不会自动重跑。
 	ResumeQueued *bool `yaml:"resume_queued"`
+	// ApprovalTTL 是 allow_session 授权的有效期（如 12h、30m），默认 12h。
+	// 授权落库、跨重启生效，但过期后同一操作会重新询问。
+	ApprovalTTL string `yaml:"approval_ttl"`
 	// Memory 控制跨会话项目记忆：auto（默认）注入工作区 MEMORY.md 并注册
 	// remember 工具；off 关闭，既不注入也不提供写入工具。
 	Memory string `yaml:"memory"`
@@ -285,6 +288,16 @@ func (a Agent) SkillDirsFor() []string {
 	return a.SkillDirsOrDefault()
 }
 
+// ApprovalTTLDuration 把 agent.approval_ttl 解析成时长；配置已在 Validate
+// 阶段校验过，这里解析失败时退回默认值，避免把无效值传成 0。
+func (a Agent) ApprovalTTLDuration() time.Duration {
+	if ttl, err := time.ParseDuration(a.ApprovalTTL); err == nil && ttl > 0 {
+		return ttl
+	}
+	fallback, _ := time.ParseDuration(DefaultApprovalTTL)
+	return fallback
+}
+
 // ResumeQueuedEnabled 报告重启后是否续跑排队任务；未配置时默认开启。
 func (a Agent) ResumeQueuedEnabled() bool {
 	return a.ResumeQueued == nil || *a.ResumeQueued
@@ -311,6 +324,9 @@ const (
 
 // DefaultMaxRounds 是未配置 agent.max_rounds 时的轮数上限。
 const DefaultMaxRounds = 24
+
+// DefaultApprovalTTL 是未配置 agent.approval_ttl 时 allow_session 授权的有效期。
+const DefaultApprovalTTL = "12h"
 
 // MaxRoundsValue 返回生效的轮数上限；0 表示不限制。
 func (a Agent) MaxRoundsValue() int {
@@ -520,6 +536,9 @@ func (c *Config) applyDefaults() {
 	if c.Agent.ResumeQueued == nil {
 		enabled := true
 		c.Agent.ResumeQueued = &enabled
+	}
+	if c.Agent.ApprovalTTL == "" {
+		c.Agent.ApprovalTTL = DefaultApprovalTTL
 	}
 	if c.Agent.Memory == "" {
 		c.Agent.Memory = MemoryAuto
@@ -756,6 +775,13 @@ func (c *Config) validateCommon() error {
 	case "", MemoryAuto, MemoryOff:
 	default:
 		return fmt.Errorf("agent.memory 只支持 %q 或 %q，当前为 %q", MemoryAuto, MemoryOff, c.Agent.Memory)
+	}
+	// 空串表示「用默认值」：测试与嵌入式调用会直接构造 Config，不经过
+	// applyDefaults，此时不该把缺省当成非法。
+	if c.Agent.ApprovalTTL != "" {
+		if ttl, err := time.ParseDuration(c.Agent.ApprovalTTL); err != nil || ttl <= 0 {
+			return fmt.Errorf("agent.approval_ttl 必须是正的时长（如 12h、30m），当前为 %q", c.Agent.ApprovalTTL)
+		}
 	}
 	switch c.Agent.Skills {
 	case "", SkillAuto, SkillOff:
