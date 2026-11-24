@@ -28,6 +28,13 @@ storage:
 policy:
   # 本地收紧规则目录；外部规则只能让命令落到审批，不能放宽白名单（ADR-0010）。
   dir: ~/.config/jiaoag/policy.d
+  # 可选的签名规则 feed（ADR-0032）：jiaoag-policy sync 下载并验签后落到
+  # policy.d/feed.yaml，服务端启动时读取。url 与 keys 要么都配，要么都不配。
+  # keys 是 ed25519 公钥的 base64，可以配多把用于轮换。
+  # feed:
+  #   url: https://example.com/jiaoag/feed.yaml
+  #   keys:
+  #     - "BASE64_PUBLIC_KEY"
 
 project:
   # 工作区里的项目级扩展（AGENTS.md、.jiaoag/prompts/*.md、.jiaoag/skills、

@@ -456,7 +456,7 @@ v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过预算（�
 | 代码理解 | grep / glob 只做文本匹配：不懂 interface 满足关系、类型流、调用图；agent 的瓶颈八成在这里 | `tools.Source`：LSP 客户端、tree-sitter、semgrep、codegraph |
 | 命令后果判断 | argv 白名单只判「长什么样」，判不了「会发生什么」：`make` 里的 `curl \| sh`、npm postinstall、git hooks | 规则数据 + 命令重写器 + 执行包装器 |
 | 执行隔离 | 无容器（ADR-0001），命令与 server 同权限 | `ExecBackend`（ADR-0011），仅宿主选择；v2 已实现 `sandbox-exec` / `bwrap`（ADR-0015） |
-| 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（与 ADR-0010 同一管道） |
+| 供应链与时事 | 包昨天有没有被投毒、今天有没有 CVE，代码里推不出来 | 签名 feed（ADR-0010 管道）：`jiaoag-policy sync` 验签后落 `policy.d/feed.yaml`，只能收紧（ADR-0032） |
 | 上下文与长期记忆 | 单任务压缩已落地（ADR-0016）；跨会话记忆是工作区文件，不做检索 | `Compactor` + 工作区 `MEMORY.md`（ADR-0018） |
 | 重启恢复 | `queued` 续跑已落地（ADR-0017）；执行中任务不重跑，审批等待不可恢复 | 工作流持久化（事件回放） |
 | 模型能力 | 只适配两家协议；没有按任务选模型、本地推理、token 精算 | 供应商适配器 + 路由策略 + tokenizer |

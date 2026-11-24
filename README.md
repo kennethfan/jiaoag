@@ -204,6 +204,7 @@ make demo-mcp
 | v2.17 | 多令牌与只读权限：`server.tokens[]`（`read_only`），SIGHUP 热重载，吊销不用重启（ADR-0029） | ✅ |
 | v2.18 | 收尾三件：`/healthz` 信息分级（匿名只回 ok）、Windows `!命令` 整树终止（Job Object）、`allow_session` 授权落库 + 12h 过期（ADR-0030） | ✅ |
 | v2.19 | 上下文预算按估算 token：`agent.context_budget_tokens`（默认 32000）+ 按 `prompt_tokens` 在线校准，旧 `context_budget_chars` 保留折算（ADR-0031） | ✅ |
+| v2.20 | 签名规则 feed：`jiaoag-policy sync` 验签（ed25519）后落 `policy.d/feed.yaml`，只收紧、带有效期与回滚保护（ADR-0032） | ✅ |
 
 ## 安全边界
 
@@ -214,3 +215,5 @@ make demo-mcp
 重启行为：排队中的任务默认在服务端重启后自动继续，执行中或等审批的任务不会自动重跑；见 [`docs/restart-resume.md`](docs/restart-resume.md)。
 
 技能包默认从 `~/.agents/skills` 读取：系统提示里只放技能名与适用场景，模型需要时用 `skill` 工具取正文，正文不常驻、也不扩大执行权限；见 [`docs/skills.md`](docs/skills.md)。
+
+规则可以来自外部：`jiaoag-policy sync` 下载 ed25519 签名的规则 feed，验签后落到 `policy.d/`，服务端启动时加载。feed 只能收紧（把命令变成需要审批），不能放行任何东西，且带有效期与回滚保护；见 [`docs/policy-feed.md`](docs/policy-feed.md)。

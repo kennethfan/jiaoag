@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -652,5 +654,47 @@ func TestMCPServerToolFilter(t *testing.T) {
 	}
 	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "tools.include") {
 		t.Fatalf("空工具名应报错，得到 %v", err)
+	}
+}
+
+func TestPolicyFeedValidation(t *testing.T) {
+	pub := base64.StdEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
+
+	load := func(extra string) *Config {
+		t.Helper()
+		cfg, err := Load(writeTemp(t, strings.Replace(minimalYAML, "providers:", "policy:\n"+extra+"providers:", 1)))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg
+	}
+
+	// 都不配：不用 feed，正常。
+	if cfg := load("  dir: /tmp/p\n"); func() error { return cfg.ValidateServer() }() != nil {
+		t.Fatalf("未配置 feed 时不应报错: %v", cfg.ValidateServer())
+	}
+
+	// url 与 keys 都配：通过，且能解析出公钥。
+	both := load("  dir: /tmp/p\n  feed:\n    url: https://example.com/feed.yaml\n    keys: [" + pub + "]\n")
+	if err := both.ValidateServer(); err != nil {
+		t.Fatalf("完整配置应通过: %v", err)
+	}
+	keys, err := both.FeedKeys()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("FeedKeys = %v, %v", keys, err)
+	}
+
+	// 只配一半都算错：会让「以为有签名保护」静默落空。
+	if cfg := load("  feed:\n    url: https://example.com/feed.yaml\n"); cfg.ValidateServer() == nil ||
+		!strings.Contains(cfg.ValidateServer().Error(), "policy.feed.keys") {
+		t.Fatalf("只配 url 应报错")
+	}
+	if cfg := load("  feed:\n    keys: [" + pub + "]\n"); cfg.ValidateServer() == nil ||
+		!strings.Contains(cfg.ValidateServer().Error(), "policy.feed.url") {
+		t.Fatalf("只配公钥应报错")
+	}
+	if cfg := load("  feed:\n    url: https://example.com/feed.yaml\n    keys: [not-base64]\n"); cfg.ValidateServer() == nil ||
+		!strings.Contains(cfg.ValidateServer().Error(), "policy.feed.keys") {
+		t.Fatalf("非法公钥应报错")
 	}
 }

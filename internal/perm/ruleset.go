@@ -12,9 +12,11 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/kennethfan/jiaoag/internal/policyfeed"
 	"github.com/kennethfan/jiaoag/internal/tools"
 )
 
@@ -80,10 +82,24 @@ func DefaultRuleset() *Ruleset {
 // Loader 读内嵌默认规则，再叠加 policy.d/*.yaml 的收紧规则。
 type Loader struct {
 	dir string
+	// feedKeys 非空时，目录里的 feed.yaml 必须是这些公钥签过的，且未过期。
+	feedKeys policyfeed.Keys
 }
 
 // NewLoader 返回规则加载器；dir 为空表示只用内嵌规则。
 func NewLoader(dir string) *Loader { return &Loader{dir: dir} }
+
+// WithFeedKeys 启用签名规则 feed：读取 policy.d/feed.yaml 前先验签。
+//
+// 验签失败或 feed 过期都直接报错，不静默跳过：静默跳过等于「收紧规则悄悄没了」，
+// 用户会以为自己受保护。
+func (l *Loader) WithFeedKeys(keys policyfeed.Keys) *Loader {
+	if l == nil {
+		return l
+	}
+	l.feedKeys = keys
+	return l
+}
 
 // Load 读取并校验规则。外部文件解析失败直接报错：静默跳过会让用户以为
 // 自己的收紧规则生效了，而实际上没有。
@@ -98,12 +114,36 @@ func (l *Loader) Load() (*Ruleset, error) {
 
 	rules := append([]Rule(nil), base.Rules...)
 	version := base.Version
+
+	// feed 先验签：它和本地规则同目录，但不是同一类东西——本地文件是用户自己
+	// 写的，feed 是外部发布的，必须证明来源。
+	var feedData []byte
+	var feedMeta policyfeed.Metadata
+	if l != nil && len(l.feedKeys) > 0 {
+		if l.dir == "" {
+			return nil, errors.New("perm: 配置了规则 feed 公钥，但没有规则目录")
+		}
+		data, meta, err := policyfeed.LoadFile(l.dir, l.feedKeys)
+		if err != nil {
+			return nil, err
+		}
+		if !meta.ExpiresAt.IsZero() && time.Now().After(meta.ExpiresAt) {
+			return nil, fmt.Errorf("perm: 规则 feed 已于 %s 过期，请运行 jiaoag-policy sync 更新",
+				meta.ExpiresAt.Format(time.RFC3339))
+		}
+		feedData, feedMeta = data, meta
+	}
+
 	if l != nil && l.dir != "" {
 		names, err := policyFiles(l.dir)
 		if err != nil {
 			return nil, err
 		}
 		for _, name := range names {
+			// feed 已经单独验签加载，不能再按普通本地文件读一遍。
+			if feedData != nil && name == policyfeed.FileName {
+				continue
+			}
 			body, err := os.ReadFile(filepath.Join(l.dir, name))
 			if err != nil {
 				return nil, fmt.Errorf("perm: 读取规则 %s: %w", name, err)
@@ -124,6 +164,22 @@ func (l *Loader) Load() (*Ruleset, error) {
 				version += "+" + f.Version
 			}
 		}
+	}
+
+	// feed 排在本机规则之后：本机规则是用户明确写下的，先匹配；feed 是补充。
+	if feedData != nil {
+		var f ruleFile
+		if err := yaml.Unmarshal(feedData, &f); err != nil {
+			return nil, fmt.Errorf("perm: 解析规则 feed: %w", err)
+		}
+		if err := validateRules(f.Rules); err != nil {
+			return nil, fmt.Errorf("perm: 规则 feed: %w", err)
+		}
+		for _, rule := range f.Rules {
+			rule.Tighten = true
+			rules = append(rules, rule)
+		}
+		version += "+feed@" + feedMeta.Version
 	}
 	return NewRuleset(version, rules), nil
 }

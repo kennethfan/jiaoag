@@ -31,6 +31,7 @@ build:
 	$(GO) build -o bin/jiaoag-server ./cmd/jiaoag-server
 	$(GO) build -o bin/jiaoag-tui ./cmd/jiaoag-tui
 	$(GO) build -o bin/jiaoag-events ./cmd/jiaoag-events
+	$(GO) build -o bin/jiaoag-policy ./cmd/jiaoag-policy
 
 # 真实 provider 冒烟：起真实 server，在临时项目上跑一轮读→改→测。
 # 需要 JIAOAG_DEMO_* 环境变量（或 ~/.config/jiaoag/demo.env），见 scripts/demo.sh。

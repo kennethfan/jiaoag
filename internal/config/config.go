@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/kennethfan/jiaoag/internal/policyfeed"
 )
 
 // AppName 同时用于目录名与二进制名前缀。
@@ -111,6 +113,17 @@ func trimNames(in []string) []string {
 // Policy 是本地权限规则的位置。外部规则只能收紧（ADR-0010）。
 type Policy struct {
 	Dir string `yaml:"dir"`
+	// Feed 是可选的签名规则 feed（ADR-0032）。只收紧，所以来源不可信也不会
+	// 放宽任何东西；但仍要求签名，避免有人往规则目录里塞文件。
+	Feed PolicyFeed `yaml:"feed"`
+}
+
+// PolicyFeed 描述规则 feed 的来源与信任根。
+type PolicyFeed struct {
+	// URL 支持 http(s) 与 file://，签名约定在同址加 .sig 后缀。
+	URL string `yaml:"url"`
+	// Keys 是 ed25519 公钥（base64），可配多把用于轮换。
+	Keys []string `yaml:"keys"`
 }
 
 // Exec 是命令执行的约束。
@@ -739,6 +752,42 @@ func (c *Config) ValidateClient() error {
 
 // validateTokens 校验 token 与 tokens 的形状，并逐个解析取值。
 // 启动时的解析失败要立刻报错，否则服务端会带着一个永远认证不上的令牌起来。
+// validatePolicyFeed 校验签名规则 feed 的配置。
+//
+// url 与 keys 要么都不配（不用 feed），要么都配：只配一半会让「我以为有签名
+// 保护」变成静默落空，比完全不用 feed 更危险。
+func (c *Config) validatePolicyFeed() error {
+	url := strings.TrimSpace(c.Policy.Feed.URL)
+	configured := 0
+	for i, key := range c.Policy.Feed.Keys {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("policy.feed.keys[%d] 不能为空", i)
+		}
+		configured++
+	}
+	if url == "" && configured == 0 {
+		return nil
+	}
+	if url == "" {
+		return errors.New("policy.feed.url 不能为空（已配置公钥）")
+	}
+	if configured == 0 {
+		return errors.New("policy.feed.keys 至少要配置一个公钥（已配置 url）")
+	}
+	if _, err := policyfeed.ParseKeys(c.Policy.Feed.Keys); err != nil {
+		return fmt.Errorf("policy.feed.keys: %w", err)
+	}
+	return nil
+}
+
+// FeedKeys 返回解析后的 feed 公钥；未配置时返回 nil。
+func (c *Config) FeedKeys() (policyfeed.Keys, error) {
+	if len(c.Policy.Feed.Keys) == 0 {
+		return nil, nil
+	}
+	return policyfeed.ParseKeys(c.Policy.Feed.Keys)
+}
+
 func (c *Config) validateTokens() error {
 	seen := make(map[string]bool, len(c.Server.Tokens)+1)
 	total := 0
@@ -826,6 +875,9 @@ func (c *Config) validateCommon() error {
 		return fmt.Errorf("project.mode 只支持 %q / %q / %q，当前为 %q", ProjectAsk, ProjectAuto, ProjectOff, c.Project.Mode)
 	}
 	if err := c.validateTokens(); err != nil {
+		return err
+	}
+	if err := c.validatePolicyFeed(); err != nil {
 		return err
 	}
 	for name, p := range map[string]string{"storage.db_path": c.Storage.DBPath, "storage.output_dir": c.Storage.OutputDir} {

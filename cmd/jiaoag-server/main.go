@@ -80,7 +80,11 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 	if err != nil {
 		return err
 	}
-	ruleset, err := perm.NewLoader(policyDir).Load()
+	feedKeys, err := cfg.FeedKeys()
+	if err != nil {
+		return err
+	}
+	ruleset, err := perm.NewLoader(policyDir).WithFeedKeys(feedKeys).Load()
 	if err != nil {
 		return err
 	}
