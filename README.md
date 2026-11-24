@@ -52,7 +52,16 @@ TUI 连不上本地服务端时会自动拉起同目录的 `jiaoag-server`（日
 
 - `-no-spawn`：不自动拉起，连不上就报错（脚本/CI 用）。
 - `-server-bin`：指定 `jiaoag-server` 路径，默认依次找 PATH 与 TUI 同目录。
+- `-insecure`：跳过 TLS 证书校验，只用于自签证书（见下）。
 - `-url` 指向远端地址时不会拉起本地进程。
+
+默认是本机明文连接。要远程访问或跨不可信网络，配置里同时给出证书与私钥即启用 TLS（`wss://`），TUI 会自动跟着换 scheme；自签证书加 `-insecure`。生成命令、反代写法和安全边界见 [`docs/tls.md`](docs/tls.md)：
+
+```yaml
+server:
+  tls_cert: ~/.config/jiaoag/tls/cert.pem
+  tls_key: ~/.config/jiaoag/tls/key.pem
+```
 
 也可以手工分开跑（手工启动默认常驻，不会空闲退出）：
 
@@ -156,6 +165,7 @@ make demo-mcp
 | v2.11 | 项目级扩展：工作区 `AGENTS.md` / `.jiaoag/{prompts,skills,mcp.yaml}` / `.agents/skills`，一次确认覆盖三者、内容变化重新确认（ADR-0025） | ✅ |
 | v2.12 | MCP 可观测性：`/mcp` 面板（只读，服务器 / 工具数 / 信任 / 版本），提示词申明外部工具返回内容只当数据 | ✅ |
 | v2.13 | MCP 工具过滤：`tools.include/exclude`，配套 LSP 只读接入配方（`docs/mcp.md`） | ✅ |
+| v2.14 | 传输加密：可选 `server.tls_cert/tls_key` 启用 wss，TUI `-insecure` 接自签，反代写法见 `docs/tls.md`（ADR-0026） | ✅ |
 
 ## 安全边界
 

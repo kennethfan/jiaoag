@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -56,7 +57,8 @@ func ensureServer(ctx context.Context, cfg *config.Config, cfgPath, serverBin, t
 	if err != nil {
 		return nil, err
 	}
-	if err := waitHealthy(ctx, proc, "http://"+addr.hostport+"/healthz"); err != nil {
+	healthURL, client := healthProbe(cfg, addr.hostport)
+	if err := waitHealthy(ctx, proc, healthURL, client); err != nil {
 		proc.stop()
 		return nil, err
 	}
@@ -181,10 +183,24 @@ func serverLogPath() (string, error) {
 	return filepath.Join(dir, "server.log"), nil
 }
 
+// healthProbe 给出探活用的 URL 与客户端。
+//
+// 启用 TLS 时会跳到 https：自动拉起的服务端用的是配置里的证书，可能就是自签的，
+// 而这里只关心「进程起来没有」，所以不验证书链。真正的连接是否跳校验由 TUI 的
+// -insecure 决定，两者互不代替。
+func healthProbe(cfg *config.Config, hostport string) (string, *http.Client) {
+	if !cfg.Server.TLSEnabled() {
+		return "http://" + hostport + "/healthz", &http.Client{Timeout: 500 * time.Millisecond}
+	}
+	return "https://" + hostport + "/healthz", &http.Client{
+		Timeout:   500 * time.Millisecond,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+	}
+}
+
 // waitHealthy 轮询 /healthz，直到服务端可用、子进程退出或超时。
-func waitHealthy(ctx context.Context, proc *serverProc, url string) error {
+func waitHealthy(ctx context.Context, proc *serverProc, url string, client *http.Client) error {
 	deadline := time.Now().Add(15 * time.Second)
-	client := &http.Client{Timeout: 500 * time.Millisecond}
 	for {
 		select {
 		case err := <-proc.done:

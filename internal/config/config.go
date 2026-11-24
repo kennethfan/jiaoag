@@ -5,6 +5,7 @@
 package config
 
 import (
+	"crypto/tls"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -157,6 +158,40 @@ const (
 type Server struct {
 	Listen string `yaml:"listen"`
 	Token  Secret `yaml:"token"`
+	// TLSCert / TLSKey 同时配置才启用 TLS（wss）。只配一个会报错，
+	// 避免出现「以为加密了、其实是明文」的部署。
+	TLSCert string `yaml:"tls_cert"`
+	TLSKey  string `yaml:"tls_key"`
+}
+
+// TLSEnabled 报告是否配置了证书对。
+func (s Server) TLSEnabled() bool { return s.TLSCert != "" && s.TLSKey != "" }
+
+// validateTLS 校验证书对：两个都配或都不配，且能真正加载。
+//
+// 启动时就解析，是为了把「证书路径写错」挡在监听之前——否则错误要等
+// 第一个连接进来才暴露，看着像客户端问题。
+func (c *Config) validateTLS() error {
+	cert, key := strings.TrimSpace(c.Server.TLSCert), strings.TrimSpace(c.Server.TLSKey)
+	switch {
+	case cert == "" && key == "":
+		return nil
+	case cert == "" || key == "":
+		return errors.New("server.tls_cert 与 server.tls_key 必须同时配置")
+	}
+	certPath, err := ExpandHome(cert)
+	if err != nil {
+		return fmt.Errorf("server.tls_cert: %w", err)
+	}
+	keyPath, err := ExpandHome(key)
+	if err != nil {
+		return fmt.Errorf("server.tls_key: %w", err)
+	}
+	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
+		return fmt.Errorf("server.tls_cert/tls_key 无法加载: %w", err)
+	}
+	c.Server.TLSCert, c.Server.TLSKey = certPath, keyPath
+	return nil
 }
 
 // Storage 是持久化位置。
@@ -612,6 +647,9 @@ func (c *Config) ValidateClient() error { return c.validateCommon() }
 func (c *Config) validateCommon() error {
 	if c.Server.Listen == "" {
 		return errors.New("server.listen 不能为空")
+	}
+	if err := c.validateTLS(); err != nil {
+		return err
 	}
 	if c.Agent.ContextBudgetChars > 0 && c.Agent.ContextBudgetChars <= 1000 {
 		return fmt.Errorf("agent.context_budget_chars 必须大于 1000，当前为 %d", c.Agent.ContextBudgetChars)

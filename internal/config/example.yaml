@@ -2,10 +2,14 @@
 # 复制到 ~/.config/jiaoag/config.yaml（或运行 jiaoag-server -init）后按需修改。
 
 server:
-  # 首版只监听回环地址；协议按可远程设计，但传输加密留到远程部署时再谈。
+  # 默认只监听回环地址。需要远程访问时改 listen 并配置下面的 TLS（wss）。
   listen: 127.0.0.1:8787
   # 单用户 token，支持三种写法：明文 / $ENV_NAME / file:/abs/path
   token: $JIAOAG_TOKEN
+  # 可选：同时配置证书与私钥即启用 TLS（wss）。只配一个会启动报错。
+  # 自签证书可用 openssl 生成，连接时 TUI 加 -insecure（见 docs/tls.md）。
+  # tls_cert: ~/.config/jiaoag/tls/cert.pem
+  # tls_key: ~/.config/jiaoag/tls/key.pem
 
 storage:
   db_path: ~/.local/share/jiaoag/jiaoag.db

@@ -20,12 +20,13 @@ import (
 
 func main() {
 	var (
-		cfgPath = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
-		url     = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
-		check   = flag.Bool("check", false, "只做一次连接与心跳验证后退出（用于自检/脚本）")
-		sesID   = flag.String("session", "", "恢复指定会话（进程重启后用 --session <id> 回到原会话）")
-		noSpawn = flag.Bool("no-spawn", false, "连不上时也不自动拉起本地服务端")
-		srvBin  = flag.String("server-bin", "", "jiaoag-server 路径（默认同目录或 PATH）")
+		cfgPath  = flag.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
+		url      = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
+		check    = flag.Bool("check", false, "只做一次连接与心跳验证后退出（用于自检/脚本）")
+		sesID    = flag.String("session", "", "恢复指定会话（进程重启后用 --session <id> 回到原会话）")
+		noSpawn  = flag.Bool("no-spawn", false, "连不上时也不自动拉起本地服务端")
+		srvBin   = flag.String("server-bin", "", "jiaoag-server 路径（默认同目录或 PATH）")
+		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 	)
 	flag.Parse()
 
@@ -43,9 +44,13 @@ func main() {
 
 	target := *url
 	if target == "" {
-		target = "ws://" + dialableAddr(cfg.Server.Listen) + "/ws"
+		scheme := "ws"
+		if cfg.Server.TLSEnabled() {
+			scheme = "wss"
+		}
+		target = scheme + "://" + dialableAddr(cfg.Server.Listen) + "/ws"
 	}
-	opts := tui.Options{URL: target, Token: token, SessionID: *sesID}
+	opts := tui.Options{URL: target, Token: token, SessionID: *sesID, InsecureTLS: *insecure}
 
 	if *check {
 		runCheck(opts)

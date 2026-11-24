@@ -43,6 +43,11 @@ type Server struct {
 	idleC      chan struct{}
 	idleTimer  *time.Timer
 	idleClosed bool
+
+	// tlsCert / tlsKey 非空时以 TLS 提供服务（wss）。由 main 从配置注入，
+	// 与 Handler() 的测试路径无关。
+	tlsCert string
+	tlsKey  string
 }
 
 // clientConn 包一层写锁：websocket 的连接允许并发读，但写必须串行。
@@ -154,6 +159,13 @@ func (s *Server) SetIdleExit(d time.Duration) *Server {
 	return s
 }
 
+// SetTLS 让服务端以 TLS 提供服务（wss）。两个参数都为空表示不启用。
+// 证书在 config 校验阶段已确认可加载，这里不再重复解析。
+func (s *Server) SetTLS(certFile, keyFile string) *Server {
+	s.tlsCert, s.tlsKey = certFile, keyFile
+	return s
+}
+
 // ListenAndServe 阻塞运行直到 ctx 取消或监听失败。
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	ln, err := net.Listen("tcp", s.cfg.Server.Listen)
@@ -164,10 +176,17 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		"listen", ln.Addr().String(),
 		"version", s.version,
 		"protocol", protocol.Version,
+		"tls", s.tlsCert != "",
 	)
 
 	errc := make(chan error, 1)
-	go func() { errc <- s.httpSrv.Serve(ln) }()
+	go func() {
+		if s.tlsCert != "" {
+			errc <- s.httpSrv.ServeTLS(ln, s.tlsCert, s.tlsKey)
+			return
+		}
+		errc <- s.httpSrv.Serve(ln)
+	}()
 
 	// 启动即开始空闲倒计时：TUI 拉起 server 后如果自己先崩了，没人连接时
 	// 不应该留下一个孤儿进程。TUI 正常连接会立刻取消定时器。
@@ -407,6 +426,12 @@ func (s *Server) checkIdle() {
 	close(s.idleC)
 }
 
+// closeAll 立即断开所有 WS 连接。
+//
+// 这里刻意不用 conn.Close：它会先发 close 帧再等对端回话，对端不读时（比如
+// 卡住的客户端）会一直挂到内部 5 秒超时，把 http.Server.Shutdown 拖满整个
+// 宽限期；而那时再调 CloseNow 也没用——Close 已经占住了「正在关闭」状态，
+// CloseNow 会直接返回。关闭是终态，直接断，客户端按断线重连处理。
 func (s *Server) closeAll() {
 	s.mu.Lock()
 	conns := make([]*clientConn, 0, len(s.conns))
@@ -415,7 +440,7 @@ func (s *Server) closeAll() {
 	}
 	s.mu.Unlock()
 	for _, c := range conns {
-		_ = c.conn.Close(websocket.StatusGoingAway, "server shutting down")
+		c.conn.CloseNow()
 	}
 }
 

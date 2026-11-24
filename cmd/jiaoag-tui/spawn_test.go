@@ -1,10 +1,13 @@
 package main
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/kennethfan/jiaoag/internal/config"
 )
 
 func TestTargetAddr(t *testing.T) {
@@ -81,5 +84,27 @@ func TestResolveServerBinaryFromPath(t *testing.T) {
 	}
 	if got != path {
 		t.Fatalf("got %q，期望 %q", got, path)
+	}
+}
+
+// 启用 TLS 时探活必须走 https，并且不验证书链（自动拉起的服务端可能用自签证书）。
+func TestHealthProbeFollowsTLS(t *testing.T) {
+	plain := &config.Config{}
+	url, client := healthProbe(plain, "127.0.0.1:8787")
+	if url != "http://127.0.0.1:8787/healthz" {
+		t.Fatalf("明文探活 URL 不对：%s", url)
+	}
+	if tr, ok := client.Transport.(*http.Transport); ok && tr.TLSClientConfig != nil {
+		t.Fatal("明文探活不该带 TLS 配置")
+	}
+
+	tlsCfg := &config.Config{Server: config.Server{TLSCert: "cert.pem", TLSKey: "key.pem"}}
+	url, client = healthProbe(tlsCfg, "127.0.0.1:8787")
+	if url != "https://127.0.0.1:8787/healthz" {
+		t.Fatalf("TLS 探活 URL 不对：%s", url)
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("TLS 探活应跳过证书校验")
 	}
 }

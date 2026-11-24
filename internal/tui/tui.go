@@ -6,6 +6,7 @@ package tui
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,8 @@ type Options struct {
 	Model     string
 	// SessionID 非空时跳过建会话，直接订阅该会话（进程重启后用它回到现场）。
 	SessionID string
+	// InsecureTLS 跳过服务端证书校验，只用于自签证书的本机/内网部署。
+	InsecureTLS bool
 }
 
 type (
@@ -176,11 +179,23 @@ func (m *Model) connectCmd() tea.Cmd {
 	}
 }
 
+// insecureHTTPClient 返回跳过证书校验的客户端。只由 -insecure 显式开启，
+// 用于自签证书的本机或内网部署；默认仍走系统信任链。
+func insecureHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+}
+
 // Dial 建立连接并完成握手。
 func Dial(ctx context.Context, opts Options) (*websocket.Conn, protocol.HelloPayload, error) {
-	conn, _, err := websocket.Dial(ctx, opts.URL, &websocket.DialOptions{
+	dialOpts := &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + opts.Token}},
-	})
+	}
+	if opts.InsecureTLS {
+		dialOpts.HTTPClient = insecureHTTPClient()
+	}
+	conn, _, err := websocket.Dial(ctx, opts.URL, dialOpts)
 	if err != nil {
 		return nil, protocol.HelloPayload{}, fmt.Errorf("连接 %s 失败: %w", opts.URL, err)
 	}

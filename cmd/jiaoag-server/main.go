@@ -111,6 +111,9 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 		return err
 	}
 	srv.WithApp(application).SetIdleExit(idleExit)
+	if cfg.Server.TLSEnabled() {
+		srv.SetTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
+	}
 
 	return srv.ListenAndServe(ctx)
 }
