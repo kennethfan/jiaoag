@@ -133,8 +133,13 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	// 恢复要在锁外做：newAgent 会读工作区、构造供应商（可能读密钥文件），
 	// 不能占着 runtimeMu 让所有会话一起等启动。
 	if deps.ResumeQueued {
-		return a.resumeQueuedTasks(context.Background(), &deps)
+		if err := a.resumeQueuedTasks(context.Background(), &deps); err != nil {
+			return err
+		}
 	}
+	// 恢复之后再点名：此刻还停在 queued、又不在内存队列里的任务不会自己跑，
+	// 必须让人看见。空闲退出按内存判断，这类行不再拖住服务端。
+	a.warnOrphanQueued(context.Background(), deps.Logger)
 	return nil
 }
 

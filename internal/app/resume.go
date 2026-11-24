@@ -93,6 +93,48 @@ func (a *App) resumeQueuedTasks(ctx context.Context, deps *RuntimeDeps) error {
 	return nil
 }
 
+// warnOrphanQueued 报告「库里还是 queued、但内存里既没排队也没在跑」的任务。
+//
+// 这类行不会自己前进：恢复被关掉时它们原样留着，恢复途中重建执行环境失败时
+// 也已经被标成 failed。留在这里的说明没人管它们，唯一的后果是让人以为还有
+// 活在跑（旧版本的空闲退出就因此永不退出）。只告警不自动处理——擅自标终态
+// 会掩盖真正的原因。
+func (a *App) warnOrphanQueued(ctx context.Context, logger *slog.Logger) {
+	tasks, err := a.store.UnfinishedTasks(ctx)
+	if err != nil {
+		logger.Warn("检查孤立排队任务失败", "err", err)
+		return
+	}
+	a.runtimeMu.Lock()
+	known := make(map[domain.TaskID]bool, len(a.runs))
+	for _, run := range a.runs {
+		known[run.taskID] = true
+	}
+	for _, list := range a.queue {
+		for _, p := range list {
+			known[p.task.ID] = true
+		}
+	}
+	a.runtimeMu.Unlock()
+
+	var orphan []domain.Task
+	for _, task := range tasks {
+		if task.Status == domain.TaskQueued && !known[task.ID] {
+			orphan = append(orphan, task)
+		}
+	}
+	if len(orphan) == 0 {
+		return
+	}
+	logger.Warn("有排队任务不会自动执行（不在内存队列里）",
+		"count", len(orphan),
+		"hint", "它们停在 queued，不会自己跑；需要的话重新提交，或把 agent.resume_queued 打开后重启")
+	for _, task := range orphan {
+		logger.Warn("孤立排队任务",
+			"task", task.ID, "session", task.SessionID, "created_at", task.CreatedAt)
+	}
+}
+
 // failResumedTask 把无法恢复的排队任务标成 failed，避免它永远停在 queued。
 func (a *App) failResumedTask(ctx context.Context, logger *slog.Logger, task domain.Task, note string) {
 	ev, err := domain.NewEvent(domain.EventTaskStatus, task.SessionID, task.ID, domain.TaskStatusPayload{

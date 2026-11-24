@@ -129,15 +129,36 @@ func (a *App) Close() error { return a.close(closeGrace) }
 // HasBusyTasks 报告是否还有排队或执行中的任务。空闲退出用它判断现在关
 // 服务端会不会打断工作。
 //
-// 等待审批的任务不算：客户端已经全部断开，没有人能裁决它，再等下去只会
-// 让服务端永不退出。执行中的任务算，等它跑完再走。
+// 两条判据各自对应一类「真的还有活」：
+//   - 库里有 running 的任务：执行中，等它跑完再关；
+//   - 内存队列里有排队任务，且该会话没有 in-flight 的 run：它在等并发槽，
+//     一旦有槽就会开跑。
+//
+// 三类「看起来忙、其实永远等不到」的必须排除，否则空闲退出永远不触发，
+// 进程就在没有客户端的情况下挂过夜（真实踩到过：老二进制挂 4.5 小时）：
+//   - 库里停在 queued 但没有进内存队列的行（恢复关着、或恢复重建失败）；
+//   - 等审批的任务：客户端已经全部断开，没有人能裁决它；
+//   - 排在等审批会话后面的任务：前面那个不裁决，它永远轮不到。
 func (a *App) HasBusyTasks(ctx context.Context) (bool, error) {
+	a.runtimeMu.Lock()
+	pending := false
+	for sid, list := range a.queue {
+		// 同会话已有 run（执行中或等审批）时，队首任务动不了，不算「要干活」。
+		if len(list) > 0 && a.runs[sid] == nil {
+			pending = true
+			break
+		}
+	}
+	a.runtimeMu.Unlock()
+	if pending {
+		return true, nil
+	}
 	tasks, err := a.store.UnfinishedTasks(ctx)
 	if err != nil {
 		return false, err
 	}
 	for _, task := range tasks {
-		if task.Status == domain.TaskQueued || task.Status == domain.TaskRunning {
+		if task.Status == domain.TaskRunning {
 			return true, nil
 		}
 	}
