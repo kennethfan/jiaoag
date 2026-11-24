@@ -60,9 +60,12 @@ agent:
   max_rounds: 24          # 单任务轮数上限；0 表示不限制
   # 单条命令的超时秒数（exec.timeout_s 未配置时沿用）。
   command_timeout_seconds: 120
-  # 上下文预算（UTF-8 字符数）。超出时从最旧一轮开始丢弃，system 与
-  # 最后一条用户消息永不丢。
-  context_budget_chars: 60000
+  # 上下文预算（估算 token 数）。超出时从最旧一轮开始丢弃，system 与最后一条
+  # 用户消息永不丢。实际 token 由字符类别加权估算，并用供应商回报的用量校准。
+  context_budget_tokens: 32000
+  # 旧写法：按字符配预算。仅在没有 context_budget_tokens 时生效，按 2 字符
+  # /token 折算；两个都配置以 token 为准。
+  # context_budget_chars: 60000
   # 上下文压缩：auto（默认）在占用超过预算 80% 时把较早轮次压成摘要，
   # 保留最近 2 轮；off 关闭，只做丢弃。压缩调用计入任务 token 用量。
   context_compact: auto

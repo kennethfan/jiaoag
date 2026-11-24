@@ -316,17 +316,49 @@ func TestContextBudgetDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Agent.ContextBudgetChars != 60000 {
-		t.Fatalf("默认上下文预算 = %d，期望 60000", cfg.Agent.ContextBudgetChars)
+	if cfg.Agent.ContextBudgetTokens != DefaultContextBudgetTokens {
+		t.Fatalf("默认 token 预算 = %d，期望 %d", cfg.Agent.ContextBudgetTokens, DefaultContextBudgetTokens)
+	}
+	if got := cfg.Agent.ContextBudgetTokenValue(); got != DefaultContextBudgetTokens {
+		t.Fatalf("生效预算 = %d，期望 %d", got, DefaultContextBudgetTokens)
 	}
 
-	tooSmall := strings.Replace(minimalYAML, "providers:", "agent:\n  context_budget_chars: 500\nproviders:", 1)
+	// 旧写法仍然有效，按 2 字符/token 折算。
+	legacy := strings.Replace(minimalYAML, "providers:", "agent:\n  context_budget_chars: 40000\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, legacy))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agent.ContextBudgetTokenValue(); got != 20000 {
+		t.Fatalf("chars 折算预算 = %d，期望 20000", got)
+	}
+
+	// 两个都配时以 token 为准。
+	both := strings.Replace(minimalYAML, "providers:", "agent:\n  context_budget_chars: 40000\n  context_budget_tokens: 5000\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, both))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Agent.ContextBudgetTokenValue(); got != 5000 {
+		t.Fatalf("双配置时预算 = %d，期望 5000", got)
+	}
+
+	tooSmall := strings.Replace(minimalYAML, "providers:", "agent:\n  context_budget_tokens: 500\nproviders:", 1)
 	cfg, err = Load(writeTemp(t, tooSmall))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "context_budget_tokens") {
+		t.Fatalf("过小的 token 预算应校验失败，得到 %v", err)
+	}
+
+	legacySmall := strings.Replace(minimalYAML, "providers:", "agent:\n  context_budget_chars: 500\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, legacySmall))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
 	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "context_budget_chars") {
-		t.Fatalf("过小的预算应校验失败，得到 %v", err)
+		t.Fatalf("过小的字符预算应校验失败，得到 %v", err)
 	}
 }
 

@@ -251,7 +251,7 @@ type Streamer interface {
 func Build(history []llm.Message, budget int) []llm.Message
 ```
 
-v1 只做确定性截断：单条工具结果超 8 KB 折成「首 4 KB + 尾 2 KB」（中间换成省略提示，正文不另存）；裁剪按**轮**进行——从最旧的一条 user 消息丢到下一个 user 消息之前，避免留下孤立的 tool_result；system 单独装配进请求，不参与这次预算；最后一条 user 消息永不丢（预算不够时宁可超一点）。预算单位是 **UTF-8 字符数**（无依赖、可测），token 精算留到 v2。
+v1 只做确定性截断：单条工具结果超 8 KB 折成「首 4 KB + 尾 2 KB」（中间换成省略提示，正文不另存）；裁剪按**轮**进行——从最旧的一条 user 消息丢到下一个 user 消息之前，避免留下孤立的 tool_result；system 单独装配进请求，不参与这次预算；最后一条 user 消息永不丢（预算不够时宁可超一点）。预算单位当时是 **UTF-8 字符数**（无依赖、可测）；v2.19 改为**估算 token**：按字符类别加权估算，并用每轮 `prompt_tokens` 在线校准系数（ADR-0031）。
 
 ---
 
@@ -357,7 +357,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 |---|---|---|
 | 1 | 会话内多任务 | 排队，串行 |
 | 2 | 流式 delta 入库 | 不入库，只存 start / message，seq 允许空洞 |
-| 3 | 上下文预算单位 | UTF-8 字符数 |
+| 3 | 上下文预算单位 | ~~UTF-8 字符数~~ → 估算 token（ADR-0031，v2.19） |
 | 4 | 审批超时 | 不超时，只能人工取消 |
 
 ---
@@ -435,7 +435,7 @@ type CompactSummary struct {
 }
 ```
 
-v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过 `context_budget_chars` 的 80% 时，把「保留最近 2 轮」之前的消息交给当前 provider 非流式摘要（独立 90s 超时、`max_tokens=1024`、输入截到 48KB）。切点按用户提问找，没有新提问时退到助手边界，不拆开 `tool_use` / `tool_result`；旧内容不足 2000 字符不压；成功后冷却 3 轮。
+v2 的实现（ADR-0016）在**一轮开始前**检查：历史超过预算（估算 token，ADR-0031）的 80% 时，把「保留最近 2 轮」之前的消息交给当前 provider 非流式摘要（独立 90s 超时、`max_tokens=1024`、输入截到 48KB）。切点按用户提问找，没有新提问时退到助手边界，不拆开 `tool_use` / `tool_result`；旧内容不足 800 token（约 2000 字符）不压；成功后冷却 3 轮。
 
 摘要**作为 `context.compacted` 事件入库**（`summary` / `covered_messages` / `before_chars` / `summary_chars` / 模型 / token / 耗时），回放时用摘要替换被覆盖的前缀，再接上保留的近期消息——压缩后的上下文可重建，不需要第二份缓存状态。摘要位于历史首条时被 `Build` 钉住，不参与按预算的丢弃。
 

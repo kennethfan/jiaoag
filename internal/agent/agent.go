@@ -30,10 +30,11 @@ import (
 const (
 	// DefaultMaxRounds 与 config 的 agent.max_rounds 默认值保持一致。
 	DefaultMaxRounds = 24
-	// DefaultContextBudget 是上下文预算（UTF-8 字符数）。
-	DefaultContextBudget = 60000
-	// minContextBudget 防止上下文超限重试把预算压到不可用的程度。
-	minContextBudget = 2000
+	// DefaultContextBudget 是上下文预算（估算 token 数），与 config 的
+	// agent.context_budget_tokens 默认值保持一致。
+	DefaultContextBudget = 32000
+	// minContextBudget 防止上下文超限重试把预算压到不可用的程度（token）。
+	minContextBudget = 512
 )
 
 // Recorder 是 agent 对应用层的全部要求。
@@ -185,6 +186,8 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 
 	var usage domain.TokenUsage
 	budget := a.opts.ContextBudget
+	est := newTokenEstimator()
+	specs := a.toolSpecs()
 	overflowRetried := false
 	lastCompact := 0
 
@@ -197,8 +200,14 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 		if ctx.Err() != nil {
 			return a.finish(ctx, task, domain.TaskCanceled, "canceled", "", usage)
 		}
+		// 系统提示与工具清单是每轮都要发的固定占用，先从预算里扣掉；
+		// 剩下的才是历史可用的部分。
+		msgBudget := budget - est.overhead(system.Text, specs)
+		if msgBudget < minContextBudget {
+			msgBudget = minContextBudget
+		}
 		// 压缩发生在轮次开始之前：这一轮的请求就能用上摘要。
-		a.maybeCompact(ctx, task, &history, &usage, budget, round, &lastCompact)
+		a.maybeCompact(ctx, task, &history, &usage, msgBudget, round, &lastCompact, est)
 		started, err := domain.NewEvent(domain.EventRoundStarted, task.SessionID, task.ID,
 			domain.RoundStartedPayload{Round: round})
 		if err != nil {
@@ -213,14 +222,18 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 			used    domain.TokenUsage
 		)
 		for {
+			sent := buildWith(history, msgBudget, est)
 			req := llm.Request{
 				Model:    a.opts.Model,
 				System:   system.Text,
-				Messages: Build(history, budget),
-				Tools:    a.toolSpecs(),
+				Messages: sent,
+				Tools:    specs,
 			}
 			message, used, err = a.callModel(ctx, task, round, req)
 			if err == nil {
+				// 供应商回报的 prompt_tokens 是唯一可信的刻度：用本轮的实际值
+				// 校准下一轮估算（含系统提示与工具清单）。
+				est.observe(est.overhead(system.Text, specs)+est.messages(sent), used.PromptTokens)
 				break
 			}
 			if ctx.Err() != nil {

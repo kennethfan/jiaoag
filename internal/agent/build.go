@@ -16,13 +16,21 @@ const (
 	toolResultTail  = 2 << 10
 )
 
-// Build 是纯函数：把完整历史压进预算，返回可直接发给供应商的消息。
+// Build 是纯函数：把完整历史压进 token 预算，返回可直接发给供应商的消息。
 //
 // 裁剪单位是「用户轮」——从最旧的一条用户提问丢到下一个提问之前，这样不会
 // 留下孤立的 tool_result（供应商会直接拒绝）。压缩摘要永远保留：它代表已经
 // 被丢弃的历史，丢掉它等于把上下文清空。system 与最后一条 user 消息同理：
 // 预算不够时宁可超一点，也不能丢用户当下的问题。
+//
+// budget 是消息部分可用的 token 估算值：调用方已经从总预算里扣掉系统提示与
+// 工具清单的固定占用。估算是 wifi 级的近似值，见 tokenEstimator。
 func Build(history []llm.Message, budget int) []llm.Message {
+	return buildWith(history, budget, nil)
+}
+
+// buildWith 让 Run 把带校准的估算器传进来；est 为 nil 时用未校准的默认估算。
+func buildWith(history []llm.Message, budget int, est *tokenEstimator) []llm.Message {
 	msgs := trimToolResults(history)
 	var pinned []llm.Message
 	if len(msgs) > 0 && isCompactedMessage(msgs[0]) {
@@ -30,7 +38,7 @@ func Build(history []llm.Message, budget int) []llm.Message {
 		msgs = msgs[1:]
 	}
 	if budget > 0 {
-		for countChars(msgs)+countChars(pinned) > budget {
+		for countTokens(msgs, est)+countTokens(pinned, est) > budget {
 			starts := promptStarts(msgs)
 			if len(starts) < 2 {
 				break
@@ -42,6 +50,14 @@ func Build(history []llm.Message, budget int) []llm.Message {
 		return msgs
 	}
 	return append(pinned, msgs...)
+}
+
+// countTokens 估算一组消息占用的 token；est 为 nil 时用默认估算器。
+func countTokens(msgs []llm.Message, est *tokenEstimator) int {
+	if est == nil {
+		est = newTokenEstimator()
+	}
+	return est.messages(msgs)
 }
 
 // trimToolResults 截断过长工具结果，不改动入参。
@@ -70,7 +86,8 @@ func promptStarts(msgs []llm.Message) []int {
 	return out
 }
 
-// countChars 按 UTF-8 字符数计预算：无依赖、可测，token 精算留到 v2。
+// countChars 数字符数，只用于事件与审计里的可读指标（「压缩了多少字」），
+// 预算判定一律走 token 估算。字符数与真实占用的比值不稳定，不可拿来做门槛。
 func countChars(msgs []llm.Message) int {
 	total := 0
 	for _, msg := range msgs {

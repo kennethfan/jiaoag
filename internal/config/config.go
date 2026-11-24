@@ -243,7 +243,12 @@ type Agent struct {
 	// MaxRounds 是单任务最多轮数；0 表示不限制，留空用默认值 24。
 	MaxRounds             *int `yaml:"max_rounds"`
 	CommandTimeoutSeconds int  `yaml:"command_timeout_seconds"`
-	// ContextBudgetChars 是上下文预算（UTF-8 字符数），超出的最旧轮次会被丢弃。
+	// ContextBudgetTokens 是上下文预算（估算 token 数），超出的最旧轮次会被
+	// 丢弃。估算见 internal/agent/tokens.go：按字符类别加权，并用供应商回报的
+	// 实际 prompt_tokens 在线校准。
+	ContextBudgetTokens int `yaml:"context_budget_tokens"`
+	// ContextBudgetChars 是 v2 早期的预算写法，保留兼容：未配置
+	// context_budget_tokens 时按 2 字符/token 折算，两个都配置以 token 为准。
 	ContextBudgetChars int `yaml:"context_budget_chars"`
 	// ContextCompact 控制上下文压缩：auto（默认）超出预算 80% 时把最旧轮次
 	// 压成摘要并保留最近 2 轮；off 关闭，只做丢弃。
@@ -303,8 +308,27 @@ func (a Agent) ResumeQueuedEnabled() bool {
 	return a.ResumeQueued == nil || *a.ResumeQueued
 }
 
-// DefaultContextBudgetChars 与 agent.DefaultContextBudget 保持一致。
+// DefaultContextBudgetTokens 与 agent.DefaultContextBudget 保持一致（估算 token）。
+const DefaultContextBudgetTokens = 32000
+
+// DefaultContextBudgetChars 是旧的字符预算默认值，只在兼容路径上使用。
 const DefaultContextBudgetChars = 60000
+
+// charsPerToken 是旧配置折算 token 时用的比例：中文约 1 字/token、英文约
+// 4 字符/token，取中间值，具体偏差交给运行时校准吸收。
+const charsPerToken = 2
+
+// ContextBudgetTokenValue 返回实际生效的 token 预算。未配置 token 预算时把
+// 旧的字符预算按 charsPerToken 折算；两者都没配则用默认值。
+func (a Agent) ContextBudgetTokenValue() int {
+	if a.ContextBudgetTokens > 0 {
+		return a.ContextBudgetTokens
+	}
+	if a.ContextBudgetChars > 0 {
+		return a.ContextBudgetChars / charsPerToken
+	}
+	return DefaultContextBudgetTokens
+}
 
 // ContextCompactAuto 是上下文压缩的默认模式。
 const ContextCompactAuto = "auto"
@@ -520,8 +544,8 @@ func (c *Config) applyDefaults() {
 	if c.Agent.CommandTimeoutSeconds <= 0 {
 		c.Agent.CommandTimeoutSeconds = 120
 	}
-	if c.Agent.ContextBudgetChars <= 0 {
-		c.Agent.ContextBudgetChars = DefaultContextBudgetChars
+	if c.Agent.ContextBudgetTokens <= 0 && c.Agent.ContextBudgetChars <= 0 {
+		c.Agent.ContextBudgetTokens = DefaultContextBudgetTokens
 	}
 	if c.Agent.ContextCompact == "" {
 		c.Agent.ContextCompact = ContextCompactAuto
@@ -762,6 +786,9 @@ func (c *Config) validateCommon() error {
 	}
 	if err := c.validateTLS(); err != nil {
 		return err
+	}
+	if c.Agent.ContextBudgetTokens > 0 && c.Agent.ContextBudgetTokens < 1000 {
+		return fmt.Errorf("agent.context_budget_tokens 必须为 0 或大于 1000，当前为 %d", c.Agent.ContextBudgetTokens)
 	}
 	if c.Agent.ContextBudgetChars > 0 && c.Agent.ContextBudgetChars <= 1000 {
 		return fmt.Errorf("agent.context_budget_chars 必须大于 1000，当前为 %d", c.Agent.ContextBudgetChars)

@@ -28,8 +28,8 @@ const (
 	compactTranscriptChars = 48 << 10
 	// compactToolResultChars 是单条工具结果在摘要输入里的上限。
 	compactToolResultChars = 2 << 10
-	// minCompactOldChars 防止对一小段摘要反复做无意义的压缩。
-	minCompactOldChars = 2000
+	// minCompactOldTokens 防止对一小段摘要反复做无意义的压缩（按 token 估算）。
+	minCompactOldTokens = 800
 	// compactCooldownRounds 是两次压缩之间的最小轮次间隔：压缩后历史通常已经
 	// 回到预算内，连着再压只会把同一段摘要反复重写，白花调用。
 	compactCooldownRounds = 3
@@ -99,7 +99,10 @@ func (c providerCompactor) Compact(ctx context.Context, history []llm.Message) (
 
 // maybeCompact 在历史超出阈值时压缩较早部分。它永不返回错误：压缩是优化，
 // 失败只记日志与审计，任务继续走 Build 的裁剪路径。
-func (a *Agent) maybeCompact(ctx context.Context, task domain.Task, history *[]llm.Message, usage *domain.TokenUsage, budget, round int, lastCompact *int) {
+//
+// 阈值按 token 估算判定：预算已被扣掉系统提示与工具清单的固定占用，这里比较
+// 的就是消息部分。BeforeChars 仍以字符记录，方便人读「压缩了多少字」。
+func (a *Agent) maybeCompact(ctx context.Context, task domain.Task, history *[]llm.Message, usage *domain.TokenUsage, budget, round int, lastCompact *int, est *tokenEstimator) {
 	if !a.opts.Compact || a.opts.Compactor == nil {
 		return
 	}
@@ -111,7 +114,7 @@ func (a *Agent) maybeCompact(ctx context.Context, task domain.Task, history *[]l
 		return
 	}
 	threshold := budget * compactTriggerPercent / 100
-	if threshold <= 0 || countChars(msgs) <= threshold {
+	if threshold <= 0 || countTokens(msgs, est) <= threshold {
 		return
 	}
 	keep := a.opts.CompactKeepRounds
@@ -124,7 +127,7 @@ func (a *Agent) maybeCompact(ctx context.Context, task domain.Task, history *[]l
 	}
 	old := msgs[:split]
 	before := countChars(old)
-	if before < minCompactOldChars {
+	if countTokens(old, est) < minCompactOldTokens {
 		return
 	}
 	// 先记下尝试时间：即使失败也不要在下一轮立刻重试，避免把摘要服务拖垮。
