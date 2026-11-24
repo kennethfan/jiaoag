@@ -104,6 +104,23 @@ server:
 
 详见 [`docs/project-extensions.md`](docs/project-extensions.md)。
 
+### 事件与审计导出
+
+`jiaoag-events` 是只读消费者：把一个会话的事件流和全库审计增量打到 stdout，默认每行一条 JSON。它没有写入口，接日志系统、CI 或 `jq` 都靠它。
+
+```bash
+# 跟着最近活跃的会话 tail（Ctrl+C 退出）
+./bin/jiaoag-events -config ~/.config/jiaoag/config.yaml
+
+# 导出历史：事件从 seq=0、审计从 id=0 开始，导出到启动时刻为止后退出
+./bin/jiaoag-events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
+
+# 给人看
+./bin/jiaoag-events -session ses_xxx -from 0 -format text
+```
+
+事件行带 `seq`/`type`/`task_id`/`payload`，审计行带 `action`/`actor`/`task_id`/`session_id`/`detail`；审计按 id 游标增量拉取（1 秒一轮，`-interval` 可调）。详见 [`docs/observability.md`](docs/observability.md)。
+
 无终端环境下自检两端是否互通：
 
 ```bash
@@ -166,6 +183,7 @@ make demo-mcp
 | v2.12 | MCP 可观测性：`/mcp` 面板（只读，服务器 / 工具数 / 信任 / 版本），提示词申明外部工具返回内容只当数据 | ✅ |
 | v2.13 | MCP 工具过滤：`tools.include/exclude`，配套 LSP 只读接入配方（`docs/mcp.md`） | ✅ |
 | v2.14 | 传输加密：可选 `server.tls_cert/tls_key` 启用 wss，TUI `-insecure` 接自签，反代写法见 `docs/tls.md`（ADR-0026） | ✅ |
+| v2.15 | 事件与审计导出：`jiaoag-events`（只读 WS：`event.head`/`event.subscribe` + `audit.tail` 游标），JSONL 输出（ADR-0027） | ✅ |
 
 ## 安全边界
 

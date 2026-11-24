@@ -34,6 +34,14 @@ const (
 	TypeSkillListResult      = "skill.list.result"      // S→C
 	TypeMCPList              = "mcp.list"               // C→S：列出 MCP server 与运行状态（供 /mcp 面板）
 	TypeMCPListResult        = "mcp.list.result"        // S→C
+	// TypeAuditTail 是只读的审计增量拉取：按 audit.id 游标向后取，供
+	// jiaoag-events 之类的导出/监控客户端使用。after_id 为负表示只取
+	// 当前水位（不返回记录，只给 next_id）。
+	TypeAuditTail       = "audit.tail"        // C→S
+	TypeAuditTailResult = "audit.tail.result" // S→C
+	// TypeEventHead 返回会话当前最后的事件序号，供消费者只订阅新事件。
+	TypeEventHead       = "event.head"        // C→S
+	TypeEventHeadResult = "event.head.result" // S→C
 	// TypeProjectTrust 确认当前工作区的项目级扩展（AGENTS.md、.jiaoag/、
 	// .agents/skills）；TypeProjectRevoke 撤销确认。
 	TypeProjectTrust    = "project.trust"    // C→S
@@ -244,6 +252,45 @@ type MCPServerInfo struct {
 // MCPListResultPayload 是 mcp.list 的响应。
 type MCPListResultPayload struct {
 	Servers []MCPServerInfo `json:"servers"`
+}
+
+// AuditTailPayload 请求 after_id 之后的审计记录。
+//
+// AfterID 为负时不返回记录，只回当前水位（next_id）——tail 的「从现在开始」
+// 语义靠它实现，避免把历史整库倒出来。
+type AuditTailPayload struct {
+	AfterID int64 `json:"after_id"`
+	Limit   int   `json:"limit,omitempty"`
+}
+
+// AuditRecordPayload 是一条审计记录的线上表示。只读、不可改。
+type AuditRecordPayload struct {
+	ID         int64  `json:"id"`
+	At         int64  `json:"at"` // Unix 毫秒
+	Actor      string `json:"actor"`
+	Action     string `json:"action"`
+	TaskID     string `json:"task_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// Detail 是原始 JSON，字段随 action 变化（argv、路径、策略版本等）。
+	Detail json.RawMessage `json:"detail,omitempty"`
+}
+
+// AuditTailResultPayload 是 audit.tail 的响应。
+type AuditTailResultPayload struct {
+	Records []AuditRecordPayload `json:"records"`
+	// NextID 是下次请求该带的 after_id；没有记录时等于当前水位。
+	NextID int64 `json:"next_id"`
+}
+
+// EventHeadPayload 查询某个会话当前最后的事件序号。
+type EventHeadPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// EventHeadResultPayload 是 event.head 的响应。
+type EventHeadResultPayload struct {
+	Seq int64 `json:"seq"`
 }
 
 // TaskCancelPayload 请求取消一个任务。任务已终止时是幂等的空操作。

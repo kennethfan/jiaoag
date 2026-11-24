@@ -48,6 +48,10 @@ type Store interface {
 	ProposalByToolCall(ctx context.Context, id domain.ToolCallID) (domain.Proposal, error)
 	// RecentAudit 返回某个任务最近 limit 条审计记录（按 id 倒序）。
 	RecentAudit(ctx context.Context, taskID domain.TaskID, limit int) ([]domain.AuditRecord, error)
+	// ListAudit 按 id 升序返回 afterID 之后的审计记录，供只读消费者增量拉取。
+	ListAudit(ctx context.Context, afterID int64, limit int) ([]domain.AuditRecord, error)
+	// AuditHead 返回当前最大的审计 id。
+	AuditHead(ctx context.Context) (int64, error)
 
 	// Replay 返回 Seq 严格大于 from 的事件，按 Seq 升序。
 	// limit <= 0 时使用默认批量（200），上限 1000。

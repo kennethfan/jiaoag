@@ -213,6 +213,10 @@ type AuditRecord struct {
 	Action     string
 	ToolCallID ToolCallID
 	Detail     json.RawMessage
+	// TaskID / SessionID 由读取侧（store.ListAudit）通过 tool_calls 关联填充，
+	// 写入时忽略：audit 表本身没有这两列。
+	TaskID    TaskID
+	SessionID SessionID
 }
 
 // TokenUsage 是一次模型调用的 token 统计。agent 每轮累加，随状态迁移一起
