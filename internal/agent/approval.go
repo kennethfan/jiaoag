@@ -125,7 +125,7 @@ func (a *Agent) proposeChange(ctx context.Context, task domain.Task, toolCall *d
 
 	switch decision.Decision {
 	case domain.DecisionAllowOnce, domain.DecisionAllowSession:
-		return a.applyChange(ctx, task, toolCall, approval, proposal, change)
+		return a.applyChange(ctx, task, toolCall, approval, proposal, change, decision.Hunks)
 	default:
 		// 未知裁决按拒绝处理：默认拒绝比默认放行安全。
 		return a.rejectChange(ctx, task, toolCall, approval, proposal, decision, change)
@@ -188,7 +188,8 @@ func (a *Agent) rejectChange(ctx context.Context, task domain.Task, toolCall *do
 
 // applyChange 处理批准：先做 CAS 检查，再原子落盘。
 func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *domain.ToolCall,
-	approval *domain.Approval, proposal *domain.Proposal, change *tools.Change) (tools.Result, error) {
+	approval *domain.Approval, proposal *domain.Proposal, change *tools.Change,
+	hunks []int) (tools.Result, error) {
 
 	resolved, err := domain.NewEvent(domain.EventApprovalResolved, task.SessionID, task.ID,
 		domain.ApprovalResolvedPayload{
@@ -269,6 +270,40 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		}, nil
 	}
 
+	// 部分应用：只把选中的块拼回文件。旧内容从磁盘重新读一次，按块重放时
+	// 逐行校对上下文，顺带确认 diff 与 CAS 看到的是同一份文件。
+	var applied []int
+	total := 0
+	if len(hunks) > 0 {
+		old, _, err := a.opts.Workspace.Snapshot(change.Path)
+		if err != nil {
+			return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
+				fmt.Sprintf("读取 %s 的当前内容失败：%v", change.Path, err))
+		}
+		parsed, err := patch.ParseHunks(change.Diff)
+		if err != nil {
+			return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
+				fmt.Sprintf("解析 %s 的 diff 失败：%v", change.Path, err))
+		}
+		total = len(parsed)
+		selected, err := patch.Selection(total, hunks)
+		if err != nil {
+			return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
+				fmt.Sprintf("选择 %s 的 diff 块失败：%v", change.Path, err))
+		}
+		if selected != nil {
+			merged, err := patch.ApplyHunks(patch.ToLF(old), change.Diff, selected)
+			if err != nil {
+				return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
+					fmt.Sprintf("按块应用 %s 失败：%v", change.Path, err))
+			}
+			content := patch.Normalize(merged, patch.LineEndings(old))
+			change.NewContent = content
+			change.NewHash = patch.Hash(content)
+			applied = selected
+		}
+	}
+
 	if err := a.opts.Workspace.Write(change.Path, change.NewContent); err != nil {
 		return a.failChange(ctx, task, toolCall, approval, proposal, resolved, change,
 			fmt.Sprintf("写入 %s 失败：%v", change.Path, err))
@@ -276,13 +311,16 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 
 	proposal.Status = domain.ProposalApplied
 	proposal.AppliedAt = domain.Now()
+	proposal.NewHash = change.NewHash
 	toolCall.Status = domain.ToolSucceeded
 
-	applied, err := domain.NewEvent(domain.EventProposalApplied, task.SessionID, task.ID,
+	appliedEvent, err := domain.NewEvent(domain.EventProposalApplied, task.SessionID, task.ID,
 		domain.ProposalAppliedPayload{
 			ProposalID: proposal.ID,
 			Path:       change.Path,
 			NewHash:    change.NewHash,
+			Hunks:      applied,
+			TotalHunks: total,
 		})
 	if err != nil {
 		return tools.Result{}, err
@@ -297,12 +335,14 @@ func (a *Agent) applyChange(ctx context.Context, task domain.Task, toolCall *dom
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Audit:    []domain.AuditRecord{writeAudit(auditWriteApplied, toolCall, approval, change, "")},
-		Events:   []domain.Event{resolved, applied, resumed},
+		Audit: []domain.AuditRecord{
+			writeAudit(auditWriteApplied, toolCall, approval, change, "", applied, total),
+		},
+		Events: []domain.Event{resolved, appliedEvent, resumed},
 	}); err != nil {
 		return tools.Result{}, err
 	}
-	return tools.Result{Content: describeApproved(change)}, nil
+	return tools.Result{Content: describeChange(change, applied, total)}, nil
 }
 
 // failChange 处理「批准了但写不进去」：审批仍然算已裁决，提案标 failed。
@@ -325,7 +365,7 @@ func (a *Agent) failChange(ctx context.Context, task domain.Task, toolCall *doma
 		ToolCall: toolCall,
 		Approval: approval,
 		Proposal: proposal,
-		Audit:    []domain.AuditRecord{writeAudit(auditWriteFailed, toolCall, approval, change, message)},
+		Audit:    []domain.AuditRecord{writeAudit(auditWriteFailed, toolCall, approval, change, message, nil, 0)},
 		Events:   []domain.Event{resolved, rejected, resumed},
 	}); err != nil {
 		return tools.Result{}, err
@@ -340,7 +380,7 @@ func (a *Agent) failChange(ctx context.Context, task domain.Task, toolCall *doma
 // audit 表提问「谁在什么时候改了哪个文件」，缺了这条就只能靠人读懂事件流。
 // 未落盘的拒绝仍记 tool.denied，两者不重叠。
 func writeAudit(action string, toolCall *domain.ToolCall, approval *domain.Approval,
-	change *tools.Change, reason string) domain.AuditRecord {
+	change *tools.Change, reason string, hunks []int, total int) domain.AuditRecord {
 
 	detail := map[string]any{
 		"path":      change.Path,
@@ -351,6 +391,11 @@ func writeAudit(action string, toolCall *domain.ToolCall, approval *domain.Appro
 	}
 	if reason != "" {
 		detail["reason"] = reason
+	}
+	if len(hunks) > 0 {
+		detail["hunks"] = hunks
+		detail["total_hunks"] = total
+		detail["partial"] = true
 	}
 	raw, err := json.Marshal(detail)
 	if err != nil {

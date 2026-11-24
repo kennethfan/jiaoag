@@ -72,6 +72,8 @@ server:
 
 任务按提交顺序串行执行：运行中也可以继续输入，新任务进入会话队列。`ctrl+q` 打开队列面板，`↑/↓` 选择、`x` 取消选中、`D` 再按 `y` 清空；取消要等 `task.status` 终态事件才真正出队。
 
+写入审批默认是整份文件。diff 有两个以上块时，面板会提示 `[v] 逐块`：进去以后 `space` 勾选、`j/k` 换块、`y` 只应用勾中的块，未勾的块不落盘，工具结果会告诉模型哪几块没写（ADR-0028）。
+
 输入以 `!` 开头时，命令在**客户端本机**执行（`sh -c`，cwd 是工作区），输出逐行刷进对话区，`ctrl+x` 随时终止：
 
 ```text
@@ -184,6 +186,7 @@ make demo-mcp
 | v2.13 | MCP 工具过滤：`tools.include/exclude`，配套 LSP 只读接入配方（`docs/mcp.md`） | ✅ |
 | v2.14 | 传输加密：可选 `server.tls_cert/tls_key` 启用 wss，TUI `-insecure` 接自签，反代写法见 `docs/tls.md`（ADR-0026） | ✅ |
 | v2.15 | 事件与审计导出：`jiaoag-events`（只读 WS：`event.head`/`event.subscribe` + `audit.tail` 游标），JSONL 输出（ADR-0027） | ✅ |
+| v2.16 | hunk 级部分批准：`approval.resolve` 带 `hunks`，只写勾中的块，未选块丢弃并告知模型（ADR-0028） | ✅ |
 
 ## 安全边界
 

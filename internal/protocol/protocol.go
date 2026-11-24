@@ -349,4 +349,8 @@ type ApprovalResolvePayload struct {
 	// Decision 取 allow_once | allow_session | deny。
 	Decision string `json:"decision"`
 	Note     string `json:"note,omitempty"`
+	// Hunks 是要应用的块下标（0 起）。省略表示整份 diff；显式给出时只有这些块
+	// 会被写入。allow_session 与 hunks 同时出现时按 allow_once 处理：部分应用
+	// 是一次性决定，不该变成「同类请求以后都放行」。
+	Hunks []int `json:"hunks,omitempty"`
 }

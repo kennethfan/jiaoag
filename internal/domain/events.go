@@ -237,6 +237,10 @@ type ProposalAppliedPayload struct {
 	ProposalID ProposalID `json:"proposal_id"`
 	Path       string     `json:"path"`
 	NewHash    string     `json:"new_hash"`
+	// Hunks 只在部分应用时出现：写进文件的是这些块，其余块被丢弃。
+	Hunks []int `json:"hunks,omitempty"`
+	// TotalHunks 是原 diff 的总块数，配合 Hunks 说明「应用了几块里的哪几块」。
+	TotalHunks int `json:"total_hunks,omitempty"`
 }
 
 // ProposalRejectedPayload 记录「这次写入没有发生」以及原因。

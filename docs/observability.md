@@ -51,7 +51,7 @@
 
 - **事件**：`seq` 是会话内序号（流式增量 `assistant.delta` 是 `seq=0` 的临时帧，不进日志但会实时出现）；`type` 与 `payload` 对应 `docs/design/agent-architecture.md` 里的事件表。
 - **审计**：`id` 全局单调，`action` 见 `docs/adr/0006` 与各功能文档（`exec.*`、`external.*`、`write.applied` / `write.failed`、`tool.denied`、`context.compact*`）；`task_id` / `session_id` 由工具调用反查，**没有工具调用的审计这两项为空**（例如 `context.compact`）。
-- `write.applied` 只在磁盘真的被改之后写一条，带 `path` / `base_hash` / `new_hash` / `bytes` / `decision`，是回答「谁在什么时候改了哪个文件」的直接依据；`write.failed` 记录落盘失败（例如权限、CAS 之后写文件报错）及原因。被拒绝的写入仍记 `tool.denied`，两条语义不重叠。
+- `write.applied` 只在磁盘真的被改之后写一条，带 `path` / `base_hash` / `new_hash` / `bytes` / `decision`，是回答「谁在什么时候改了哪个文件」的直接依据；只应用了部分块时还带 `hunks` / `total_hunks` / `partial: true`，所以「批了哪几块」也能只靠审计回答。`write.failed` 记录落盘失败（例如权限、CAS 之后写文件报错）及原因。被拒绝的写入仍记 `tool.denied`，两条语义不重叠。
 
 常用过滤：
 

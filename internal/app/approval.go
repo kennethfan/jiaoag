@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/kennethfan/jiaoag/internal/agent"
@@ -80,12 +81,21 @@ func (a *App) AwaitApproval(ctx context.Context, req agent.ApprovalRequest) (age
 // 这里不写任务/提案的状态：终态由 agent 在拿到裁决后自己记录，和 CancelTask
 // 的分工一致——「谁拥有这次调用，谁写它的结局」。重复裁决是幂等的空操作。
 func (a *App) ResolveApproval(ctx context.Context, sessionID domain.SessionID,
-	approvalID domain.ApprovalID, decision domain.Decision, note string) error {
+	approvalID domain.ApprovalID, decision domain.Decision, note string, hunks ...int) error {
 
 	switch decision {
 	case domain.DecisionAllowOnce, domain.DecisionAllowSession, domain.DecisionDeny:
 	default:
 		return fmt.Errorf("app: 未知的裁决 %q", decision)
+	}
+	hunks, err := normalizeHunks(hunks)
+	if err != nil {
+		return err
+	}
+	// 部分应用是一次性决定：同一份 diff 的其它块下次还得单独看，
+	// 所以不写会话白名单，按 allow_once 处理。
+	if decision == domain.DecisionAllowSession && len(hunks) > 0 {
+		decision = domain.DecisionAllowOnce
 	}
 
 	approval, err := a.store.GetApproval(ctx, approvalID)
@@ -104,7 +114,12 @@ func (a *App) ResolveApproval(ctx context.Context, sessionID domain.SessionID,
 		return fmt.Errorf("app: 审批 %s 不属于会话 %s: %w", approvalID, sessionID, domain.ErrNotFound)
 	}
 
-	result := agent.ApprovalResult{Decision: decision, Source: domain.SourceUser, Note: note}
+	result := agent.ApprovalResult{
+		Decision: decision,
+		Source:   domain.SourceUser,
+		Note:     note,
+		Hunks:    hunks,
+	}
 	a.approvals.mu.Lock()
 	if wait := a.approvals.waiters[approvalID]; wait != nil {
 		select {
@@ -120,7 +135,7 @@ func (a *App) ResolveApproval(ctx context.Context, sessionID domain.SessionID,
 	}
 	a.approvals.mu.Unlock()
 
-	if decision == domain.DecisionAllowSession {
+	if decision == domain.DecisionAllowSession && len(hunks) == 0 {
 		call, err := a.store.GetToolCall(ctx, approval.ToolCallID)
 		if err != nil {
 			return err
@@ -287,4 +302,25 @@ func (a *App) cancelGhost(ctx context.Context, task domain.Task, reason string) 
 			Events: []domain.Event{ev},
 		})
 	})
+}
+
+// normalizeHunks 去重并升序；负下标是错误。空输入返回 nil（整份应用）。
+func normalizeHunks(in []int) ([]int, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	seen := make(map[int]bool, len(in))
+	out := make([]int, 0, len(in))
+	for _, idx := range in {
+		if idx < 0 {
+			return nil, fmt.Errorf("app: 块下标不能为负数（%d）", idx)
+		}
+		if seen[idx] {
+			continue
+		}
+		seen[idx] = true
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out, nil
 }

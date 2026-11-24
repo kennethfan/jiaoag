@@ -476,7 +476,7 @@ func (s *Server) handleApprovalResolve(ctx context.Context, c *clientConn, env p
 		return
 	}
 	if err := s.app.ResolveApproval(ctx, domain.SessionID(p.SessionID),
-		domain.ApprovalID(p.ApprovalID), domain.Decision(p.Decision), p.Note); err != nil {
+		domain.ApprovalID(p.ApprovalID), domain.Decision(p.Decision), p.Note, p.Hunks...); err != nil {
 		code := protocol.CodeInternal
 		if errors.Is(err, domain.ErrNotFound) {
 			code = protocol.CodeBadRequest

@@ -70,6 +70,8 @@ type ApprovalResult struct {
 	Source   domain.ApprovalSource
 	// Note 是用户裁决时留的说明，落进 approvals.note。
 	Note string
+	// Hunks 是用户勾选的 diff 块下标（0 起）。为空表示整份 diff 都应用。
+	Hunks []int
 }
 
 // Options 是 Agent 的依赖与约束。

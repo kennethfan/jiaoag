@@ -124,6 +124,12 @@ type approvalView struct {
 	added   int
 	removed int
 	offset  int
+	// 逐块选择：hunks 只在 diff 有 2 块及以上时才填。selectMode 打开后
+	// 面板换成块列表，hunkSel 记录勾选状态，hunkCursor 是当前块。
+	hunks      []patch.Hunk
+	selectMode bool
+	hunkSel    []bool
+	hunkCursor int
 }
 
 // 审批面板一次显示多少行 diff。
@@ -917,7 +923,7 @@ func (m *Model) showApprovalRequest(a domain.ApprovalRequestedPayload, announce 
 		return
 	}
 	added, removed := patch.Stats(a.Diff)
-	m.approval = &approvalView{
+	view := &approvalView{
 		id:        string(a.ApprovalID),
 		path:      a.Path,
 		diff:      a.Diff,
@@ -925,6 +931,15 @@ func (m *Model) showApprovalRequest(a domain.ApprovalRequestedPayload, announce 
 		added:     added,
 		removed:   removed,
 	}
+	// 只有一块时逐块选择没有意义，直接走全量视图。
+	if hs, err := patch.ParseHunks(a.Diff); err == nil && len(hs) > 1 {
+		view.hunks = hs
+		view.hunkSel = make([]bool, len(hs))
+		for i := range view.hunkSel {
+			view.hunkSel[i] = true
+		}
+	}
+	m.approval = view
 	// 面板占屏，提示行要短：详情在下面几行。
 	if announce {
 		m.appendLine("⚠ 待审批：" + a.Path)
@@ -1016,8 +1031,17 @@ func (m *Model) cancelable() bool {
 // 太贵了，要退出请用 ctrl+c。
 func (m *Model) handleApprovalKey(key string) (tea.Model, tea.Cmd) {
 	v := m.approval
+	if v.selectMode {
+		return m.handleHunkKey(key)
+	}
 	total := len(strings.Split(strings.TrimRight(v.diff, "\n"), "\n"))
 	switch key {
+	case "v":
+		// 逐块审批：只对多块 diff 开放，单块时全量面板已经够清楚。
+		if len(v.hunks) > 1 {
+			v.selectMode = true
+			v.hunkCursor = 0
+		}
 	case "y":
 		return m.resolveApproval(domain.DecisionAllowOnce)
 	case "a":
@@ -1061,11 +1085,25 @@ func (m *Model) resolveApproval(d domain.Decision) (tea.Model, tea.Cmd) {
 	// 先清面板：裁决请求晚到或失败时，界面不该继续显示「待审批」。
 	m.approval = nil
 	m.appendLine("→ " + decisionLabel(d) + "（等待服务端确认）")
-	return m, sendCmd(m.conn, protocol.TypeApprovalResolve, protocol.ApprovalResolvePayload{
+	payload := m.approvalResolvePayload(v, d)
+	if len(payload.Hunks) > 0 && d == domain.DecisionAllowOnce {
+		m.appendLine(fmt.Sprintf("⋯ 只应用第 %s 块，其余块保持原内容", joinHunkNumbers(payload.Hunks)))
+	}
+	return m, sendCmd(m.conn, protocol.TypeApprovalResolve, payload)
+}
+
+// approvalResolvePayload 把面板状态翻成裁决帧。抽出来是为了能在没有连接时断言
+// 「部分块」到底发了什么——resolveApproval 本身依赖真实连接。
+func (m *Model) approvalResolvePayload(v *approvalView, d domain.Decision) protocol.ApprovalResolvePayload {
+	payload := protocol.ApprovalResolvePayload{
 		SessionID:  m.sessionID,
 		ApprovalID: v.id,
 		Decision:   string(d),
-	})
+	}
+	if hunks := partialHunks(v); len(hunks) > 0 {
+		payload.Hunks = hunks
+	}
+	return payload
 }
 
 // renderDiff 取出 diff 的 [offset, offset+height) 行，并报告后面还有没有内容。
@@ -1098,6 +1136,9 @@ func (m *Model) renderApprovalPanel() string {
 	if v.kind == string(domain.ApprovalExternal) {
 		return m.renderExternalPanel()
 	}
+	if v.selectMode {
+		return m.renderHunkSelectPanel()
+	}
 	var b strings.Builder
 	// 截断时 +N −M 只是前 256 KB 的统计，必须写在脸上。
 	suffix := ""
@@ -1121,8 +1162,12 @@ func (m *Model) renderApprovalPanel() string {
 	}
 	b.WriteString(strings.Repeat("─", 72))
 	b.WriteByte('\n')
-	b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝  [↑↓] 翻行  [pgup/pgdn] 翻页\n")
-	b.WriteString("[ctrl+r] 重连  [ctrl+c] 退出\n")
+	if len(v.hunks) > 1 {
+		b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝  [v] 逐块\n")
+	} else {
+		b.WriteString("[y] 批准一次  [a] 本会话内都批准  [n] 拒绝\n")
+	}
+	b.WriteString("[↑↓] 翻行  [pgup/pgdn] 翻页  [ctrl+r] 重连  [ctrl+c] 退出\n")
 	return b.String()
 }
 

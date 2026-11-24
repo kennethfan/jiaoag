@@ -206,6 +206,32 @@ func firstLine(s string) string {
 }
 
 // describeApproved 是批准后回给模型的一句话：告诉它写到了哪、内容摘要变了。
+// describeChange 生成写入类工具的结果文案。部分应用时明确指出哪些块没写，
+// 否则模型会以为整份 diff 都已经落地。
+func describeChange(c *tools.Change, hunks []int, total int) string {
+	if len(hunks) == 0 {
+		return describeApproved(c)
+	}
+	kept := make([]string, 0, len(hunks))
+	chosen := make(map[int]bool, len(hunks))
+	for _, idx := range hunks {
+		kept = append(kept, fmt.Sprintf("%d", idx+1))
+		chosen[idx] = true
+	}
+	dropped := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		if !chosen[i] {
+			dropped = append(dropped, fmt.Sprintf("%d", i+1))
+		}
+	}
+	text := fmt.Sprintf("已按块修改 %s：写入第 %s 块（共 %d 块，内容摘要 %s）",
+		c.Path, strings.Join(kept, "、"), total, patch.ShortHash(c.NewHash))
+	if len(dropped) > 0 {
+		text += fmt.Sprintf("；第 %s 块没有应用，那部分改动不在磁盘上", strings.Join(dropped, "、"))
+	}
+	return text + "。需要未应用的改动请重新 read_file 后再提出。"
+}
+
 func describeApproved(c *tools.Change) string {
 	verb := "已修改"
 	if !c.Exists {

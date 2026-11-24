@@ -24,3 +24,7 @@ M4 落地写入与审批时，《v1 实施计划》里写的是 `approval.respon
 - 新增事件类型要同步 `domain.EventKind`、TUI 渲染与回放消费者；`proposal.rejected` 的 `status` 是展示字段，不是新的状态机。
 - 会话白名单不跨进程、不跨会话；重启后同一个写入会重新询问。这是有意的。
 - 审计里 `source` 必须能区分 `user` / `policy` / `system`，否则「谁批准了这次写入」无法回答。
+
+## 修订（v2.16）：裁决可以只覆盖部分块
+
+`approval.resolve` 新增可选 `hunks`（0 起下标），允许「这次只写这几块」。这没有推翻上面任何一条：裁决结果仍然只经由 `approval.resolved` 事件回流，未落盘的结局仍然统一为 `proposal.rejected`，`allow_session` 仍然是「整份写入」的会话级豁免——所以 `allow_session` 与 `hunks` 同时出现时降级为 `allow_once`，不写白名单。部分应用的落盘内容由服务端用 `patch.ApplyHunks` 从旧内容重放，CAS 仍按 `BaseHash` 判定，详见 ADR-0028。
