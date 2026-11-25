@@ -1,17 +1,23 @@
-# 内嵌默认规则集（ADR-0004）。
+# 默认规则集模板（ADR-0004 / ADR-0045）。
 #
-# 条目增删必须同步 ADR-0004。三条约束缺一不可：
+# 首次启动时由 jiaoag 从内置模板生成为 policy.d/default.yaml，之后完全归你：
+# 删除条目就是收回权限，加条目就是放宽，改完重启生效。
+# 同目录其他 *.yaml 与签名 feed 仍然只能收紧；本项目对 .git 等路径的保护
+# 由 sandbox 与写入敏感清单负责，不在这里表达。
+#
+# 三条约束缺一不可：
 #   programs —— 只放行已知程序；argv[0] 必须是程序名本身（带路径一律审批）；
 #   allow_flags/deny_flags —— 未列出的 flag 一律审批（--output、-exec 等）；
 #   path_args —— 非 flag 参数必须落在工作区根内。
-# 外部 policy.d/*.yaml 只能收紧，不能放宽。
+# risk_subcommands 是提示性列表；publish/deploy 这类底线另在代码里强制
+# （删掉这里的条目也不会放行）。
 #
 # git 不在这里放行：`git status/diff/log` 会读取仓库自己的配置（diff.external、
 # gitattributes driver、core.fsmonitor），repo 被改过就等于一条免审批的任意
 # 执行通道。只读 git 走 internal/tools 的三个专用工具，它们固定注入了
 # `-c core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`；run_command 里的
 # git 一律需要审批。
-version: builtin-3
+version: builtin-4
 rules:
   - id: exec.go
     programs: [go]

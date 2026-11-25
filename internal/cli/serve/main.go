@@ -92,6 +92,9 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 	if err != nil {
 		return err
 	}
+	for _, w := range ruleset.Warnings {
+		log.Warn("规则加载提示", "detail", w)
+	}
 	backend, err := newExecBackend(cfg.Exec.Backend)
 	if err != nil {
 		return err
@@ -127,7 +130,8 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 		return err
 	}
 	log.Info("数据已就绪", "db", cfg.Storage.DBPath)
-	log.Info("执行环境已就绪", "policy", ruleset.Version, "policy_hash", ruleset.Hash[:12], "backend", backend.Name())
+	log.Info("执行环境已就绪", "policy", ruleset.Version, "policy_hash", ruleset.Hash[:12],
+		"rules", len(ruleset.Rules), "policy_dir", policyDir, "backend", backend.Name())
 
 	srv, err := server.New(cfg, log, version.Version)
 	if err != nil {

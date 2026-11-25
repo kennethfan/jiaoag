@@ -63,6 +63,9 @@ type Ruleset struct {
 	Version string
 	Hash    string
 	Rules   []Rule
+	// Warnings 是加载过程中值得告诉用户但不构成失败的事实
+	// （首次生成默认规则、默认规则与内置模板版本不同）。
+	Warnings []string
 }
 
 // NewRuleset 规范化条目顺序并计算指纹。排序让 Hash 与文件里的书写顺序无关。
@@ -104,68 +107,86 @@ func (l *Loader) WithFeedKeys(keys policyfeed.Keys) *Loader {
 	return l
 }
 
+// defaultRulesName 是 policy.d 里唯一允许放宽的文件。
+//
+// 它由 jiaoag 首次启动时从内置模板生成，之后完全属于用户：删条目就是收回
+// 权限，加条目就是放宽。其他文件与签名 feed 仍强制收紧（ADR-0045）。
+const defaultRulesName = "default.yaml"
+
 // Load 读取并校验规则。外部文件解析失败直接报错：静默跳过会让用户以为
 // 自己的收紧规则生效了，而实际上没有。
+//
+// 加载顺序：default.yaml（唯一可放宽）→ 其他 policy.d 文件（强制收紧）
+// → 签名 feed（强制收紧）。收紧规则在判定时先于白名单执行，所以后加载
+// 的收紧条目仍然可以覆盖前面的放行条目。
 func (l *Loader) Load() (*Ruleset, error) {
-	var base ruleFile
-	if err := yaml.Unmarshal(defaultPolicy, &base); err != nil {
-		return nil, fmt.Errorf("perm: 解析内嵌规则: %w", err)
-	}
-	if err := validateRules(base.Rules); err != nil {
-		return nil, fmt.Errorf("perm: 内嵌规则: %w", err)
+	// 没有配置目录时退回内存模板：只发生在嵌入调用与测试里，
+	// 正常启动一定有 policy.dir。但配了 feed 公钥却没有目录是配置错误，
+	// 不能静默退回模板——那等于「想用 feed 却没用上」。
+	if l == nil || l.dir == "" {
+		if l != nil && len(l.feedKeys) > 0 {
+			return nil, errors.New("perm: 配置了规则 feed 公钥，但没有规则目录")
+		}
+		return DefaultRuleset(), nil
 	}
 
-	rules := append([]Rule(nil), base.Rules...)
-	version := base.Version
+	var warnings []string
+	if err := os.MkdirAll(l.dir, 0o755); err != nil {
+		return nil, fmt.Errorf("perm: 创建规则目录 %s: %w", l.dir, err)
+	}
+	if w, err := l.ensureDefaultRules(); err != nil {
+		return nil, err
+	} else if w != "" {
+		warnings = append(warnings, w)
+	}
 
 	// feed 先验签：它和本地规则同目录，但不是同一类东西——本地文件是用户自己
 	// 写的，feed 是外部发布的，必须证明来源。
-	var feedData []byte
-	var feedMeta policyfeed.Metadata
-	if l != nil && len(l.feedKeys) > 0 {
-		if l.dir == "" {
-			return nil, errors.New("perm: 配置了规则 feed 公钥，但没有规则目录")
-		}
-		data, meta, err := policyfeed.LoadFile(l.dir, l.feedKeys)
-		if err != nil {
-			return nil, err
-		}
-		if !meta.ExpiresAt.IsZero() && time.Now().After(meta.ExpiresAt) {
-			return nil, fmt.Errorf("perm: 规则 feed 已于 %s 过期，请运行 jiaoag policy sync 更新",
-				meta.ExpiresAt.Format(time.RFC3339))
-		}
-		feedData, feedMeta = data, meta
+	feedData, feedMeta, err := l.loadFeed()
+	if err != nil {
+		return nil, err
 	}
 
-	if l != nil && l.dir != "" {
-		names, err := policyFiles(l.dir)
-		if err != nil {
-			return nil, err
+	def, err := l.loadDefaultRules()
+	if err != nil {
+		return nil, err
+	}
+	if w := defaultVersionWarning(def.Version); w != "" {
+		warnings = append(warnings, w)
+	}
+	rules := append([]Rule(nil), def.Rules...)
+	version := def.Version
+
+	names, err := policyFiles(l.dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		if name == defaultRulesName {
+			continue
 		}
-		for _, name := range names {
-			// feed 已经单独验签加载，不能再按普通本地文件读一遍。
-			if feedData != nil && name == policyfeed.FileName {
-				continue
-			}
-			body, err := os.ReadFile(filepath.Join(l.dir, name))
-			if err != nil {
-				return nil, fmt.Errorf("perm: 读取规则 %s: %w", name, err)
-			}
-			var f ruleFile
-			if err := yaml.Unmarshal(body, &f); err != nil {
-				return nil, fmt.Errorf("perm: 解析规则 %s: %w", name, err)
-			}
-			if err := validateRules(f.Rules); err != nil {
-				return nil, fmt.Errorf("perm: 规则 %s: %w", name, err)
-			}
-			for _, rule := range f.Rules {
-				// 外部规则只能收紧：这条用类型/加载逻辑表达，不靠文档约定。
-				rule.Tighten = true
-				rules = append(rules, rule)
-			}
-			if f.Version != "" {
-				version += "+" + f.Version
-			}
+		// feed 已经单独验签加载，不能再按普通本地文件读一遍。
+		if feedData != nil && name == policyfeed.FileName {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(l.dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("perm: 读取规则 %s: %w", name, err)
+		}
+		var f ruleFile
+		if err := yaml.Unmarshal(body, &f); err != nil {
+			return nil, fmt.Errorf("perm: 解析规则 %s: %w", name, err)
+		}
+		if err := validateRules(f.Rules); err != nil {
+			return nil, fmt.Errorf("perm: 规则 %s: %w", name, err)
+		}
+		for _, rule := range f.Rules {
+			// 外部规则只能收紧：这条用类型/加载逻辑表达，不靠文档约定。
+			rule.Tighten = true
+			rules = append(rules, rule)
+		}
+		if f.Version != "" {
+			version += "+" + f.Version
 		}
 	}
 
@@ -184,7 +205,72 @@ func (l *Loader) Load() (*Ruleset, error) {
 		}
 		version += "+feed@" + feedMeta.Version
 	}
-	return NewRuleset(version, rules), nil
+	rs := NewRuleset(version, rules)
+	rs.Warnings = warnings
+	return rs, nil
+}
+
+// ensureDefaultRules 在文件缺失时把内置模板写到 policy.d。
+//
+// 写失败直接报错而不是退回内存规则：用户以为自己有一份可编辑的默认规则，
+// 实际却在跑另一份隐藏规则，比启动失败更难排查。
+func (l *Loader) ensureDefaultRules() (string, error) {
+	path := filepath.Join(l.dir, defaultRulesName)
+	if _, err := os.Stat(path); err == nil {
+		return "", nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("perm: 检查默认规则 %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, defaultPolicy, 0o644); err != nil {
+		return "", fmt.Errorf("perm: 写入默认规则 %s 失败（可手动创建后重启）: %w", path, err)
+	}
+	return fmt.Sprintf("已生成默认规则 %s（可自由编辑；删除条目即收回权限，改完重启生效）", path), nil
+}
+
+func (l *Loader) loadDefaultRules() (ruleFile, error) {
+	path := filepath.Join(l.dir, defaultRulesName)
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return ruleFile{}, fmt.Errorf("perm: 读取默认规则 %s: %w", path, err)
+	}
+	var f ruleFile
+	if err := yaml.Unmarshal(body, &f); err != nil {
+		return ruleFile{}, fmt.Errorf("perm: 解析默认规则 %s: %w", path, err)
+	}
+	if err := validateRules(f.Rules); err != nil {
+		return ruleFile{}, fmt.Errorf("perm: 默认规则 %s: %w", path, err)
+	}
+	return f, nil
+}
+
+func (l *Loader) loadFeed() ([]byte, policyfeed.Metadata, error) {
+	if len(l.feedKeys) == 0 {
+		return nil, policyfeed.Metadata{}, nil
+	}
+	data, meta, err := policyfeed.LoadFile(l.dir, l.feedKeys)
+	if err != nil {
+		return nil, policyfeed.Metadata{}, err
+	}
+	if !meta.ExpiresAt.IsZero() && time.Now().After(meta.ExpiresAt) {
+		return nil, policyfeed.Metadata{}, fmt.Errorf("perm: 规则 feed 已于 %s 过期，请运行 jiaoag policy sync 更新",
+			meta.ExpiresAt.Format(time.RFC3339))
+	}
+	return data, meta, nil
+}
+
+// defaultVersionWarning 在用户的默认规则与内置模板版本不同时给出提示。
+//
+// 只提示不覆盖：静默覆盖会把用户改过的条目抹掉，那比错过更新更糟。
+func defaultVersionWarning(current string) string {
+	var template ruleFile
+	if err := yaml.Unmarshal(defaultPolicy, &template); err != nil {
+		return ""
+	}
+	if template.Version == "" || current == template.Version {
+		return ""
+	}
+	return fmt.Sprintf("默认规则版本 %q 与内置模板 %q 不同：确认这是你想要的；新版安全修复不会自动合入该文件",
+		current, template.Version)
 }
 
 // policyFiles 返回目录下按名字排序的 yaml 文件；目录不存在不是错误。
@@ -377,7 +463,13 @@ func (r *Ruleset) evaluateCommand(toolName string, cmd *tools.Command) Decision 
 		}
 		// 高风险子命令不禁止，但一定要人看一眼：发布、部署、凭据操作
 		// 出错是不可回滚的，和「在错目录跑了次构建」不是一个量级。
-		if risk := riskySubcommand(rule, argv); risk != "" {
+		// 内置底线优先于规则文件：删掉 default.yaml 里的 risk_subcommands
+		// 也放行不了这些子命令。
+		risk := builtinRisky(base, argv)
+		if risk == "" {
+			risk = riskySubcommand(rule, argv)
+		}
+		if risk != "" {
 			return Decision{
 				Verdict:       RequireUser,
 				Reason:        fmt.Sprintf("risky_subcommand: %s %s 会对外发布或操作凭据，请先确认目录与参数", base, risk),
@@ -435,12 +527,39 @@ func (r *Ruleset) version() string {
 //
 // 支持 `release` 匹配 `release:prepare`（Maven 的插件目标按冒号分段），
 // 这样一条规则就能覆盖同一类目标，而不必枚举每个插件前缀。
+// builtinRiskySubcommands 是代码级底线：这些子命令即使从 default.yaml 里
+// 删掉也无法放行，只能由人审批。规则文件可以补充更多风险子命令，不能减少。
+//
+// 理由：发布、部署、执行任意包与凭据操作会把东西送出本机，sandbox 与 git
+// 都救不回来（ADR-0043、ADR-0045）。
+var builtinRiskySubcommands = map[string][]string{
+	"npm":     {"publish", "unpublish", "exec", "x", "dlx", "login", "adduser", "logout", "token", "owner", "access", "deprecate", "dist-tag", "deploy"},
+	"pnpm":    {"publish", "unpublish", "exec", "x", "dlx", "login", "adduser", "logout", "token", "owner", "access", "deprecate", "dist-tag", "deploy"},
+	"mvn":     {"deploy", "release", "versions:set"},
+	"mvnw":    {"deploy", "release", "versions:set"},
+	"gradle":  {"publish", "uploadArchives", "deploy"},
+	"gradlew": {"publish", "uploadArchives", "deploy"},
+	"make":    {"install", "uninstall"},
+}
+
+func builtinRisky(base string, argv []string) string {
+	list, ok := builtinRiskySubcommands[base]
+	if !ok {
+		return ""
+	}
+	return riskyMatch(list, argv)
+}
+
 func riskySubcommand(rule Rule, argv []string) string {
-	if len(rule.RiskSubcommands) == 0 || len(argv) < 2 {
+	return riskyMatch(rule.RiskSubcommands, argv)
+}
+
+func riskyMatch(risks []string, argv []string) string {
+	if len(risks) == 0 || len(argv) < 2 {
 		return ""
 	}
 	sub := argv[1]
-	for _, risk := range rule.RiskSubcommands {
+	for _, risk := range risks {
 		if sub == risk || strings.HasPrefix(sub, risk+":") || strings.HasPrefix(sub, risk+"/") {
 			return sub
 		}
@@ -451,7 +570,7 @@ func riskySubcommand(rule Rule, argv []string) string {
 			if strings.HasPrefix(token, "-") {
 				continue
 			}
-			for _, risk := range rule.RiskSubcommands {
+			for _, risk := range risks {
 				if token == risk {
 					return token
 				}

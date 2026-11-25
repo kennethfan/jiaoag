@@ -236,7 +236,7 @@ case <-ctx.Done():       // 取消 / 服务端关闭
 
 ### 5.4 权限是纯函数（ADR-0004）
 
-层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。构建/打包类命令（`go build`、`npm`、`pnpm`、`mvn`、`gradle`、`make`）在 v2.41 进入白名单（ADR-0043）：工作区写入默认免审之后，「产物落在当前目录」不再是拦它的理由；会对外发布或操作凭据的子命令（`npm publish`、`mvn deploy`、`make install` 等）仍落到审批，理由写作 `risky_subcommand`。git 子命令仍不在白名单里——它会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。模型的 shell 需求走显式 `shell` 字段（ADR-0038）：整条命令由 `sh -c` / `cmd /c` 解释，固定要审批，理由写作 `shell: …`，不再借用元字符判定给模型的行为贴错标签。
+层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。构建/打包类命令（`go build`、`npm`、`pnpm`、`mvn`、`gradle`、`make`）在 v2.41 进入白名单（ADR-0043）；白名单本身在 v2.42 改为可配置——内置模板只在首次启动时落成 `policy.d/default.yaml`，之后运行时只读该文件，别的文件与 feed 仍只能收紧，`publish`/`deploy` 类子命令是代码底线（ADR-0045）。工作区写入默认免审之后，「产物落在当前目录」不再是拦它的理由；会对外发布或操作凭据的子命令（`npm publish`、`mvn deploy`、`make install` 等）仍落到审批，理由写作 `risky_subcommand`。git 子命令仍不在白名单里——它会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。模型的 shell 需求走显式 `shell` 字段（ADR-0038）：整条命令由 `sh -c` / `cmd /c` 解释，固定要审批，理由写作 `shell: …`，不再借用元字符判定给模型的行为贴错标签。
 
 ### 5.5 LLM 端口 + 装饰器（ADR-0008）
 

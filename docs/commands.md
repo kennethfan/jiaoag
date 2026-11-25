@@ -2,7 +2,20 @@
 
 ## 白名单
 
-`run_command` / `check_command` 的 `argv` 形态会先过命令白名单（`internal/perm/default.yaml`）。命中即执行，不弹审批：
+`run_command` / `check_command` 的 `argv` 形态会先过命令白名单。命中即执行，不弹审批。
+
+白名单**不存在隐藏的内置规则**：首次启动时，jiaoag 会把内置模板写成
+`~/.config/jiaoag/policy.d/default.yaml`，之后运行时只读这个文件；删条目就是收回权限，
+加条目就是放宽，改完重启生效（ADR-0045）。
+
+```
+~/.config/jiaoag/policy.d/
+├── default.yaml     # 唯一可放宽的文件；自己编辑
+├── 99-local.yaml    # 其他 *.yaml 只能收紧，写 allow 规则无效
+└── feed.yaml(.sig)  # 签名 feed，只能收紧
+```
+
+默认模板的内容：
 
 | 程序 | 放行的子命令 | 备注 |
 |---|---|---|
@@ -13,7 +26,7 @@
 | `make` | 任意目标 | `install`、`uninstall` 仍审批 |
 | `ls`、`cat`、`head`、`wc` | — | flag 与路径都在约束内 |
 
-三条硬约束始终生效：
+三条硬约束始终生效（在 default.yaml 里也照样拦）：
 
 1. `argv[0]` 必须是程序名本身；`./go`、`/tmp/go` 一律审批。
 2. 未列入允许列表的 flag 一律审批（`--output`、`-exec` 这类会改变写到哪里）。
@@ -35,6 +48,11 @@ risky_subcommand: npm publish 会对外发布或操作凭据，请先确认目�
 - make：`install`、`uninstall`
 
 判据只有一条：**会让东西离开这台机器、或写到工作区外**的动作保留人工确认；其余归「误操作」范畴，靠审计与 `git` 兜底。这也是为什么 `npm install` 不拦——它会跑依赖的 `postinstall`，但在当前威胁模型下这也只算「跑一次仓库代码」。
+
+这份风险清单是**代码级底线**：即使把 `default.yaml` 里的 `risk_subcommands` 全删了，
+`npm publish`、`mvn deploy`、`make install` 仍然落到审批。文件只能增加，不能减少。
+反过来，`deny_flags`（`-o`、`make -f` 之类）写在文件里，你显式删掉就真的放开了——
+两条线的区别是：发布类动作离开本机不可回滚，而 flag 只影响这一次命令做什么。
 
 `make` 免审有一个配套约束：`Makefile`、`makefile`、`GNUmakefile`、`*.mk` 属于敏感写入，改它们仍要看 diff。否则「写 Makefile → 下一轮 `make` 自动执行」就是一条免审的任意代码执行链路。
 
@@ -76,7 +94,8 @@ SELECT output_path FROM tool_calls WHERE id = 'call_9f3c…';
 
 ## 边界
 
-- 白名单是静态数据，不随项目配置变化；要调整只能改规则文件或等新版本。
+- 白名单只属于宿主：项目级 `.jiaoag/` 不能放宽（只能收紧），也不随仓库内容变化。
+- `default.yaml` 里出现版本落后于内置模板时，启动日志会提示；jiaoag 不会自动覆盖你的文件。
 - 后台进程没有自动重启、健康检查、端口管理；它只负责「启动起来」。
 - Windows 关闭 Job 会连带收掉残留子进程；Unix 在父进程自行退出时可能留下子进程。
 - 免审命令仍然会写工作区产物（如 `go build` 的二进制），这些不走 diff 审批，只留 `exec.*` 审计。

@@ -264,6 +264,7 @@ make demo-mcp
 | v2.39 | Web 前端：同端口 `/` 挂原生页面（`go:embed`，零构建），复用同一套 WS 协议，范围对齐 TUI 但无 `!本机命令`；静态资源匿名可读、数据接口校验令牌，`/ws` 支持 `?token=`（ADR-0041） | ✅ |
 | v2.40 | 写入审批默认只拦工作区外与敏感路径：`agent.write_approval`（workspace/always/off），免审写入仍写 diff、CAS 与 `write.auto` 审计（ADR-0042） | ✅ |
 | v2.41 | 构建/打包命令进白名单（go/npm/pnpm/mvn/gradle/make），高风险子命令仍审批；`run_command background=true` + `stop_command` 支持长驻服务（ADR-0043、ADR-0044） | ✅ |
+| v2.42 | 白名单可配置：默认规则首次启动落盘到 `policy.d/default.yaml` 并归用户编辑，同目录其他文件只能收紧；`publish`/`deploy` 类子命令是代码底线（ADR-0045） | ✅ |
 
 ## 安全边界
 

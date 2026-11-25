@@ -95,6 +95,12 @@ base64 < feed.yaml.sig.raw > feed.yaml.sig
   审批」可以追到具体是哪份 feed 的哪条规则（`rule_id`）。
 - 规则只会让命令落到审批，不会放行；`rule_id` 形如 `feed.*` 便于区分来源。
 
+## 与 `default.yaml` 的分工
+
+`default.yaml` 是唯一可以放宽的文件（由 jiaoag 首次启动生成，之后归用户编辑）；
+`feed.yaml` 与同目录其他 `*.yaml` 只能收紧。所以即使 feed 被替换成恶意内容，
+最坏结果也只是「命令更常要求审批」，不会变成「全部自动放行」（ADR-0045）。
+
 ## 边界
 
 - 服务端不主动出网：不跑 `sync` 就不会更新。
