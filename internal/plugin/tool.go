@@ -170,6 +170,9 @@ func (t *nodeTool) buildChange(rel string, content []byte) (*tools.Change, strin
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return nil, "", fmt.Errorf("写入路径 %q 必须落在工作区内", rel)
 	}
+	// 展示路径用正斜杠：Windows 上 clean 是 `notes\a.md`，拼进 diff 头会变成
+	// `--- a/notes\a.md`。落盘仍用 clean（Change.Rel），与工作区解析一致。
+	display := filepath.ToSlash(clean)
 	if len(content) > maxPluginContent {
 		return nil, "", fmt.Errorf("写入内容 %d 字节，超过上限 %d", len(content), maxPluginContent)
 	}
@@ -182,17 +185,17 @@ func (t *nodeTool) buildChange(rel string, content []byte) (*tools.Change, strin
 		return nil, "", err
 	}
 	if exists && bytes.Equal(old, content) {
-		return nil, "", fmt.Errorf("%s 的内容没有变化，不需要写入", clean)
+		return nil, "", fmt.Errorf("%s 的内容没有变化，不需要写入", display)
 	}
-	diff, truncated, err := patch.Unified(clean, old, content, exists)
+	diff, truncated, err := patch.Unified(display, old, content, exists)
 	if err != nil {
 		return nil, "", err
 	}
 	if diff == "" {
-		return nil, "", fmt.Errorf("%s 与原文只差结尾换行，行级 diff 无法展示这种改动", clean)
+		return nil, "", fmt.Errorf("%s 与原文只差结尾换行，行级 diff 无法展示这种改动", display)
 	}
 	change := &tools.Change{
-		Path:       clean,
+		Path:       display,
 		Rel:        clean,
 		Exists:     exists,
 		NewHash:    patch.Hash(content),

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 
 	"github.com/kennethfan/jiaoag/internal/patch"
@@ -76,11 +77,16 @@ func resolveWriteTarget(ws *workspace.Workspace, roots *workspace.Roots, path st
 }
 
 // displayPath 生成审批与审计里给人看的路径：附加根带 alias: 前缀。
+//
+// 展示路径一律用正斜杠：Windows 上 rel 是 `notes\a.md`，直接拿去拼 diff 头
+// 会得到 `--- a/notes\a.md` 这种混用分隔符的样子，审批面板和审计里都难读。
+// 真正落盘用的是 Change.Rel（原生分隔符），不受影响。
 func displayPath(alias, rel string) string {
+	slash := filepath.ToSlash(rel)
 	if alias == "" {
-		return rel
+		return slash
 	}
-	return alias + ":" + rel
+	return alias + ":" + slash
 }
 
 func (t *writeFileTool) Prepare(ctx context.Context, call Call) (Prepared, error) {
