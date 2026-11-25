@@ -107,6 +107,11 @@ type Model struct {
 	taskStatus      string
 	round           int
 	tokens          int
+	// contextTokens/contextBudget 是最近一轮请求的上下文占用与预算（估算）。
+	// 供应商不回「还剩多少上下文」，只能用本地估算器：它按字符类别加权，
+	// 并用每轮 prompt_tokens 校准。
+	contextTokens int
+	contextBudget int
 
 	// local 非空表示有 !命令 在本机执行中。它不经过服务端、不进审计、
 	// 不受 exec.backend 沙箱约束；输出只留在对话区，模型看不到。
@@ -1148,6 +1153,21 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 	case string(domain.EventAssistantStart):
 		// 上下文超限重试会重新开始一轮流式，先把上一段半截文本清掉。
 		m.stream = ""
+		var start domain.AssistantStartPayload
+		if err := json.Unmarshal(p.Payload, &start); err == nil {
+			if start.ContextTokens > 0 {
+				m.contextTokens = start.ContextTokens
+			}
+			if start.ContextBudget > 0 {
+				m.contextBudget = start.ContextBudget
+			}
+			// 会话没显式指定模型时（跟随服务端默认），状态栏原本什么都不显示。
+			// assistant.start 报的是这一轮真正用的模型，用它兜底——包括单次
+			// 任务的模型覆盖，界面上看到的与请求里发出去的一致。
+			if start.Model != "" {
+				m.sessionModel = start.Model
+			}
+		}
 	case string(domain.EventRoundStarted):
 		var r domain.RoundStartedPayload
 		if err := json.Unmarshal(p.Payload, &r); err == nil {
@@ -1549,8 +1569,13 @@ func (m *Model) renderStatusBar(width int, withHints bool) string {
 		left = append(left, segment{s.paint(styleAccent, fmt.Sprintf("↓ %d 新行 · end 回底", m.unseen)), 1})
 	}
 
+	// 右侧按重要性排：模型最重要（不知道谁在答就没法判断回答可信度），
+	// 其次是上下文占用（决定还会不会压缩/丢历史），token 花销排最后。
 	if m.sessionModel != "" {
 		right = append(right, s.paint(styleAccent, modelLabel(m.sessionProvider, m.sessionModel)))
+	}
+	if m.contextTokens > 0 {
+		right = append(right, s.paint(styleMuted, contextLabel(m.contextTokens, m.contextBudget)))
 	}
 	if m.tokens > 0 {
 		right = append(right, s.paint(styleMuted, humanTokens(m.tokens)+" tok"))
@@ -1575,11 +1600,13 @@ func (m *Model) renderStatusBar(width int, withHints bool) string {
 		}
 		left = append(left[:worst], left[worst+1:]...)
 	}
+	// 按前缀保留：右侧是排好序的，挤不下就从尾部（最不重要的）开始放弃，
+	// 不能出现「上下文留下了、模型名被丢掉」这种倒挂。
 	var keptRight []string
-	for i := len(right) - 1; i >= 0; i-- {
-		candidate := append([]string{right[i]}, keptRight...)
+	for _, item := range right {
+		candidate := append(append([]string{}, keptRight...), item)
 		if displayWidth(joinLeft(left))+displayWidth(strings.Join(candidate, "  "))+2 > width {
-			continue
+			break
 		}
 		keptRight = candidate
 	}
@@ -1609,8 +1636,9 @@ func (m *Model) renderStatusBar(width int, withHints bool) string {
 			// 提示必须连同最小间隔一起塞得进去，否则宁可整段不要：状态栏
 			// 多出一个字符就会被终端折成两行，整帧高度对不上，alt screen
 			// 跟着滚，底部固定区就保不住了。
-			if pad := gap - displayWidth(hint); pad >= 3 {
-				line = leftLine + strings.Repeat(" ", pad) + hint + rightLine
+			// 提示与右侧之间也要留两格：紧贴着模型名会读成「取消agnes/…」。
+			if pad := gap - displayWidth(hint) - 2; pad >= 3 {
+				line = leftLine + strings.Repeat(" ", pad) + hint + "  " + rightLine
 			}
 		}
 	}
@@ -1823,6 +1851,30 @@ func humanTokens(n int) string {
 	return fmt.Sprintf("%d", n)
 }
 
+// humanBudget 是预算分母的写法：整数 k/M，不要 32.0k 这种零点几位的噪音——
+// 预算是个设置值，精确到千位就够，精度留给分子。
+// contextLabel 是这一轮发出去的上下文占用（估算值）。
+//
+// 分母是配置里的预算（`agent.context_budget_tokens`），不是供应商的窗口大小：
+// 两者可能不同，所以不写成「/32k window」以免误解。
+func contextLabel(tokens, budget int) string {
+	text := "ctx " + humanTokens(tokens)
+	if budget > 0 {
+		text += "/" + humanBudget(budget)
+	}
+	return text
+}
+
+func humanBudget(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.0fM", float64(n)/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%.0fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
 // truncateMiddle 保留首尾、砍中间：路径里最重要的是开头（~ 还是绝对路径）
 // 与结尾（仓库名）。
 func truncateMiddle(s string, width int) string {
@@ -1882,6 +1934,7 @@ func (m *Model) resetView() {
 	m.mcpPanel = nil
 	m.sessionsPanel = nil
 	m.round, m.tokens = 0, 0
+	m.contextTokens, m.contextBudget = 0, 0
 	m.localLines, m.localOmitted = 0, 0
 	m.dialog = nil
 	m.approval = nil

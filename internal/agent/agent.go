@@ -225,14 +225,20 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 			used    domain.TokenUsage
 		)
 		for {
+			// 预算可能因上下文超限被减半，这里每轮重算可用的历史预算。
+			msgBudget = budget - est.overhead(system.Text, specs)
+			if msgBudget < minContextBudget {
+				msgBudget = minContextBudget
+			}
 			sent := buildWith(history, msgBudget, est)
+			contextTokens := est.overhead(system.Text, specs) + est.messages(sent)
 			req := llm.Request{
 				Model:    a.opts.Model,
 				System:   system.Text,
 				Messages: sent,
 				Tools:    specs,
 			}
-			message, used, err = a.callModel(ctx, task, round, req)
+			message, used, err = a.callModel(ctx, task, round, req, contextTokens, budget)
 			if err == nil {
 				// 供应商回报的 prompt_tokens 是唯一可信的刻度：用本轮的实际值
 				// 校准下一轮估算（含系统提示与工具清单）。
@@ -279,9 +285,14 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 }
 
 // callModel 发起一轮模型调用，记录 assistant.start / 增量 / assistant.message。
-func (a *Agent) callModel(ctx context.Context, task domain.Task, round int, req llm.Request) (llm.Message, domain.TokenUsage, error) {
+func (a *Agent) callModel(ctx context.Context, task domain.Task, round int, req llm.Request, contextTokens, contextBudget int) (llm.Message, domain.TokenUsage, error) {
 	start, err := domain.NewEvent(domain.EventAssistantStart, task.SessionID, task.ID,
-		domain.AssistantStartPayload{Round: round, Model: req.Model})
+		domain.AssistantStartPayload{
+			Round:         round,
+			Model:         req.Model,
+			ContextTokens: contextTokens,
+			ContextBudget: contextBudget,
+		})
 	if err != nil {
 		// 事件构造失败是内部错误，不能让 terminate 归到 provider_error。
 		return llm.Message{}, domain.TokenUsage{}, &recordError{err: err}

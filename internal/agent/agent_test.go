@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -435,4 +436,44 @@ func countMessages(req llm.Request) int {
 		}
 	}
 	return total
+}
+
+// assistant.start 要带上本轮发出去的上下文估算与预算：状态栏的 ctx 读数靠它。
+func TestAssistantStartCarriesContextUsage(t *testing.T) {
+	provider := &scriptedProvider{scripts: []streamScript{{
+		chunks: []llm.Chunk{
+			{TextDelta: "ok"},
+			{Done: true, StopReason: llm.StopEnd, Usage: &llm.Usage{PromptTokens: 20, CompletionTokens: 2}},
+		},
+	}}}
+	rec := &fakeRecorder{}
+	ag, task := newTestAgent(t, provider, rec, 3)
+
+	if err := ag.Run(context.Background(), task); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var found bool
+	for _, ev := range rec.events {
+		if ev.Type != domain.EventAssistantStart {
+			continue
+		}
+		var p domain.AssistantStartPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatalf("解码 assistant.start: %v", err)
+		}
+		found = true
+		if p.ContextTokens <= 0 {
+			t.Fatalf("context_tokens 缺失：%+v", p)
+		}
+		if p.ContextBudget != 60000 {
+			t.Fatalf("context_budget = %d，期望 60000", p.ContextBudget)
+		}
+		if p.ContextTokens >= p.ContextBudget {
+			t.Fatalf("估算不该超过预算：%d/%d", p.ContextTokens, p.ContextBudget)
+		}
+	}
+	if !found {
+		t.Fatal("没有 assistant.start 事件")
+	}
 }

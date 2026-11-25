@@ -170,6 +170,11 @@ type ContextCompactedPayload struct {
 type AssistantStartPayload struct {
 	Round int    `json:"round"`
 	Model string `json:"model,omitempty"`
+	// ContextTokens / ContextBudget 是这一轮请求的上下文占用与预算（估算值）。
+	// 界面用它显示「上下文用了多少」；估算器会随供应商回报的 prompt_tokens
+	// 校准，所以这是当下的近似值，不是精确计费数。
+	ContextTokens int `json:"context_tokens,omitempty"`
+	ContextBudget int `json:"context_budget,omitempty"`
 }
 
 // AssistantDeltaPayload 是流式文本增量。它只出现在临时帧里（Seq 为 0），

@@ -1,12 +1,14 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
+	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
 // keyMsg 把测试里的按键名翻成 bubbletea 的消息。只覆盖这条测试用到的键。
@@ -58,7 +60,8 @@ func TestStatusBarShowsWorkspaceStateAndModel(t *testing.T) {
 	}
 }
 
-// 窄屏先丢右侧（模型/token），左侧的连接、目录、状态必须留着。
+// 窄屏时右侧从尾到头放弃：先丢 token/上下文读数，模型名留着——不知道谁在
+// 回答就没法判断这句话该不该信。左侧的连接、目录、状态必须留着。
 func TestStatusBarCollapsesRightOnNarrowScreen(t *testing.T) {
 	m := newModel(t)
 	m.opts.Workspace = "/tmp/repo"
@@ -66,10 +69,14 @@ func TestStatusBarCollapsesRightOnNarrowScreen(t *testing.T) {
 	m.taskStatus = string(domain.TaskRunning)
 	m.sessionProvider, m.sessionModel = "agnes", "agnes-3.0-flash"
 	m.tokens = 12000
+	m.contextTokens, m.contextBudget = 5000, 32000
 
 	status := m.renderStatusBar(60, false)
-	if strings.Contains(status, "agnes-3.0-flash") {
-		t.Fatalf("窄屏应丢掉模型名：%q", status)
+	if !strings.Contains(status, "agnes-3.0-flash") {
+		t.Fatalf("窄屏也要保留模型名：%q", status)
+	}
+	if strings.Contains(status, "ctx ") || strings.Contains(status, "12.0k tok") {
+		t.Fatalf("窄屏应先丢用量读数：%q", status)
 	}
 	if !strings.Contains(status, "⌂ /tmp/repo") || !strings.Contains(status, "[运行中]") {
 		t.Fatalf("窄屏丢了关键信息：%q", status)
@@ -503,5 +510,49 @@ func TestStatusBarDropsSessionLabelBeforeWorkspace(t *testing.T) {
 	wide := strings.TrimRight(stripANSI(m.renderStatusBar(140, false)), "\n")
 	if !strings.Contains(wide, "▤") {
 		t.Fatalf("宽屏应显示会话名：%s", wide)
+	}
+}
+
+func TestStatusBarShowsModelTokensAndContext(t *testing.T) {
+	m := newModel(t)
+	m.sessionProvider, m.sessionModel = "agnes", "agnes-3.0-flash"
+	m.tokens = 12400
+	m.contextTokens = 5200
+	m.contextBudget = 32000
+
+	bar := stripANSI(m.renderStatusBar(140, false))
+	for _, want := range []string{"agnes/agnes-3.0-flash", "12.4k tok", "ctx 5.2k/32k"} {
+		if !strings.Contains(bar, want) {
+			t.Fatalf("状态栏缺少 %q：%s", want, bar)
+		}
+	}
+
+	// 预算未知时只报占用，不编一个分母。
+	m.contextBudget = 0
+	bar = stripANSI(m.renderStatusBar(140, false))
+	if !strings.Contains(bar, "ctx 5.2k") || strings.Contains(bar, "ctx 5.2k/") {
+		t.Fatalf("无预算时不该带分母：%s", bar)
+	}
+}
+
+func TestAssistantStartUpdatesContextUsage(t *testing.T) {
+	m := newModel(t)
+	payload := json.RawMessage(`{"round":2,"model":"m","context_tokens":6400,"context_budget":32000}`)
+	env, err := protocol.New(protocol.TypeEvent, protocol.StreamEventPayload{
+		Kind:    string(domain.EventAssistantStart),
+		Payload: payload,
+	})
+	if err != nil {
+		t.Fatalf("构造事件帧: %v", err)
+	}
+	m.handleEnvelope(env)
+	if m.contextTokens != 6400 || m.contextBudget != 32000 {
+		t.Fatalf("上下文读数 = %d/%d", m.contextTokens, m.contextBudget)
+	}
+
+	// 重连全量重放前会 resetView：读数跟着清，避免拿旧会话的数字骗人。
+	m.resetView()
+	if m.contextTokens != 0 || m.contextBudget != 0 {
+		t.Fatalf("resetView 没清上下文读数：%d/%d", m.contextTokens, m.contextBudget)
 	}
 }
