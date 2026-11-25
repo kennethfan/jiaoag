@@ -8,7 +8,7 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 
@@ -113,7 +113,9 @@ jiaoag sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
 
 会话 id 可以只给前几位（要求唯一）。它走 WS 协议，所以要有一个在跑的服务端——`jiaoag` 拉起的那台也算。
 
-写入审批默认是整份文件。diff 有两个以上块时，面板会提示 `[v] 逐块`：进去以后 `space` 勾选、`j/k` 换块、`y` 只应用勾中的块，未勾的块不落盘，工具结果会告诉模型哪几块没写（ADR-0028）。
+写入审批：默认只对**工作区与临时目录之外**、以及工作区里的敏感路径（`.git/`、`.env*`、密钥、`AGENTS.md`、`.jiaoag/`、CI 工作流等）停下来看 diff——工作区内的普通写入直接落盘，只在对话里留一行「自动应用（工作区内）」并写 `write.auto` 审计。想恢复逐次审批设 `agent.write_approval: always`，细节见 [`docs/write-approval.md`](docs/write-approval.md)（ADR-0042）。
+
+需要人工批准时，审批默认是整份文件。diff 有两个以上块时，面板会提示 `[v] 逐块`：进去以后 `space` 勾选、`j/k` 换块、`y` 只应用勾中的块，未勾的块不落盘，工具结果会告诉模型哪几块没写（ADR-0028）。
 
 输入以 `!` 开头时，命令在**客户端本机**执行（`sh -c`，cwd 是工作区），输出逐行刷进对话区，`ctrl+x` 随时终止：
 
@@ -260,10 +262,11 @@ make demo-mcp
 | v2.37 | 状态栏右侧三件：模型（会话未指定时取 `assistant.start` 回报的本轮实际模型）、累计 token、`ctx 5.2k/32k` 上下文占用（估算值，含系统提示与工具清单，每轮按 `prompt_tokens` 校准）；顺带修上下文超限重试时预算没真正收缩的 bug | ✅ |
 | v2.38 | 同窗口多会话标签：启动时恢复本目录全部会话为标签（接最近那条），`/new` 新开一条，`/sessions` 里 `enter` 把会话开成标签（在跑的也能开），`ctrl+n`/`ctrl+p` 循环、`ctrl+w` 关闭；后台会话继续跑，标签上显示进行中/排队/待审批/未读徽标，切回去从 `seq=0` 重放 | ✅ |
 | v2.39 | Web 前端：同端口 `/` 挂原生页面（`go:embed`，零构建），复用同一套 WS 协议，范围对齐 TUI 但无 `!本机命令`；静态资源匿名可读、数据接口校验令牌，`/ws` 支持 `?token=`（ADR-0041） | ✅ |
+| v2.40 | 写入审批默认只拦工作区外与敏感路径：`agent.write_approval`（workspace/always/off），免审写入仍写 diff、CAS 与 `write.auto` 审计（ADR-0042） | ✅ |
 
 ## 安全边界
 
-首版不使用容器，agent 直接作用于真实文件系统。安全边界只有一层：权限策略（工作区路径约束、工具分级、命令默认需审批 + 参数级 argv 白名单）加客户端审批；命令执行与拒绝决定写入 `audit` 表。详见 `docs/adr/0001`、`docs/adr/0004` 与 `docs/adr/0011`。
+首版不使用容器，agent 直接作用于真实文件系统。安全边界只有一层：权限策略（工作区路径约束、工具分级、命令默认需审批 + 参数级 argv 白名单）加客户端审批；命令执行与拒绝决定写入 `audit` 表。文件写入默认在工作区与临时目录内免审（仍留 diff 事件与 `write.auto` 审计），敏感路径与工作区之外仍审批；见 [`docs/write-approval.md`](docs/write-approval.md)。详见 `docs/adr/0001`、`docs/adr/0004` 与 `docs/adr/0011`。
 
 可选的 `sandbox` 执行后端（`exec.backend: sandbox`）在此之上再加一层进程级隔离：命令只能写工作区、临时目录与工具链缓存，读不到 `~/.ssh` 等密钥目录。它默认关闭，不可用时启动报错而不会静默退回直连；见 [`docs/sandbox.md`](docs/sandbox.md)。
 

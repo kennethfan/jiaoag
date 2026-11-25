@@ -262,6 +262,11 @@ type ProposalAppliedPayload struct {
 	Hunks []int `json:"hunks,omitempty"`
 	// TotalHunks 是原 diff 的总块数，配合 Hunks 说明「应用了几块里的哪几块」。
 	TotalHunks int `json:"total_hunks,omitempty"`
+	// Auto 表示这次写入没有经过人工审批（agent.write_approval 允许的
+	// 工作区/临时目录写入），界面上要明确标出来。
+	Auto bool `json:"auto,omitempty"`
+	// Mode 说明免审依据：workspace / tmp / off。人工批准的写入没有这个字段。
+	Mode string `json:"mode,omitempty"`
 }
 
 // ProposalRejectedPayload 记录「这次写入没有发生」以及原因。

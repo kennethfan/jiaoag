@@ -1214,6 +1214,11 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 	case string(domain.EventProposalApplied):
 		var p2 domain.ProposalAppliedPayload
 		if err := json.Unmarshal(p.Payload, &p2); err == nil {
+			if p2.Auto {
+				// 免审写入不是静默写入：谁在什么时候改了哪个文件，对话里也要留痕。
+				m.appendLine("⋯ 自动应用（" + autoWriteScope(p2.Mode) + "）：" + p2.Path)
+				break
+			}
 			m.appendLine("✔ 已写入 " + p2.Path)
 		}
 	case string(domain.EventProposalRejected):
@@ -2264,6 +2269,18 @@ func (m *Model) renderExternalPanel() string {
 	b.WriteByte('\n')
 	b.WriteString(s.paint(styleMuted, "tab 切换焦点 · enter 执行 · esc 收起（不裁决） · ctrl+c 退出"))
 	return b.String()
+}
+
+// autoWriteScope 把免审写入的放行依据翻成人话。
+func autoWriteScope(mode string) string {
+	switch mode {
+	case "tmp":
+		return "临时目录内"
+	case "workspace":
+		return "工作区内"
+	default:
+		return "按配置免审"
+	}
 }
 
 func decisionLabel(d domain.Decision) string {

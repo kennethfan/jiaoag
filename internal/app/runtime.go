@@ -49,6 +49,10 @@ type RuntimeDeps struct {
 	ResumeQueued bool
 	// ApprovalTTL 是 allow_session 授权的有效期；0 用 DefaultApprovalTTL。
 	ApprovalTTL time.Duration
+	// WriteApproval 控制文件写入是否必须人工审批：workspace（默认）在工作区
+	// 与临时目录内直接落盘，敏感路径与工作区之外仍审批；always 每次审批；
+	// off 从不审批。空串等价于 always，库的零值必须是安全的那一档。
+	WriteApproval string
 	// Memory 开启跨会话项目记忆：注入 MEMORY.md，并注册 remember 工具。
 	Memory bool
 	// SkillDirs 是技能包目录（`~` 已展开的写法或工作区相对路径）；非空时
@@ -234,6 +238,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		SkillBodies:    bodies,
 		ProjectPrompts: projectLayers(proj),
 		MaxRounds:      deps.MaxRounds,
+		WriteApproval:  deps.WriteApproval,
 		ContextBudget:  deps.ContextBudget,
 		Compact:        deps.ContextCompact,
 		Logger:         deps.Logger,

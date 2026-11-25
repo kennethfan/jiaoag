@@ -119,6 +119,10 @@ type Options struct {
 	CompactKeepRounds int
 	// Compactor 是摘要实现；为空且 Compact 为真时用当前 provider 构造。
 	Compactor Compactor
+	// WriteApproval 控制文件写入是否必须人工审批：workspace（默认语义由调用方
+	// 传入）在工作区与临时目录内直接落盘，敏感路径与工作区之外仍审批；always
+	// 每次审批；off 从不审批。空串等价于 always——库的零值必须是安全的那一档。
+	WriteApproval string
 }
 
 // Agent 执行单个任务。多个任务可以并发使用同一个 Agent（无可变状态）。
@@ -424,6 +428,12 @@ func (a *Agent) runTool(ctx context.Context, task domain.Task, round int, block 
 	case perr != nil:
 		result, err = tools.Failure(ctx, perr)
 	case prepared.Change != nil:
+		// 工作区内与临时目录的写入按配置可直接落盘：仍算 diff、做 CAS、
+		// 写事件与审计，只是不再等人点批准（ADR-0042）。
+		if ok, reason := a.autoWrite(prepared.Change); ok {
+			result, err = a.applyAutoChange(ctx, task, toolCall, prepared, reason)
+			break
+		}
 		// 写入：先落提案与审批请求，等用户裁决。
 		waitStart := time.Now()
 		result, err = a.proposeChange(ctx, task, toolCall, prepared)

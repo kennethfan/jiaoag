@@ -28,3 +28,7 @@ M4 落地写入与审批时，《v1 实施计划》里写的是 `approval.respon
 ## 修订（v2.16）：裁决可以只覆盖部分块
 
 `approval.resolve` 新增可选 `hunks`（0 起下标），允许「这次只写这几块」。这没有推翻上面任何一条：裁决结果仍然只经由 `approval.resolved` 事件回流，未落盘的结局仍然统一为 `proposal.rejected`，`allow_session` 仍然是「整份写入」的会话级豁免——所以 `allow_session` 与 `hunks` 同时出现时降级为 `allow_once`，不写白名单。部分应用的落盘内容由服务端用 `patch.ApplyHunks` 从旧内容重放，CAS 仍按 `BaseHash` 判定，详见 ADR-0028。
+
+## 修订（v2.40）：工作区与临时目录内的写入可以免审
+
+`agent.write_approval: workspace`（默认）下，落在会话根或临时目录、且不在敏感清单里的写入不再产生 `approval.*`，而是直接走「`proposal.created` → CAS → `proposal.applied{auto, mode}`」，审计记 `write.auto`（`actor=policy`）。这不推翻上面的结论：写入仍然是「先提案、后落盘」，事件仍然是唯一事实来源，只是「谁批准了」的答案是「没有人，宿主按配置放行」，并在事件与审计里明说。敏感路径（`.git/`、`.env*`、密钥、`AGENTS.md`、`.jiaoag/`、CI 工作流等）与工作区之外仍然逐次审批；`always` 恢复原行为。详见 ADR-0042。

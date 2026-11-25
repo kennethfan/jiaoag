@@ -38,6 +38,12 @@ jiaoag serve -config ~/.config/jiaoag/config.yaml   # 默认 127.0.0.1:8787
 
 后台会话（没在看的那条标签）依然跑；标签上会出徽标：`!` 待审批、`●` 运行中、`◌` 排队、`·N` 未读。
 
+## 写入审批
+
+和 TUI 共用同一套判定：默认 `agent.write_approval: workspace` 下，工作区与临时目录内的
+普通写入直接落盘，对话里显示一行「自动应用（工作区内）：path」；敏感路径与工作区之外
+仍弹审批卡片（含逐块选择）。规则与查询方式见 [`docs/write-approval.md`](write-approval.md)。
+
 ## 与 TUI 的差异
 
 - **没有 `!本机命令`**。执行命令请让 agent 用 `run_command`（走审批、审计、执行后端）；浏览器里不可能安全地起一个本机 shell。

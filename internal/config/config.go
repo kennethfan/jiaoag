@@ -338,6 +338,18 @@ type Agent struct {
 	// SkillsDirs 是技能包目录；留空用 DefaultSkillsDir。`~` 会在启动时展开，
 	// 相对路径按会话工作区根解析。
 	SkillsDirs []string `yaml:"skills_dirs"`
+	// WriteApproval 控制文件写入要不要人工看 diff：workspace（默认）在工作区
+	// 与临时目录内直接落盘，敏感路径与工作区之外仍审批；always 每次都审批；
+	// off 从不审批。
+	WriteApproval string `yaml:"write_approval"`
+}
+
+// WriteApprovalMode 返回生效的写入审批模式；未配置时按 workspace 处理。
+func (a Agent) WriteApprovalMode() string {
+	if a.WriteApproval == "" {
+		return WriteApprovalWorkspace
+	}
+	return a.WriteApproval
 }
 
 // MemoryEnabled 报告是否启用跨会话项目记忆；未配置时默认开启。
@@ -410,6 +422,13 @@ const (
 	SkillAuto        = "auto"
 	SkillOff         = "off"
 	DefaultSkillsDir = "~/.agents/skills"
+)
+
+// 写入审批模式。workspace 是默认值：工作区与临时目录内直接落盘，其余仍审批。
+const (
+	WriteApprovalWorkspace = "workspace"
+	WriteApprovalAlways    = "always"
+	WriteApprovalOff       = "off"
 )
 
 // DefaultMaxRounds 是未配置 agent.max_rounds 时的轮数上限。
@@ -635,6 +654,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Agent.Skills == "" {
 		c.Agent.Skills = SkillAuto
+	}
+	if c.Agent.WriteApproval == "" {
+		c.Agent.WriteApproval = WriteApprovalWorkspace
 	}
 	if c.Project.Mode == "" {
 		c.Project.Mode = ProjectAsk
@@ -1004,6 +1026,12 @@ func (c *Config) validateCommon() error {
 	case "", SkillAuto, SkillOff:
 	default:
 		return fmt.Errorf("agent.skills 只支持 %q 或 %q，当前为 %q", SkillAuto, SkillOff, c.Agent.Skills)
+	}
+	switch c.Agent.WriteApproval {
+	case "", WriteApprovalWorkspace, WriteApprovalAlways, WriteApprovalOff:
+	default:
+		return fmt.Errorf("agent.write_approval 只支持 %q、%q 或 %q，当前为 %q",
+			WriteApprovalWorkspace, WriteApprovalAlways, WriteApprovalOff, c.Agent.WriteApproval)
 	}
 	for i, dir := range c.Agent.SkillsDirs {
 		if strings.TrimSpace(dir) == "" {

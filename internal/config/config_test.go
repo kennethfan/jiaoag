@@ -392,6 +392,39 @@ func TestContextCompactDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestWriteApprovalDefaultsAndValidation(t *testing.T) {
+	cfg, err := Load(writeTemp(t, minimalYAML))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.WriteApproval != WriteApprovalWorkspace {
+		t.Fatalf("默认写入审批模式 = %q，期望 %q", cfg.Agent.WriteApproval, WriteApprovalWorkspace)
+	}
+	if got := cfg.Agent.WriteApprovalMode(); got != WriteApprovalWorkspace {
+		t.Fatalf("WriteApprovalMode = %q", got)
+	}
+
+	for _, mode := range []string{WriteApprovalWorkspace, WriteApprovalAlways, WriteApprovalOff} {
+		yaml := strings.Replace(minimalYAML, "providers:", "agent:\n  write_approval: "+mode+"\nproviders:", 1)
+		cfg, err := Load(writeTemp(t, yaml))
+		if err != nil {
+			t.Fatalf("Load(%s): %v", mode, err)
+		}
+		if err := cfg.ValidateServer(); err != nil {
+			t.Fatalf("write_approval=%s 应合法：%v", mode, err)
+		}
+	}
+
+	bad := strings.Replace(minimalYAML, "providers:", "agent:\n  write_approval: never\nproviders:", 1)
+	cfg, err = Load(writeTemp(t, bad))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.ValidateServer(); err == nil || !strings.Contains(err.Error(), "write_approval") {
+		t.Fatalf("非法写入审批模式应校验失败，得到 %v", err)
+	}
+}
+
 func TestResumeQueuedDefaultsAndOverride(t *testing.T) {
 	cfg, err := Load(writeTemp(t, minimalYAML))
 	if err != nil {

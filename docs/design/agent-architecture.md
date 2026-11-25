@@ -207,7 +207,7 @@ type Decision struct {
 
 ### 5.2 工具两段式 Prepare / Execute（ADR-0006）
 
-`Prepare` 纯只读（读现状、算 hash、算 diff、解析 argv），`Execute` 才动磁盘 / 起进程。审批插在两段之间：准备产物 `Prepared.Change` 非空时，顶层不调 `Execute`，而是走「提案 → 审批 → CAS 落盘」。写入工具的 `Execute` 因此**失败关闭**——绕过审批直接调用只会得到「必须经过审批」的错误，落盘只有 `agent → workspace.Write` 一条路径（临时文件 + `rename`，保留原权限）。
+`Prepare` 纯只读（读现状、算 hash、算 diff、解析 argv），`Execute` 才动磁盘 / 起进程。审批插在两段之间：准备产物 `Prepared.Change` 非空时，顶层不调 `Execute`，而是走「提案 → 审批 → CAS 落盘」。从 v2.40 起审批可以按配置跳过（`agent.write_approval`，ADR-0042）：落在会话根或临时目录、且不在敏感清单里的写入直接走「提案 → CAS 落盘」，仍写 `proposal.created`/`proposal.applied{auto}` 与 `write.auto` 审计（actor=policy），对话里也有一行提示。`always` 保持逐次审批；`off` 连敏感路径也不问。命令与外部工具的审批不受这个开关影响。写入工具的 `Execute` 因此**失败关闭**——绕过审批直接调用只会得到「必须经过审批」的错误，落盘只有 `agent → workspace.Write` 一条路径（临时文件 + `rename`，保留原权限）。
 
 审批协议只有一条投递路径：C→S 的 `approval.resolve`，裁决结果由 `approval.resolved` 事件回传；提案没落盘的三种结局（拒绝 / 失效 / 写失败）统一记 `proposal.rejected{status}`（ADR-0013）。
 
@@ -330,6 +330,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 健康检查 | `/healthz` 匿名只回 `{"status":"ok"}`；`version` / `uptime_seconds` / `connections` 仅对持有效令牌的请求返回，探针本身不需要凭据 |
 | 通知 | 服务端把 `approval.requested` 与任务终态 POST 到 `notify.webhooks[]`；异步有界队列、3 次重试、可选 HMAC-SHA256（ADR-0035） | v2.23 已实现 |
 | 访问令牌 | `server.tokens[]` 命名令牌 + `read_only`；权限在握手时定格在连接上，写命令由消息循环统一拦（`forbidden`）；`SIGHUP` 只重载令牌，失败保留旧集合（ADR-0029） |
+| 写入审批 | `agent.write_approval`：默认 `workspace` 让会话根与临时目录内的写入直接落盘（敏感路径除外），`always` 逐次审批，`off` 全放行；免审写入仍算 diff、做 CAS、写 `proposal.*{auto}` 与 `write.auto` 审计（actor=policy）；命令与外部工具不受影响（ADR-0042） |
 | 会话标签 | 一个连接可同时订阅多条会话（`clientConn.subs` 按会话分键）：标签只存标题/状态/待审批/未读，正文靠 `subscribe from_seq=0` 重放；背景事件只更新徽标；切换不退订，`ctrl+w` 关标签才退订（ADR-0040） |
 | 会话管理 | `/sessions` 面板走 `session.manage`（同工作区 + 任务/token 计数）；切换先 `event.unsubscribe` 再 `subscribe from_seq=0`，两帧顺序写；改名只写标题并落 `session.renamed`；删除在一个事务里按序清七张表，有未结束任务时拒绝。会话之外用 `jiaoag sessions list/rename/rm`（`session.manage` 另支持 `workspace` 与 `all` 两种入参，id 前缀补全）（ADR-0039） |
 | Web 前端 | 同端口 `/` 挂 `go:embed` 的原生页面，复用同一套 WS 协议与事件重放；静态资源匿名可读、`/api/info` 与 `/ws` 校验令牌，`/ws` 额外接受 `?token=`（浏览器 WS 设不了请求头）；范围对齐 TUI，唯一例外是 `!` 本机命令（ADR-0041） |

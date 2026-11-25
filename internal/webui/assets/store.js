@@ -255,9 +255,11 @@ export function applyEvent(env) {
       push({
         kind: 'note',
         tone: 'ok',
-        text: body.hunks && body.hunks.length
-          ? `已写入 ${body.path}（第 ${body.hunks.map((n) => n + 1).join('、')} 块，共 ${body.total_hunks} 块）`
-          : `已写入 ${body.path}`,
+        text: body.auto
+          ? `自动应用（${body.mode === 'tmp' ? '临时目录内' : body.mode === 'workspace' ? '工作区内' : '按配置免审'}）：${body.path}`
+          : body.hunks && body.hunks.length
+            ? `已写入 ${body.path}（第 ${body.hunks.map((n) => n + 1).join('、')} 块，共 ${body.total_hunks} 块）`
+            : `已写入 ${body.path}`,
       });
       break;
     case E.proposalRejected:

@@ -97,6 +97,14 @@ agent:
   # allow_session 授权的有效期。授权落库、跨重启生效，但过期后同类操作会重新
   # 询问；接受 12h / 30m 这类时长写法，默认 12h（ADR-0030）。
   approval_ttl: 12h
+  # 文件写入要不要人工看 diff（ADR-0042）：
+  #   workspace（默认）工作区与会话附加根、临时目录内直接落盘；敏感路径
+  #   （.git/、.env*、密钥、AGENTS.md、.jiaoag/、.github/workflows 等）与
+  #   工作区之外仍然逐次审批。
+  #   always 每次都审批（v2.39 之前的行为）。
+  #   off    从不审批，连敏感路径也不问——只在完全信任的环境里用。
+  # 命令（run_command）与外部工具的审批不受这个开关影响。
+  write_approval: workspace
 
 # type 取 openai（OpenAI 兼容协议）或 anthropic（Messages API）。
 providers:
