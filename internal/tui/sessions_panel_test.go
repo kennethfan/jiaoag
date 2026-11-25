@@ -94,18 +94,26 @@ func TestSessionsPanelEnterSwitchesSession(t *testing.T) {
 	}
 }
 
-func TestSessionsPanelRefusesSwitchWithActiveTask(t *testing.T) {
+func TestSessionsPanelOpensBusySessionAsTab(t *testing.T) {
 	m := newModel(t)
-	openSessionsPanel(t, m, protocol.SessionSummaryPayload{ID: "ses_busy", ActiveTasks: 1})
+	openSessionsPanel(t, m, protocol.SessionSummaryPayload{ID: "ses_busy", ActiveTasks: 1, Title: "跑着的"})
+
 	_, cmd := m.handleKey(keyMsg("enter"))
-	if cmd != nil {
-		t.Fatal("有未结束任务时不该切走")
+	if cmd == nil {
+		t.Fatal("应当订阅新会话（有任务在跑也能切过去看）")
 	}
-	if m.sessionID != "ses_1" {
-		t.Fatalf("sessionID 不该变：%q", m.sessionID)
+	if m.sessionID != "ses_busy" {
+		t.Fatalf("应切到 ses_busy：%q", m.sessionID)
 	}
-	if !dialogContains(m, "没结束") {
-		t.Fatalf("缺少拒绝提示：%v", m.dialog)
+	if m.sessionsPanel != nil {
+		t.Fatal("切换后应关掉面板")
+	}
+	// 旧会话留在标签里、且不退订：它在后台继续跑。
+	if m.tabIndex("ses_1") < 0 {
+		t.Fatalf("旧会话应保留为标签：%v", m.tabs)
+	}
+	if dialogContains(m, "没结束") {
+		t.Fatalf("不该再拒绝切换：%v", m.dialog)
 	}
 }
 

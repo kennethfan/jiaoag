@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -37,9 +36,6 @@ type Options struct {
 	Model     string
 	// SessionID 非空时跳过建会话，直接订阅该会话（进程重启后用它回到现场）。
 	SessionID string
-	// ContinueLast 在没有指定 SessionID 时，接着本目录下最近更新的那个会话
-	// 继续，而不是新开一个；同目录没有历史会话时退回新建。
-	ContinueLast bool
 	// InsecureTLS 跳过服务端证书校验，只用于自签证书的本机/内网部署。
 	InsecureTLS bool
 	// Roots 是要挂到新会话上的只读附加根（ADR-0036）。
@@ -70,9 +66,9 @@ type Model struct {
 	status string
 
 	sessionID string
-	// resuming 表示已经发出 session.list，正在等「继续最近会话」的候选列表。
-	// 只有 -c 首次连接会置位，拿到结果就清掉，避免误吃后续的列表回包。
-	resuming bool
+	// restoring 表示已经发出 session.manage，正在等本目录的会话清单。
+	// 首次连接会置位，拿到结果就清掉，避免误吃 /sessions 面板的回包。
+	restoring bool
 	// lastSeq 是本地已收到的最后一条持久事件序号。首次连接为 0（全量回放），
 	// 断线重连从它之后增量回放；临时流式帧 seq=0，不推进它。
 	lastSeq int64
@@ -92,6 +88,8 @@ type Model struct {
 	mcpPanel *mcpPanelView
 	// sessionsPanel 非空表示 /sessions 的会话管理面板打开。
 	sessionsPanel *sessionsPanelView
+	// tabs 是同窗口打开的多条会话；当前那条由 sessionID 指出，对话区只渲染它。
+	tabs []*sessionTab
 	// renamingSession 非空表示正在输入某会话的新标题：此时输入行的内容不是任务。
 	renamingSession string
 	sessionTitle    string
@@ -434,29 +432,6 @@ func (m *Model) handleLocalCommand(ev localshell.Event) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// latestSessionFor 从 session.list 回包（服务端已按 updated_at 倒序）里挑
-// 第一个工作区与当前目录相同的会话。-c 只在本目录内继续，否则会把另一个
-// 项目的会话拉进来，任务随后就跑在那个工作区里。
-func latestSessionFor(sessions []protocol.SessionPayload, workspace string) (protocol.SessionPayload, bool) {
-	want := canonicalPath(workspace)
-	for _, sess := range sessions {
-		if canonicalPath(sess.Workspace) == want {
-			return sess, true
-		}
-	}
-	return protocol.SessionPayload{}, false
-}
-
-// canonicalPath 展开符号链接：macOS 上 /var 与 /private/var 是同一处，
-// 不归一化会让同一个目录看起来不同。
-func canonicalPath(p string) string {
-	clean := filepath.Clean(p)
-	if real, err := filepath.EvalSymlinks(clean); err == nil {
-		return real
-	}
-	return clean
-}
-
 func shortDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%d ms", d.Milliseconds())
@@ -496,23 +471,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.resetView()
 		m.sessionID = ""
-		if m.opts.ContinueLast {
-			// 先问服务端本目录下有没有历史会话；有就订阅它，没有才新建。
-			m.resuming = true
-			m.status = "正在查找最近的会话…"
-			return m, tea.Batch(
-				waitForEnvelope(m.conn),
-				sendCmd(m.conn, protocol.TypeSessionList, nil),
-			)
-		}
+		// 先问服务端本目录有哪些会话：有就把它们全开成标签并接到最近的那条，
+		// 没有才新建。每次启动都新建会让历史会话变成一堆看不见的孤儿。
+		m.restoring = true
+		m.status = "正在载入本目录的会话…"
 		return m, tea.Batch(
 			waitForEnvelope(m.conn),
-			sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
-				Workspace: m.opts.Workspace,
-				Roots:     m.opts.Roots,
-				Provider:  m.opts.Provider,
-				Model:     m.opts.Model,
-			}),
+			sendCmd(m.conn, protocol.TypeSessionManage, protocol.SessionManagePayload{Workspace: m.opts.Workspace}),
 		)
 
 	case envelopeMsg:
@@ -656,6 +621,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.help = true
 		return m, nil
+	case "ctrl+n":
+		return m.cycleTab(1)
+	case "ctrl+p":
+		return m.cycleTab(-1)
+	case "ctrl+w":
+		return m.closeCurrentTab()
 	case "ctrl+q":
 		if len(m.queue) == 0 {
 			m.appendLine("队列为空：当前没有排队任务")
@@ -751,6 +722,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			})
 		}
 		// /sessions 打开会话管理面板：只看本工作区，能切换、改名、删除。
+		if text == "/new" {
+			m.input = ""
+			m.appendLine("正在新建会话…")
+			return m, sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
+				Workspace: m.opts.Workspace,
+				Roots:     m.opts.Roots,
+				Provider:  m.opts.Provider,
+				Model:     m.opts.Model,
+			})
+		}
 		if text == "/sessions" {
 			m.input = ""
 			m.appendLine("正在获取会话列表…")
@@ -850,43 +831,14 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		}
 		return nil
 
-	case protocol.TypeSessionListResult:
-		if !m.resuming {
-			return nil
-		}
-		m.resuming = false
-		var p protocol.SessionListResultPayload
-		if err := env.Decode(&p); err != nil {
-			return nil
-		}
-		target, ok := latestSessionFor(p.Sessions, m.opts.Workspace)
-		if !ok {
-			m.appendLine("这个目录还没有历史会话，已新建")
-			return sendCmd(m.conn, protocol.TypeSessionCreate, protocol.SessionCreatePayload{
-				Workspace: m.opts.Workspace,
-				Roots:     m.opts.Roots,
-				Provider:  m.opts.Provider,
-				Model:     m.opts.Model,
-			})
-		}
-		m.resetView()
-		m.sessionID = target.ID
-		m.sessionTitle = target.Title
-		m.sessionProvider, m.sessionModel = target.Provider, target.Model
-		m.status = fmt.Sprintf("会话 %s · %s", target.ID, target.Workspace)
-		m.appendLine(sessionHeadline("继续会话", target.Title))
-		if target.Model != "" {
-			m.appendLine("模型：" + modelLabel(target.Provider, target.Model))
-		}
-		return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
-			SessionID: m.sessionID,
-			FromSeq:   0,
-		})
-
 	case protocol.TypeSessionManageResult:
 		var p protocol.SessionManageResultPayload
 		if err := env.Decode(&p); err != nil {
 			return nil
+		}
+		if m.restoring {
+			m.restoring = false
+			return m.restoreWorkspaceSessions(p.Sessions)
 		}
 		if len(p.Sessions) == 0 {
 			m.appendLine("这个工作区还没有会话")
@@ -902,6 +854,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 				m.sessionTitle = p.Title
 				m.retitleSessionHeadline(p.Title)
 			}
+			m.setTabTitle(p.ID, p.Title)
 			if p.Title == "" {
 				m.appendLine("标题已清空")
 			} else {
@@ -915,6 +868,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		if err := env.Decode(&p); err != nil {
 			return nil
 		}
+		m.removeTab(p.SessionID)
 		m.forgetSession(p.SessionID)
 		m.appendLine("已删除会话 " + shortID(p.SessionID))
 		if p.SessionID == m.sessionID {
@@ -937,10 +891,17 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 	case protocol.TypeSessionCreated:
 		var p protocol.SessionPayload
 		if err := env.Decode(&p); err == nil {
+			// 已有会话时这是「再开一条」：先把当前那条的标签状态存好，
+			// 再清视图切过去，否则新会话的对话会接在旧会话后面。
+			if m.sessionID != "" && m.sessionID != p.ID {
+				m.syncCurrentTab()
+				m.resetView()
+			}
 			m.sessionID = p.ID
 			m.sessionTitle = p.Title
 			m.sessionProvider, m.sessionModel = p.Provider, p.Model
 			m.status = fmt.Sprintf("会话 %s · %s", p.ID, p.Workspace)
+			m.openTab(p.ID, p.Title, p.Provider, p.Model)
 			m.appendLine(sessionHeadline("已进入会话", p.Title))
 			if p.Model != "" {
 				m.appendLine("模型：" + modelLabel(p.Provider, p.Model))
@@ -1034,6 +995,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			m.enqueueQueued(domain.TaskID(p.ID), p.Prompt, at)
 			if m.runTaskID == "" {
 				m.taskID, m.taskStatus = p.ID, p.Status
+				m.syncCurrentTab()
 			}
 			m.appendLine(fmt.Sprintf("任务 %s 已提交，按会话内顺序执行（排队 %d）",
 				shortID(p.ID), len(m.queue)))
@@ -1059,6 +1021,11 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 }
 
 func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
+	// 后台标签的事件只更新徽标：它们与当前会话的对话区无关，混进对话框
+	// 会让人以为两条会话的上下文是连着的。
+	if env.SessionID != "" && env.SessionID != m.sessionID {
+		return m.noteBackgroundEvent(env)
+	}
 	var p protocol.StreamEventPayload
 	if err := env.Decode(&p); err != nil {
 		return nil
@@ -1097,6 +1064,7 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 		if err := json.Unmarshal(p.Payload, &r); err == nil {
 			m.sessionTitle = r.Title
 			m.retitleSessionHeadline(r.Title)
+			m.setTabTitle(m.sessionID, r.Title)
 		}
 	case string(domain.EventSessionUpdated):
 		var s domain.SessionUpdatedPayload
@@ -1129,6 +1097,7 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 					m.removeQueued(domain.TaskID(tid))
 				}
 				m.taskStatus = string(s.To)
+				m.syncCurrentTab()
 			case domain.TaskCompleted, domain.TaskFailed, domain.TaskCanceled:
 				if tid != "" {
 					m.removeQueued(domain.TaskID(tid))
@@ -1140,6 +1109,9 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 					if tid != "" && tid == m.runTaskID {
 						m.runTaskID = ""
 					}
+					// 终态也要回写标签：不然标签上的「●」会一直挂着，
+					// 看上去像后台还在跑（状态栏已经显示已完成，两边对不上）。
+					m.syncCurrentTab()
 				}
 			}
 			if s.To == domain.TaskFailed && s.Error != "" {
@@ -1166,6 +1138,7 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 			// 任务的模型覆盖，界面上看到的与请求里发出去的一致。
 			if start.Model != "" {
 				m.sessionModel = start.Model
+				m.syncCurrentTab()
 			}
 		}
 	case string(domain.EventRoundStarted):
@@ -1407,11 +1380,18 @@ func (m *Model) View() tea.View {
 	// 底部区固定三行：分隔线、输入行、状态栏。输入行即使没有会话或面板
 	// 打开时也照样占位（换成灰色说明），这样底部高度不随状态变化，内容区
 	// 的可见行数也就稳定。
+	// 标签行在顶部：它回答「这个窗口里开着哪几条会话」，属于导航而不是
+	// 底部状态。放顶部还有个实际好处——内容区滚动时标签不动，始终可见。
+	top := make([]string, 0, 1)
+	if strip := m.renderTabStrip(width); strip != "" {
+		top = append(top, strip)
+	}
 	dock := make([]string, 0, dockRows)
 	dock = append(dock, m.styler.paint(styleMuted, strings.Repeat("-", width)))
 	dock = append(dock, m.renderInputRow(width, modal))
 	dock = append(dock, strings.Split(strings.TrimRight(m.renderStatusBar(width, !modal), "\n"), "\n")...)
 	dock = wrapAll(dock)
+	top = wrapAll(top)
 	modalLines = wrapAll(modalLines)
 
 	// 四、全屏时按终端高度裁剪内容区：状态栏与输入必须真的贴底，
@@ -1423,7 +1403,7 @@ func (m *Model) View() tea.View {
 		if len(modalLines) > 0 {
 			extra = 1
 		}
-		avail := height - len(dock) - len(modalLines) - extra
+		avail := height - len(top) - len(dock) - len(modalLines) - extra
 		if avail < 1 {
 			avail = 1
 		}
@@ -1455,7 +1435,8 @@ func (m *Model) View() tea.View {
 	// 最终组装。极端窄屏或超长输入会让底部区自己就超过一屏：这时只能
 	// 从顶部裁，保证状态栏永远在最后一行——它被挤掉就等于失去了唯一的
 	// 状态读数。
-	out := make([]string, 0, len(content)+len(modalLines)+len(dock)+1)
+	out := make([]string, 0, len(top)+len(content)+len(modalLines)+len(dock)+1)
+	out = append(out, top...)
 	out = append(out, content...)
 	if len(modalLines) > 0 {
 		out = append(out, "")
@@ -1463,7 +1444,20 @@ func (m *Model) View() tea.View {
 	}
 	out = append(out, dock...)
 	if m.fullscreen && height > 0 && len(out) > height {
-		out = out[len(out)-height:]
+		// 从顶部裁时先裁内容，别先裁标签行：它是导航，被裁掉就不知道
+		// 还有哪些会话开着。只有连标签都放不下（极小终端）才继续丢。
+		rest := len(out) - len(top)
+		keep := height - len(top)
+		if keep < 1 {
+			keep = 1
+		}
+		if keep > rest {
+			keep = rest
+		}
+		out = append(append([]string{}, top...), out[len(out)-keep:]...)
+		if len(out) > height {
+			out = out[len(out)-height:]
+		}
 	}
 
 	// 全屏模式下末尾不能再跟一个换行：渲染器按整个屏幕画帧，多出的空行
@@ -1749,6 +1743,8 @@ func (m *Model) renderHelpPanel() string {
 		{"esc", "取消运行中的任务 / 关闭面板 / 退出"},
 		{"?", "打开或关闭这个面板"},
 		{"ctrl+q", "队列面板"},
+		{"ctrl+n / ctrl+p", "在会话标签之间循环"},
+		{"ctrl+w", "关掉当前会话标签（至少保留一个）"},
 		{"ctrl+r", "重连"},
 		{"ctrl+f", "切换全屏 / 内联（默认全屏，状态栏钉底）"},
 		{"pgup/pgdn", "全屏下翻页"},
@@ -1760,6 +1756,7 @@ func (m *Model) renderHelpPanel() string {
 		{"/skill", "指定下一条任务加载的技能"},
 		{"/mcp", "MCP server 与工具数"},
 		{"/roots", "会话挂载的附加根"},
+		{"/new", "新开一条会话（作为新标签，旧会话继续在后台跑）"},
 		{"/sessions", "会话列表：切换、改名、删除"},
 		{"/rename", "改当前会话标题（不带参数则填入输入行）"},
 		{"!cmd", "在本机执行命令（不进模型、不审计）"},
@@ -1768,10 +1765,6 @@ func (m *Model) renderHelpPanel() string {
 		{"/exit", "退出（等同 ctrl+c）"},
 		{"ctrl+c", "退出"},
 	}
-	for _, row := range rows {
-		fmt.Fprintf(&b, "%s%s\n", padDisplay(s.paint(styleAccent, row[0]), 10), s.paint(stylePlain, row[1]))
-	}
-	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)) + "\n")
 	info := []string{}
 	if m.sessionID != "" {
 		info = append(info, "会话 "+m.sessionID)
@@ -1782,6 +1775,20 @@ func (m *Model) renderHelpPanel() string {
 	for _, r := range m.opts.Roots {
 		info = append(info, "附加根 "+r.Alias+"="+r.Path)
 	}
+	// 面板本身不滚动：行数超过视口就从尾部截断并注明还剩几项，
+	// 否则全屏裁剪会把标题和顶部几行键位吃掉（比缺几行更难读）。
+	budget := m.height - dockRows - 1
+	if budget < 8 {
+		budget = 8
+	}
+	if maxRows := budget - 3 - len(info); maxRows >= 3 && maxRows < len(rows) {
+		dropped := len(rows) - maxRows
+		rows = append(rows[:maxRows:maxRows], [2]string{"…", fmt.Sprintf("还有 %d 项，终端加高可看全", dropped)})
+	}
+	for _, row := range rows {
+		fmt.Fprintf(&b, "%s%s\n", padDisplay(s.paint(styleAccent, row[0]), 10), s.paint(stylePlain, row[1]))
+	}
+	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)) + "\n")
 	for _, line := range info {
 		b.WriteString(s.paint(styleMuted, line) + "\n")
 	}

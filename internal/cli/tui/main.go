@@ -31,7 +31,6 @@ func Main() {
 		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 		inline   = flag.Bool("inline", false, "不用全屏：保留终端 scrollback，状态栏跟在内容末尾")
 		noMouse  = flag.Bool("no-mouse", false, "关闭鼠标滚轮（默认开启；开启时会占用终端原生选中，复制需按住 shift）")
-		cont     = flag.Bool("c", false, "继续本目录下最近更新的会话（没有则新建；-s 优先）")
 	)
 	flag.StringVar(&sesID, "s", "", "恢复指定会话（进程重启后用 -s <id> 回到原会话）")
 	flag.StringVar(&sesID, "session", "", "同 -s（保留旧写法）")
@@ -71,7 +70,6 @@ func Main() {
 	opts := tuipkg.Options{
 		URL: target, Token: token, SessionID: sesID, InsecureTLS: *insecure,
 		Roots: roots, Inline: *inline, Mouse: !*noMouse,
-		ContinueLast: *cont && sesID == "",
 	}
 
 	if *check {
@@ -174,11 +172,11 @@ func (r rootList) payloads() ([]protocol.SessionRootPayload, error) {
 func tuiHelp(fs *flag.FlagSet) helppkg.Spec {
 	return helppkg.Spec{
 		Summary: "jiaoag tui 打开终端界面；本机连不上服务端时会自动拉起一个 jiaoag serve。",
-		Usage:   []string{"jiaoag tui [-c | -s <会话 id>] [其他标志]"},
+		Usage:   []string{"jiaoag tui [-s <会话 id>] [其他标志]"},
 		Flags:   fs,
 		Examples: []string{
 			"jiaoag tui",
-			"jiaoag tui -c            # 继续本目录最近更新的会话",
+			"jiaoag tui               # 打开本目录的会话（多条会全部开成标签）",
 			"jiaoag tui -s ses_3f2a19c4",
 		},
 	}

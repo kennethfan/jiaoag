@@ -86,29 +86,17 @@ func (m *Model) handleSessionsKey(key string) (tea.Model, tea.Cmd) {
 // 旧订阅必须先退：服务端的 subs 是按会话 id 分键的，不退订就会两条流同时
 // 往一条连接上推，事件互相串台。
 func (m *Model) switchSession(item protocol.SessionSummaryPayload) (tea.Model, tea.Cmd) {
-	if item.ActiveTasks > 0 {
-		m.appendLine(fmt.Sprintf("⚠ %s 还有 %d 个任务没结束，先等它跑完或按 esc 取消",
-			shortID(item.ID), item.ActiveTasks))
-		return m, nil
-	}
+	m.sessionsPanel = nil
 	if item.ID == m.sessionID {
-		m.sessionsPanel = nil
 		return m, nil
 	}
-	old := m.sessionID
-	m.resetView()
-	m.sessionID = item.ID
-	m.sessionTitle = item.Title
-	m.sessionProvider, m.sessionModel = item.Provider, item.Model
-	m.status = fmt.Sprintf("会话 %s · %s", item.ID, item.Workspace)
-	m.appendLine(sessionHeadline("切换到会话", item.Title))
-	if item.Model != "" {
-		m.appendLine("模型：" + modelLabel(item.Provider, item.Model))
+	// 打开成标签而不是「换掉当前会话」：有任务在跑的会话照样切过去看，
+	// 它在后台继续跑，标签上会显示进度。切换本身不退订旧会话。
+	m.openTab(item.ID, item.Title, item.Provider, item.Model)
+	if tab := m.currentTab(); tab != nil && tab.ID == item.ID {
+		tab.Status = ""
 	}
-	return m, switchSessionCmd(m.conn, old, protocol.EventSubscribePayload{
-		SessionID: m.sessionID,
-		FromSeq:   0,
-	})
+	return m.activateTab(item.ID, "")
 }
 
 // beginRename 把标题填进输入行，回车保存。复用输入行而不是做行内编辑：
