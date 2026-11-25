@@ -453,3 +453,55 @@ func TestDockHeightIsConstant(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusBarShowsSessionLabel(t *testing.T) {
+	m := newModel(t)
+
+	// 没起名：整段不出现。退回短 id 是噪音——id 是给命令行和日志用的，
+	// 人靠标题认会话，没名字就去 /sessions 起一个。
+	unnamed := stripANSI(m.renderStatusBar(140, false))
+	if strings.Contains(unnamed, "▤") {
+		t.Fatalf("未命名会话不该显示 id：%s", unnamed)
+	}
+
+	// 改名后标题取代 id：标题是人起的，比 id 有用。
+	m.sessionTitle = "修登录超时"
+	named := stripANSI(m.renderStatusBar(140, false))
+	if !strings.Contains(named, "▤ 修登录超时") {
+		t.Fatalf("状态栏没显示标题：%s", named)
+	}
+	if strings.Contains(named, "▤ ses_1") {
+		t.Fatalf("有标题时不该再占位显示 id：%s", named)
+	}
+
+	// 长标题截断，不能把模型与用量挤出屏幕。
+	m.sessionTitle = strings.Repeat("很长的标题", 10)
+	long := strings.TrimRight(stripANSI(m.renderStatusBar(140, false)), "\n")
+	if displayWidth(long) > 140 {
+		t.Fatalf("状态栏超出宽度：%d > 140", displayWidth(long))
+	}
+	if !strings.Contains(long, "…") {
+		t.Fatalf("长标题应截断：%s", long)
+	}
+}
+
+func TestStatusBarDropsSessionLabelBeforeWorkspace(t *testing.T) {
+	m := newModel(t)
+	m.sessionTitle = strings.Repeat("标题", 8)
+	m.sessionModel = "agnes/agnes-3.0-flash"
+
+	narrow := strings.TrimRight(stripANSI(m.renderStatusBar(46, false)), "\n")
+	if displayWidth(narrow) > 46 {
+		t.Fatalf("窄屏状态栏超宽：%d", displayWidth(narrow))
+	}
+	// 挤不下时先丢会话名、留下工作目录：目录决定工具能碰哪里。
+	if strings.Contains(narrow, "▤") && !strings.Contains(narrow, "⌂") {
+		t.Fatalf("不该为了标题丢掉工作目录：%s", narrow)
+	}
+
+	// 宽度够时名字必须出现，否则改了名等于没改。
+	wide := strings.TrimRight(stripANSI(m.renderStatusBar(140, false)), "\n")
+	if !strings.Contains(wide, "▤") {
+		t.Fatalf("宽屏应显示会话名：%s", wide)
+	}
+}

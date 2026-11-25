@@ -693,7 +693,15 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.input = ""
 			return m, m.startLocalCommand(text)
 		}
+		// /exit 与 ctrl+c 等价：断线或没会话时也得能走，所以放在会话检查之前。
+		if text == "/exit" || text == "/quit" {
+			m.input = ""
+			m.close()
+			return m, tea.Quit
+		}
 		if m.sessionID == "" {
+			// 静默丢弃最让人困惑：至少说一句「还没连上」，输入保留方便重试。
+			m.appendLine("⚠ 尚未建立会话（正在连接），稍后再提交")
 			return m, nil
 		}
 		if text == "/models" {
@@ -744,6 +752,19 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, sendCmd(m.conn, protocol.TypeSessionManage, protocol.SessionManagePayload{
 				SessionID: m.sessionID,
 			})
+		}
+		// /rename <标题> 直接改当前会话；不带参数则把现标题填进输入行，
+		// 免去为一句话去开面板再退出来。
+		if text == "/rename" || strings.HasPrefix(text, "/rename ") {
+			title := strings.TrimSpace(strings.TrimPrefix(text, "/rename"))
+			if title == "" {
+				m.renamingSession = m.sessionID
+				m.input = m.sessionTitle
+				m.appendLine("输入新标题后按 enter 保存（esc 取消）")
+				return m, nil
+			}
+			m.renamingSession = m.sessionID
+			return m, m.finishRename(title)
 		}
 		// /trust 确认当前工作区的项目级扩展（AGENTS.md、.jiaoag/、.agents/skills）。
 		if text == "/roots" {
@@ -848,10 +869,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		m.sessionTitle = target.Title
 		m.sessionProvider, m.sessionModel = target.Provider, target.Model
 		m.status = fmt.Sprintf("会话 %s · %s", target.ID, target.Workspace)
-		m.appendLine("继续会话 " + target.ID)
-		if target.Title != "" {
-			m.appendLine("标题：" + target.Title)
-		}
+		m.appendLine(sessionHeadline("继续会话", target.Title))
 		if target.Model != "" {
 			m.appendLine("模型：" + modelLabel(target.Provider, target.Model))
 		}
@@ -877,6 +895,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 		if err := env.Decode(&p); err == nil {
 			if p.ID == m.sessionID {
 				m.sessionTitle = p.Title
+				m.retitleSessionHeadline(p.Title)
 			}
 			if p.Title == "" {
 				m.appendLine("标题已清空")
@@ -917,7 +936,7 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			m.sessionTitle = p.Title
 			m.sessionProvider, m.sessionModel = p.Provider, p.Model
 			m.status = fmt.Sprintf("会话 %s · %s", p.ID, p.Workspace)
-			m.appendLine("已进入会话 " + p.ID)
+			m.appendLine(sessionHeadline("已进入会话", p.Title))
 			if p.Model != "" {
 				m.appendLine("模型：" + modelLabel(p.Provider, p.Model))
 			}
@@ -1065,6 +1084,14 @@ func (m *Model) handleEvent(env protocol.Envelope) tea.Cmd {
 		if err := json.Unmarshal(p.Payload, &s); err == nil && len(s.SharedWorkspace) > 0 {
 			m.appendLine(fmt.Sprintf("⚠ 同一仓库还有会话 %s 在运行（写入有 CAS 保护，命令可能互踩）",
 				strings.Join(s.SharedWorkspace, ", ")))
+		}
+	case string(domain.EventSessionRenamed):
+		// 改名可能来自别的客户端（例如 jiaoag sessions rename）或全量重放：
+		// 只认 sendCmd 的回帧会让状态栏停留在旧标题上。
+		var r domain.SessionRenamedPayload
+		if err := json.Unmarshal(p.Payload, &r); err == nil {
+			m.sessionTitle = r.Title
+			m.retitleSessionHeadline(r.Title)
 		}
 	case string(domain.EventSessionUpdated):
 		var s domain.SessionUpdatedPayload
@@ -1490,6 +1517,13 @@ func (m *Model) renderStatusBar(width int, withHints bool) string {
 	if dir := m.abbrevWorkspace(); dir != "" {
 		left = append(left, segment{s.paint(styleStrong, "⌂ "+dir), 1})
 	}
+	// 会话标签放在工作目录之后：改名以后总得在界面上看见自己叫什么，
+	// 否则「我在哪条会话里」只能靠打开 /sessions 面板确认。
+	if label := m.sessionLabel(); label != "" {
+		// 等级排在计数之后、工作目录之前：挤不下时先丢名字，目录留着——
+		// 目录决定了工具能碰哪里，比重名更硬。
+		left = append(left, segment{s.paint(styleStrong, label), 2})
+	}
 	left = append(left, segment{m.statusChip(), 0})
 	if m.taskID != "" {
 		left = append(left, segment{s.paint(styleMuted, shortID(m.taskID)), 3})
@@ -1699,9 +1733,11 @@ func (m *Model) renderHelpPanel() string {
 		{"/mcp", "MCP server 与工具数"},
 		{"/roots", "会话挂载的附加根"},
 		{"/sessions", "会话列表：切换、改名、删除"},
+		{"/rename", "改当前会话标题（不带参数则填入输入行）"},
 		{"!cmd", "在本机执行命令（不进模型、不审计）"},
 		{"v", "审批时逐块选择"},
 		{"tab", "审批时切换三个按钮"},
+		{"/exit", "退出（等同 ctrl+c）"},
 		{"ctrl+c", "退出"},
 	}
 	for _, row := range rows {
@@ -1726,6 +1762,42 @@ func (m *Model) renderHelpPanel() string {
 
 // abbrevWorkspace 把工作区路径缩成 ~/... 形式。状态栏宽度有限，
 // 而仓库名在最右边——保留尾部比保留开头更有用。
+// sessionHeadline 是对话里那条「你在哪条会话」的表头。
+//
+// 只有起了名字才带标题；没名字不塞会话 id——id 是给命令行和日志用的，
+// 摆在对话第一行只会让人以为改名没生效。
+func sessionHeadline(verb, title string) string {
+	if strings.TrimSpace(title) == "" {
+		return verb + "（未命名，/rename 可命名）"
+	}
+	return verb + "：" + title
+}
+
+// retitleSessionHeadline 把对话里的入口表头改成新标题。
+//
+// 它是表头而不是聊天内容：留着旧名字会让人以为改名没生效，所以就地改写。
+func (m *Model) retitleSessionHeadline(title string) {
+	for i := len(m.dialog) - 1; i >= 0; i-- {
+		for _, verb := range []string{"已进入会话", "继续会话", "切换到会话"} {
+			if strings.HasPrefix(m.dialog[i], verb) {
+				m.dialog[i] = sessionHeadline(verb, title)
+				return
+			}
+		}
+	}
+}
+
+// sessionLabel 是状态栏里的「我在哪条会话」：只有起了名字才显示。
+//
+// 没标题时退回短会话 id 看着像噪音——id 是给命令行与日志用的，人靠标题
+// 认会话；没名字就去 /sessions 里起一个。没有会话时不占位。
+func (m *Model) sessionLabel() string {
+	if m.sessionID == "" || m.sessionTitle == "" {
+		return ""
+	}
+	return "▤ " + truncateDisplay(m.sessionTitle, 24)
+}
+
 func (m *Model) abbrevWorkspace() string {
 	path := m.opts.Workspace
 	if path == "" {

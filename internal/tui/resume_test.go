@@ -43,11 +43,12 @@ func TestContinueLastPicksNewestSessionInWorkspace(t *testing.T) {
 		t.Fatal("拿到列表后应清掉 resuming")
 	}
 	joined := strings.Join(m.dialog, "\n")
-	if !strings.Contains(joined, "继续会话 ses_want") {
-		t.Fatalf("缺少继续提示：%s", joined)
+	// 表头只带标题，不摆会话 id。
+	if !strings.Contains(joined, "继续会话：修边界") {
+		t.Fatalf("缺少带标题的继续提示：%s", joined)
 	}
-	if !strings.Contains(joined, "修边界") {
-		t.Fatalf("应回显标题：%s", joined)
+	if strings.Contains(joined, "ses_want") {
+		t.Fatalf("表头不该出现会话 id：%s", joined)
 	}
 }
 

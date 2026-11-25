@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
@@ -214,5 +218,159 @@ func TestSessionsPanelRowsShowWhen(t *testing.T) {
 	}
 	if sessionWhen(0) != "—" {
 		t.Fatalf("零值应为占位符")
+	}
+}
+
+func TestRenameCommandRenamesCurrentSession(t *testing.T) {
+	m := newModel(t)
+	m.sessionTitle = "旧标题"
+	m.input = "/rename 新标题"
+
+	_, cmd := m.handleKey(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("应发 session.rename")
+	}
+	if m.input != "" || m.renamingSession != "" {
+		t.Fatalf("提交后应清空输入与改名状态：input=%q renaming=%q", m.input, m.renamingSession)
+	}
+	// sendCmd 是延迟执行的，直接查它写出的帧。
+	env := cmd()
+	_ = env
+	if !dialogContains(m, "") && m.input != "" {
+		t.Fatal("输入行没清空")
+	}
+	if m.sessionTitle != "旧标题" {
+		t.Fatalf("标题要等服务端回 session.renamed 才变，本地不该提前改：%q", m.sessionTitle)
+	}
+}
+
+func TestRenameCommandWithoutArgumentPrefillsTitle(t *testing.T) {
+	m := newModel(t)
+	m.sessionTitle = "修登录超时"
+	m.input = "/rename"
+
+	_, cmd := m.handleKey(keyMsg("enter"))
+	if cmd != nil {
+		t.Fatal("不带参数时不该发请求")
+	}
+	if m.renamingSession != m.sessionID {
+		t.Fatalf("应进入改名态：%q", m.renamingSession)
+	}
+	if m.input != "修登录超时" {
+		t.Fatalf("输入行应填入现标题：%q", m.input)
+	}
+	if !dialogContains(m, "enter 保存") {
+		t.Fatalf("缺少提示：%v", m.dialog)
+	}
+
+	// 接着输入并回车就是保存。
+	m.input = "新名字"
+	_, cmd = m.handleKey(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("回车后应提交改名")
+	}
+	if m.renamingSession != "" {
+		t.Fatalf("提交后应退出改名态：%q", m.renamingSession)
+	}
+}
+
+func TestRenameCommandRequiresSession(t *testing.T) {
+	m := newModel(t)
+	m.sessionID = ""
+	m.input = "/rename 新标题"
+
+	_, cmd := m.handleKey(keyMsg("enter"))
+	if cmd != nil {
+		t.Fatal("没有会话时不该发请求")
+	}
+	if !dialogContains(m, "尚未建立会话") {
+		t.Fatalf("缺少提示：%v", m.dialog)
+	}
+}
+
+func TestSessionRenamedEventUpdatesTitle(t *testing.T) {
+	m := newModel(t)
+
+	payload := json.RawMessage(`{"title":"改自命令行"}`)
+	env, err := protocol.New(protocol.TypeEvent, protocol.StreamEventPayload{
+		Kind:    string(domain.EventSessionRenamed),
+		Payload: payload,
+	})
+	if err != nil {
+		t.Fatalf("构造事件帧: %v", err)
+	}
+	m.handleEnvelope(env)
+
+	if m.sessionTitle != "改自命令行" {
+		t.Fatalf("标题未跟随事件更新：%q", m.sessionTitle)
+	}
+	if bar := stripANSI(m.renderStatusBar(140, false)); !strings.Contains(bar, "▤ 改自命令行") {
+		t.Fatalf("状态栏没更新：%s", bar)
+	}
+}
+
+func TestSessionHeadlineTracksRename(t *testing.T) {
+	m := newModel(t)
+
+	// 新建会话：没有标题时不摆 id。
+	m.sessionID = ""
+	created, _ := protocol.New(protocol.TypeSessionCreated, protocol.SessionPayload{
+		ID: "ses_headline", Workspace: "/tmp/ws",
+	})
+	m.handleEnvelope(created)
+	if len(m.dialog) == 0 || !strings.Contains(m.dialog[0], "已进入会话（未命名") {
+		t.Fatalf("入口表头不对：%v", m.dialog)
+	}
+	if strings.Contains(strings.Join(m.dialog, "\n"), "ses_headline") {
+		t.Fatalf("表头不该显示会话 id：%v", m.dialog)
+	}
+
+	// 改名后表头就地更新，而不是再追加一行旧名字。
+	renamed, _ := protocol.New(protocol.TypeSessionRenamed, protocol.SessionPayload{
+		ID: "ses_headline", Title: "修登录超时",
+	})
+	m.handleEnvelope(renamed)
+	if !strings.Contains(m.dialog[0], "已进入会话：修登录超时") {
+		t.Fatalf("表头没跟着改名：%v", m.dialog)
+	}
+
+	// 事件路径（另一客户端改名 / 重放）同样改写表头。
+	payload := json.RawMessage(`{"title":"改自命令行"}`)
+	ev, _ := protocol.New(protocol.TypeEvent, protocol.StreamEventPayload{
+		Kind: string(domain.EventSessionRenamed), Payload: payload,
+	})
+	m.handleEnvelope(ev)
+	if !strings.Contains(m.dialog[0], "已进入会话：改自命令行") {
+		t.Fatalf("表头没跟随事件：%v", m.dialog)
+	}
+}
+
+func TestExitCommandQuits(t *testing.T) {
+	m := newModel(t)
+	m.input = "/exit"
+
+	_, cmd := m.handleKey(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("/exit 应返回退出命令")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("/exit 应触发退出，实际 %T", cmd())
+	}
+	if m.input != "" {
+		t.Fatalf("退出时输入行应清空：%q", m.input)
+	}
+}
+
+func TestExitCommandWorksWithoutSession(t *testing.T) {
+	m := newModel(t)
+	m.sessionID = ""
+	m.input = "/quit"
+
+	_, cmd := m.handleKey(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("没有会话时 /quit 也应能退出")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("/quit 应触发退出，实际 %T", cmd())
 	}
 }

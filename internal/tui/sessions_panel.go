@@ -101,10 +101,7 @@ func (m *Model) switchSession(item protocol.SessionSummaryPayload) (tea.Model, t
 	m.sessionTitle = item.Title
 	m.sessionProvider, m.sessionModel = item.Provider, item.Model
 	m.status = fmt.Sprintf("会话 %s · %s", item.ID, item.Workspace)
-	m.appendLine("切换到会话 " + shortID(item.ID))
-	if item.Title != "" {
-		m.appendLine("标题：" + item.Title)
-	}
+	m.appendLine(sessionHeadline("切换到会话", item.Title))
 	if item.Model != "" {
 		m.appendLine("模型：" + modelLabel(item.Provider, item.Model))
 	}
