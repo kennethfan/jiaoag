@@ -99,6 +99,7 @@ graph TD
 | `internal/plugin` | 第三方 stdio 插件宿主：换行分隔 JSON-RPC，插件只声明副作用意图，写入/命令/外部调用由宿主中介（ADR-0034） |
 | `internal/policyfeed` | 签名规则 feed：ed25519 验签、有效期与回滚检查、原子落盘（ADR-0032） |
 | `internal/notify` | Webhook 通知：审批与任务终态，异步有界队列、重试与 HMAC 签名（ADR-0035） |
+| `internal/webui` | Web 前端：原生页面 + `go:embed`，同源挂在 `/`，复用同一套 WS 协议；静态资源公开、数据接口校验令牌（ADR-0041） |
 | `internal/cli` | 命令行子命令的实现（`serve` / `tui` / `sessions` / `events` / `policy` / `demo` / `plugin-example`），由唯一的 `cmd/jiaoag` 按子命令分发；各包导出 `Main()`，仍按 `os.Args` 解析参数 |
 
 ---
@@ -331,6 +332,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 访问令牌 | `server.tokens[]` 命名令牌 + `read_only`；权限在握手时定格在连接上，写命令由消息循环统一拦（`forbidden`）；`SIGHUP` 只重载令牌，失败保留旧集合（ADR-0029） |
 | 会话标签 | 一个连接可同时订阅多条会话（`clientConn.subs` 按会话分键）：标签只存标题/状态/待审批/未读，正文靠 `subscribe from_seq=0` 重放；背景事件只更新徽标；切换不退订，`ctrl+w` 关标签才退订（ADR-0040） |
 | 会话管理 | `/sessions` 面板走 `session.manage`（同工作区 + 任务/token 计数）；切换先 `event.unsubscribe` 再 `subscribe from_seq=0`，两帧顺序写；改名只写标题并落 `session.renamed`；删除在一个事务里按序清七张表，有未结束任务时拒绝。会话之外用 `jiaoag sessions list/rename/rm`（`session.manage` 另支持 `workspace` 与 `all` 两种入参，id 前缀补全）（ADR-0039） |
+| Web 前端 | 同端口 `/` 挂 `go:embed` 的原生页面，复用同一套 WS 协议与事件重放；静态资源匿名可读、`/api/info` 与 `/ws` 校验令牌，`/ws` 额外接受 `?token=`（浏览器 WS 设不了请求头）；范围对齐 TUI，唯一例外是 `!` 本机命令（ADR-0041） |
 
 ---
 

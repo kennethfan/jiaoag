@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>jiaoag</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <!-- 令牌闸门：页面本身是公开的（没有秘密），但任何数据都要令牌。
+       令牌存在 localStorage，浏览器端无法给 WebSocket 加请求头，所以
+       它以 ?token= 的形式随 WS 握手发送（见 docs/web.md 的取舍说明）。 -->
+  <div id="gate" class="gate">
+    <form id="gate-form" class="gate-card">
+      <h1>jiaoag</h1>
+      <p class="muted">粘贴服务端令牌（<code>~/.config/jiaoag/token</code> 或配置里的 <code>server.token</code>）</p>
+      <input id="gate-token" type="password" autocomplete="off" placeholder="访问令牌" autofocus>
+      <label class="muted small"><input id="gate-remember" type="checkbox" checked> 记住（存在本机 localStorage）</label>
+      <button type="submit">连接</button>
+      <p id="gate-error" class="error" hidden></p>
+    </form>
+  </div>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="tabs" id="tabs"></div>
+      <button class="icon" id="btn-new" title="新开会话">+</button>
+      <div class="spacer"></div>
+      <span class="badge" id="project-badge" hidden></span>
+      <span class="chip" id="model-chip" title="点击切换会话模型">—</span>
+      <span class="chip muted" id="usage-chip"></span>
+      <span class="conn" id="conn">连接中…</span>
+      <button class="icon" id="btn-help" title="帮助与快捷键">?</button>
+    </header>
+
+    <main id="log" class="log" aria-live="polite"></main>
+
+    <div id="approval" class="approval" hidden></div>
+
+    <footer class="composer">
+      <div class="composer-row">
+        <textarea id="input" rows="1" placeholder="描述任务…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button id="btn-send" class="primary">发送</button>
+      </div>
+      <div class="composer-bar">
+        <button class="link" id="btn-sessions">会话</button>
+        <button class="link" id="btn-models">模型</button>
+        <button class="link" id="btn-once-model">单次模型</button>
+        <button class="link" id="btn-skills">技能</button>
+        <button class="link" id="btn-mcp">MCP</button>
+        <button class="link" id="btn-roots">根</button>
+        <span class="spacer"></span>
+        <span id="armed" class="muted small"></span>
+        <button class="link danger" id="btn-cancel" hidden>取消任务</button>
+        <span id="queue-chip" class="chip warn" hidden></span>
+      </div>
+    </footer>
+  </div>
+
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <h2 id="modal-title"></h2>
+        <button class="icon" id="modal-close" title="关闭（Esc）">×</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+      <footer id="modal-foot" class="modal-foot"></footer>
+    </div>
+  </div>
+
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

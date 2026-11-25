@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
+	"github.com/kennethfan/jiaoag/internal/webui"
 )
 
 // Server 持有配置、连接集合与 HTTP 服务。
@@ -169,6 +171,9 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /ws", s.handleWS)
+	// 浏览器端界面：静态资源公开（没有秘密），所有数据都要令牌。
+	mux.HandleFunc("GET /api/info", s.handleWebInfo)
+	mux.Handle("GET /", webui.Handler())
 	s.httpSrv = &http.Server{
 		Addr:              cfg.Server.Listen,
 		Handler:           mux,
@@ -443,10 +448,16 @@ func isWriteCommand(typ string) bool {
 func (s *Server) authorized(r *http.Request) (Token, bool) {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, prefix) {
-		return Token{}, false
+	var got string
+	if strings.HasPrefix(h, prefix) {
+		got = strings.TrimSpace(strings.TrimPrefix(h, prefix))
 	}
-	got := strings.TrimSpace(strings.TrimPrefix(h, prefix))
+	// 浏览器的 WebSocket API 不能设置请求头，所以 /ws 额外接受 ?token=。
+	// 代价是令牌可能出现在 URL 里（服务端不记录查询串，但浏览器历史与
+	// 反代日志可能留存），见 docs/web.md 的取舍说明。
+	if got == "" {
+		got = strings.TrimSpace(r.URL.Query().Get("token"))
+	}
 	if got == "" {
 		return Token{}, false
 	}
@@ -592,4 +603,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// handleWebInfo 给浏览器界面一个起点：服务端目录就是默认工作区。
+//
+// 这一步必须带令牌：工作区路径本身是信息（暴露目录结构），而页面文件
+// 是公开的——两者分开，页面可以先加载再要求输入令牌。
+func (s *Server) handleWebInfo(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorized(r); !ok {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": protocol.CodeUnauthorized})
+		return
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法确定工作目录: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version":   s.version,
+		"workspace": wd,
+		"listen":    s.cfg.Server.Listen,
+	})
 }

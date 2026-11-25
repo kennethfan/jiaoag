@@ -8,7 +8,7 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 
@@ -59,6 +59,8 @@ TUI 连不上本地服务端时会用自己这个二进制拉起 `serve` 子命�
 - `-server-bin`：覆盖拉起服务端用的可执行文件（默认就是自己，按 `<bin> serve` 调用）。
 - `-insecure`：跳过 TLS 证书校验，只用于自签证书（见下）。
 - `-url` 指向远端地址时不会拉起本地进程。
+
+也可以不用终端：服务端起在哪个端口，就用浏览器打开那个地址（`http://127.0.0.1:8787/`，配了 TLS 就是 `https://`）。页面第一次会要求粘贴令牌，之后就是一个和 TUI 对齐的界面——标签恢复本目录会话、提交任务、审批 diff/命令/外部工具（含逐块选择）、管会话与模型、看 MCP 与附加根。唯一的缺口是 `!本机命令`：浏览器里没有 shell，要执行请让 agent 用 `run_command`。页面零构建（原生 HTML + ES module，`go:embed` 进同一个二进制），细节见 [`docs/web.md`](docs/web.md)。
 
 `jiaoag sessions` 与 `jiaoag events` 同样会在本地连不上时自动拉起服务端（同样的 `-no-spawn` / `-server-bin` 开关）：它们只读数据，不该要求先手工起一个服务端。命令结束后服务端仍按 30 秒空闲自行退出。
 
@@ -257,6 +259,7 @@ make demo-mcp
 | v2.36 | TUI 支持 `/exit`（等同 `ctrl+c`）：命令在会话检查之前处理，断线或未建会话时同样能退 | ✅ |
 | v2.37 | 状态栏右侧三件：模型（会话未指定时取 `assistant.start` 回报的本轮实际模型）、累计 token、`ctx 5.2k/32k` 上下文占用（估算值，含系统提示与工具清单，每轮按 `prompt_tokens` 校准）；顺带修上下文超限重试时预算没真正收缩的 bug | ✅ |
 | v2.38 | 同窗口多会话标签：启动时恢复本目录全部会话为标签（接最近那条），`/new` 新开一条，`/sessions` 里 `enter` 把会话开成标签（在跑的也能开），`ctrl+n`/`ctrl+p` 循环、`ctrl+w` 关闭；后台会话继续跑，标签上显示进行中/排队/待审批/未读徽标，切回去从 `seq=0` 重放 | ✅ |
+| v2.39 | Web 前端：同端口 `/` 挂原生页面（`go:embed`，零构建），复用同一套 WS 协议，范围对齐 TUI 但无 `!本机命令`；静态资源匿名可读、数据接口校验令牌，`/ws` 支持 `?token=`（ADR-0041） | ✅ |
 
 ## 安全边界
 
