@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/policyfeed"
 )
@@ -29,7 +30,19 @@ func Main() {
 		case "verify", "check":
 			verifyMode = true
 			args = args[1:]
+		case "help", "-h", "--help":
+			fs := flag.NewFlagSet("jiaoag policy", flag.ExitOnError)
+			declarePolicyFlags(fs, false)
+			helppkg.Write(os.Stdout, policyHelp(fs))
+			return
 		}
+	}
+	// 什么都不给时给帮助：默认动作是「联网安装」太冒险，不该靠猜。
+	if len(args) == 0 {
+		fs := flag.NewFlagSet("jiaoag policy", flag.ExitOnError)
+		declarePolicyFlags(fs, false)
+		helppkg.Write(os.Stdout, policyHelp(fs))
+		return
 	}
 	if err := run(args, verifyMode); err != nil {
 		fmt.Fprintf(os.Stderr, "jiaoag policy: %v\n", err)
@@ -48,25 +61,18 @@ func (k *keyList) Set(v string) error {
 
 func run(args []string, verifyMode bool) error {
 	fs := flag.NewFlagSet("jiaoag policy", flag.ExitOnError)
-	var (
-		cfgPath = fs.String("config", "", "配置文件（默认 ~/.config/jiaoag/config.yaml）")
-		url     = fs.String("url", "", "覆盖 policy.feed.url")
-		dir     = fs.String("dir", "", "覆盖 policy.d 目录")
-		verify  = fs.Bool("verify", verifyMode, "只校验本地已安装的 feed，不联网")
-		force   = fs.Bool("force", false, "允许安装过期的 feed 或撤销回滚保护")
-		keys    keyList
-	)
-	fs.Var(&keys, "key", "覆盖 policy.feed.keys（ed25519 公钥 base64，可重复）")
+	vars := declarePolicyFlags(fs, verifyMode)
+	fs.Usage = func() { helppkg.Write(os.Stdout, policyHelp(fs)) }
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.Load(*vars.cfgPath)
 	if err != nil {
 		return err
 	}
 
-	targetDir := strings.TrimSpace(*dir)
+	targetDir := strings.TrimSpace(*vars.dir)
 	if targetDir == "" {
 		targetDir, err = config.ExpandHome(cfg.Policy.Dir)
 		if err != nil {
@@ -77,8 +83,8 @@ func run(args []string, verifyMode bool) error {
 		return fmt.Errorf("没有规则目录：配置 policy.dir 或用 -dir 指定")
 	}
 
-	if len(keys) > 0 {
-		cfg.Policy.Feed.Keys = keys
+	if len(*vars.keys) > 0 {
+		cfg.Policy.Feed.Keys = *vars.keys
 	}
 	pub, err := cfg.FeedKeys()
 	if err != nil {
@@ -88,7 +94,7 @@ func run(args []string, verifyMode bool) error {
 		return fmt.Errorf("没有公钥：配置 policy.feed.keys 或用 -key 指定")
 	}
 
-	if *verify {
+	if *vars.verify {
 		_, meta, err := policyfeed.LoadFile(targetDir, pub)
 		if err != nil {
 			return err
@@ -98,7 +104,7 @@ func run(args []string, verifyMode bool) error {
 		return expiredWarning(meta)
 	}
 
-	src := strings.TrimSpace(*url)
+	src := strings.TrimSpace(*vars.url)
 	if src == "" {
 		src = strings.TrimSpace(cfg.Policy.Feed.URL)
 	}
@@ -112,7 +118,7 @@ func run(args []string, verifyMode bool) error {
 		URL:   src,
 		Keys:  pub,
 		Dir:   targetDir,
-		Force: *force,
+		Force: *vars.force,
 	})
 	if err != nil {
 		return err
@@ -140,4 +146,48 @@ func expiredWarning(meta policyfeed.Metadata) error {
 			fmtTime(meta.ExpiresAt))
 	}
 	return nil
+}
+
+// policyFlags 集中保存各标志指针；帮助文本与 run() 共用同一份声明，
+// 否则 -h 里列出的标志与真正解析的会慢慢对不上。
+type policyFlags struct {
+	cfgPath *string
+	url     *string
+	dir     *string
+	verify  *bool
+	force   *bool
+	keys    *keyList
+}
+
+func declarePolicyFlags(fs *flag.FlagSet, verifyMode bool) policyFlags {
+	var out policyFlags
+	out.cfgPath = fs.String("config", "", "配置文件（默认 ~/.config/jiaoag/config.yaml）")
+	out.url = fs.String("url", "", "覆盖 policy.feed.url")
+	out.dir = fs.String("dir", "", "覆盖 policy.d 目录")
+	out.verify = fs.Bool("verify", verifyMode, "只校验本地已安装的 feed，不联网")
+	out.force = fs.Bool("force", false, "允许安装过期的 feed 或撤销回滚保护")
+	var keys keyList
+	fs.Var(&keys, "key", "覆盖 policy.feed.keys（ed25519 公钥 base64，可重复）")
+	out.keys = &keys
+	return out
+}
+
+func policyHelp(fs *flag.FlagSet) helppkg.Spec {
+	return helppkg.Spec{
+		Summary: "jiaoag policy 安装与校验签名的权限规则 feed；feed 只能收紧规则，不能放宽。",
+		Usage: []string{
+			"jiaoag policy sync [-url 地址] [-key 公钥]... [-force]",
+			"jiaoag policy verify [-dir 目录]",
+		},
+		Commands: []helppkg.Command{
+			{Name: "sync", Desc: "从 url 拉取 feed，验签、挡回滚、写 policy.d"},
+			{Name: "verify", Desc: "只校验已安装的 feed，不联网"},
+		},
+		Flags: fs,
+		Examples: []string{
+			"jiaoag policy sync",
+			"jiaoag policy verify",
+			"jiaoag policy sync -url file:///tmp/feed.yaml -key $(cat feed.pub)",
+		},
+	}
 }

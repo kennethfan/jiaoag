@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kennethfan/jiaoag/internal/app"
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
@@ -38,6 +39,7 @@ func Main() {
 		showVersion = flag.Bool("version", false, "打印版本后退出")
 		idleExit    = flag.Duration("exit-when-idle", 0, "最后一个连接断开且无排队/执行中任务后退出（0 表示常驻）")
 	)
+	flag.Usage = func() { helppkg.Write(os.Stdout, serveHelp(flag.CommandLine)) }
 	flag.Parse()
 
 	if *showVersion {
@@ -410,4 +412,19 @@ func pluginServers(cfg *config.Config) []pluginpkg.Server {
 func exit(err error) {
 	fmt.Fprintf(os.Stderr, "jiaoag serve: %v\n", err)
 	os.Exit(1)
+}
+
+// serveHelp 是本子命令的 -h 输出：flag 包默认只会打「Usage of …」加一串默认值，
+// 看不出这个命令在干什么。
+func serveHelp(fs *flag.FlagSet) helppkg.Spec {
+	return helppkg.Spec{
+		Summary: "jiaoag serve 运行服务端：直接操作工作区文件，推送事件、等待审批、写审计。",
+		Usage:   []string{"jiaoag serve [-config 文件] [-listen 地址] [-exit-when-idle 30s]"},
+		Flags:   fs,
+		Examples: []string{
+			"jiaoag serve",
+			"jiaoag serve -listen 127.0.0.1:9000 -exit-when-idle 30s",
+			"jiaoag serve -init          # 把样例配置写到默认路径",
+		},
+	}
 }

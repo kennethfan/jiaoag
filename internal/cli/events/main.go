@@ -25,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
@@ -47,6 +48,7 @@ func Main() {
 	)
 	flag.StringVar(&sessionID, "s", "", "会话 id（默认取最近活跃的会话）")
 	flag.StringVar(&sessionID, "session", "", "同 -s（保留旧写法）")
+	flag.Usage = func() { helppkg.Write(os.Stdout, eventsHelp(flag.CommandLine)) }
 	flag.Parse()
 	if *format != "json" && *format != "text" {
 		fmt.Fprintf(os.Stderr, "jiaoag events: 未知输出格式 %q（json | text）\n", *format)
@@ -462,4 +464,17 @@ func clip(raw json.RawMessage, limit int) string {
 		return s
 	}
 	return string([]rune(s)[:limit]) + "…"
+}
+
+// eventsHelp 说明这是只读导出：不审批、不改会话。
+func eventsHelp(fs *flag.FlagSet) helppkg.Spec {
+	return helppkg.Spec{
+		Summary: "jiaoag events 把一条会话的事件与服务端审计导出成 JSONL（只读，不改会话）。",
+		Usage:   []string{"jiaoag events [-s <会话 id>] [-from 0] [-audit-from 0] [--until-now]"},
+		Flags:   fs,
+		Examples: []string{
+			"jiaoag events -s ses_3f2a19c4 -from 0 --until-now > events.jsonl",
+			"jiaoag events -format text    # 人读的一行一条",
+		},
+	}
 }

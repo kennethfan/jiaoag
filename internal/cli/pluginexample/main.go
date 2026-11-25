@@ -17,9 +17,12 @@ package pluginexample
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"strings"
+
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 )
 
 const version = "0.1.0"
@@ -50,6 +53,11 @@ type toolSpec struct {
 }
 
 func Main() {
+	// serve 拉起本进程时不带参数，解析一次只是为了让 `jiaoag plugin-example -h` 有输出。
+	fs := flag.NewFlagSet("jiaoag plugin-example", flag.ExitOnError)
+	fs.Usage = func() { helppkg.Write(os.Stdout, pluginHelp(fs)) }
+	_ = fs.Parse(os.Args[1:])
+
 	in := bufio.NewReaderSize(os.Stdin, 1<<20)
 	enc := json.NewEncoder(os.Stdout)
 	for {
@@ -201,5 +209,13 @@ func execute(tool string, raw json.RawMessage) (map[string]any, error) {
 		return map[string]any{"content": "pong from example plugin"}, nil
 	default:
 		return nil, fmt.Errorf("工具 %s 没有 execute 实现", tool)
+	}
+}
+
+func pluginHelp(fs *flag.FlagSet) helppkg.Spec {
+	return helppkg.Spec{
+		Summary: "jiaoag plugin-example 是插件协议的最小参考实现（stdio JSON-RPC），由 serve 按 plugins.servers 拉起，一般不手工运行。",
+		Usage:   []string{"jiaoag plugin-example        # 从 stdin 读请求，往 stdout 写响应"},
+		Flags:   fs,
 	}
 }

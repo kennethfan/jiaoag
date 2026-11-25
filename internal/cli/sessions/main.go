@@ -25,15 +25,17 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
 
 func Main() {
+	// 什么都不给就看帮助（退出码 0）：这是「我忘了怎么用」，不是错误。
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		usage(nil)
+		return
 	}
 	// 子命令之前的全局标志先剥掉：`jiaoag sessions -config x list` 与
 	// `jiaoag sessions list -config x` 都该能用。flag 包遇到第一个位置参数就停，
@@ -44,19 +46,18 @@ func Main() {
 		pre = parseGlobal(rest)
 		rest = pre.args
 		if len(rest) == 0 {
-			usage()
-			os.Exit(2)
+			usage(nil)
+			return
 		}
 	}
 	command := rest[0]
+	if command == "help" || command == "-h" || command == "--help" {
+		usage(nil)
+		return
+	}
 	fs := flag.NewFlagSet(command, flag.ExitOnError)
-	fs.Usage = usage
-	cfgPath := fs.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
-	urlFlag := fs.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
-	tokenFlag := fs.String("token", "", "覆盖 server.token")
-	insecure := fs.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
-	noSpawn := fs.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
-	serverBin := fs.String("server-bin", "", "拉起服务端用的可执行文件（默认就是自己）")
+	fs.Usage = func() { usage(fs) }
+	cfgPath, urlFlag, tokenFlag, insecure, noSpawn, serverBin := declareGlobalFlags(fs)
 
 	var (
 		all       *bool
@@ -71,7 +72,7 @@ func Main() {
 	case "rm", "rename":
 	default:
 		fmt.Fprintf(os.Stderr, "jiaoag sessions: 未知子命令 %q\n\n", command)
-		usage()
+		usage(nil)
 		os.Exit(2)
 	}
 	// -yes 允许写在末尾（`rm <id> -yes` 比 `rm -yes <id>` 自然），先摘掉它，
@@ -142,7 +143,7 @@ func Main() {
 		if *format != "text" {
 			fatal(fmt.Errorf("未知输出格式 %q（text | json）", *format))
 		}
-		printTable(summaries, *all)
+		printTable(summaries)
 	case "rename":
 		if len(args) < 2 {
 			fatal(errors.New("用法：jiaoag sessions rename <会话 id> <新标题>"))
@@ -190,14 +191,22 @@ type globalFlags struct {
 	args      []string
 }
 
+// declareGlobalFlags 声明子命令前后都能写的通用标志，返回它们的指针。
+// 帮助文本与解析共用一份，避免 -h 里列的和真正认的不是一套。
+func declareGlobalFlags(fs *flag.FlagSet) (cfg, url, token *string, insecure, noSpawn *bool, serverBin *string) {
+	cfg = fs.String("config", "", "配置文件路径（默认 ~/.config/jiaoag/config.yaml）")
+	url = fs.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
+	token = fs.String("token", "", "覆盖 server.token")
+	insecure = fs.Bool("insecure", false, "跳过 TLS 证书校验")
+	noSpawn = fs.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
+	serverBin = fs.String("server-bin", "", "拉起服务端用的可执行文件")
+	return
+}
+
 func parseGlobal(args []string) globalFlags {
 	fs := flag.NewFlagSet("jiaoag sessions", flag.ExitOnError)
-	cfg := fs.String("config", "", "配置文件路径")
-	url := fs.String("url", "", "服务端 WS 地址")
-	token := fs.String("token", "", "覆盖 server.token")
-	insecure := fs.Bool("insecure", false, "跳过 TLS 证书校验")
-	noSpawn := fs.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
-	serverBin := fs.String("server-bin", "", "拉起服务端用的可执行文件")
+	fs.Usage = func() { usage(nil) }
+	cfg, url, token, insecure, noSpawn, serverBin := declareGlobalFlags(fs)
 	_ = fs.Parse(args)
 	return globalFlags{
 		cfg: *cfg, url: *url, token: *token, insecure: *insecure,
@@ -241,16 +250,34 @@ func stripYes(args []string) ([]string, bool) {
 	return out, given
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, `jiaoag sessions 在会话之外管理会话（标志写在位置参数之前）
-
-  jiaoag sessions list [-all] [-workspace 目录] [-format text|json]
-  （通用标志 -config/-url/-token/-insecure 写在子命令前后都行）
-  jiaoag sessions rename <会话 id> <新标题>
-  jiaoag sessions rm <会话 id> -yes
-
-通用标志：-config <文件> -url <ws 地址> -token <令牌> -insecure -no-spawn -server-bin
-`)
+// usage 输出帮助。fs 为 nil 时给一份只含全局标志的（没有子命令上下文，
+// 各标志默认值一致）；有 fs 时连它自己声明的 -all/-workspace 一起列。
+func usage(fs *flag.FlagSet) {
+	if fs == nil {
+		fs = flag.NewFlagSet("jiaoag sessions", flag.ContinueOnError)
+		declareGlobalFlags(fs)
+	}
+	fs.SetOutput(os.Stdout)
+	helppkg.Write(os.Stdout, helppkg.Spec{
+		Summary: "jiaoag sessions 在会话之外列出、改名、删除会话。",
+		Usage: []string{
+			"jiaoag sessions list [-all] [-workspace 目录] [-format text|json]",
+			"jiaoag sessions rename <会话 id> <新标题>",
+			"jiaoag sessions rm <会话 id> -yes",
+		},
+		Commands: []helppkg.Command{
+			{Name: "list", Desc: "列出会话（默认当前目录）"},
+			{Name: "rename", Desc: "改标题，空标题表示清掉"},
+			{Name: "rm", Desc: "删除会话，必须显式 -yes"},
+		},
+		Flags: fs,
+		Examples: []string{
+			"jiaoag sessions list",
+			"jiaoag sessions list -all",
+			"jiaoag sessions rename ses_3f2a19c4 修登录超时",
+			"jiaoag sessions rm ses_3f2a19c4 -yes",
+		},
+	})
 }
 
 // options 是连服务端需要的一切；与 jiaoag events 同形，便于两边一起读。
@@ -453,18 +480,16 @@ func await(ctx context.Context, conn *websocket.Conn, want string) (protocol.Env
 	}
 }
 
-func printTable(summaries []protocol.SessionSummaryPayload, withWorkspace bool) {
+// printTable 永远列工作区：默认视图只按当前目录过滤，但用户仍需确认
+// 「这条会话到底属于哪个目录」，尤其是从一个软链接目录进来的时候。
+func printTable(summaries []protocol.SessionSummaryPayload) {
 	if len(summaries) == 0 {
 		fmt.Println("（没有会话）")
 		return
 	}
 	home, _ := os.UserHomeDir()
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if withWorkspace {
-		fmt.Fprintln(w, "ID\t标题\t工作区\t任务\t进行中\t模型\t最后活动")
-	} else {
-		fmt.Fprintln(w, "ID\t标题\t任务\t进行中\t模型\t最后活动")
-	}
+	fmt.Fprintln(w, "ID\t标题\t工作区\t任务\t进行中\t模型\t最后活动")
 	for _, s := range summaries {
 		title := s.Title
 		if title == "" {
@@ -481,13 +506,8 @@ func printTable(summaries []protocol.SessionSummaryPayload, withWorkspace bool) 
 		if s.ActiveTasks > 0 {
 			active = fmt.Sprintf("%d", s.ActiveTasks)
 		}
-		if withWorkspace {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-				shortID(s.ID), title, abbrevHome(s.Workspace, home), s.Tasks, active, model, when(s.UpdatedAt))
-			continue
-		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\n",
-			shortID(s.ID), title, s.Tasks, active, model, when(s.UpdatedAt))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			shortID(s.ID), title, abbrevHome(s.Workspace, home), s.Tasks, active, model, when(s.UpdatedAt))
 	}
 	_ = w.Flush()
 }

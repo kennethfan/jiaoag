@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
@@ -37,6 +38,7 @@ func Main() {
 		decision     = flag.String("approve", "allow_once", "审批策略：allow_once | allow_session | deny")
 		timeout      = flag.Duration("timeout", 5*time.Minute, "整轮超时")
 	)
+	flag.Usage = func() { helppkg.Write(os.Stdout, demoHelp(flag.CommandLine)) }
 	flag.Parse()
 	if *url == "" || *token == "" || *workspace == "" || *prompt == "" {
 		flag.Usage()
@@ -301,4 +303,17 @@ func decode(raw json.RawMessage, v any) error {
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "jiaoag demo: %v\n", err)
 	os.Exit(1)
+}
+
+// demoHelp 说明冒烟脚本要的全部输入。
+func demoHelp(fs *flag.FlagSet) helppkg.Spec {
+	return helppkg.Spec{
+		Summary: "jiaoag demo 用真实供应商跑一轮「读 → 改 → 测」，需要 url、令牌、工作区与提示词。",
+		Usage:   []string{"jiaoag demo -url <ws 地址> -token <令牌> -workspace <目录> -prompt <文本>"},
+		Flags:   fs,
+		Examples: []string{
+			"jiaoag demo -url ws://127.0.0.1:8788/ws -token $TOKEN -workspace /tmp/demo \\",
+			"            -prompt '修好 stats 里失败的测试'",
+		},
+	}
 }

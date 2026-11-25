@@ -74,7 +74,7 @@
 ```bash
 jiaoag sessions list                    # 按当前目录筛（先绝对化再比对）
 jiaoag sessions list -workspace ~/code/api
-jiaoag sessions list -all               # 跨工作区全列，多一列工作区
+jiaoag sessions list -all               # 跨工作区全列（列表始终带工作区列）
 jiaoag sessions list -format json       # 给脚本用
 jiaoag sessions rename ses_8d64 修登录超时
 jiaoag sessions rm ses_8d64 -yes

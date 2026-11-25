@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/coder/websocket/wsjson"
 
+	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
@@ -36,6 +37,7 @@ func Main() {
 	flag.StringVar(&sesID, "session", "", "同 -s（保留旧写法）")
 	var rootFlags rootList
 	flag.Var(&rootFlags, "root", "只读附加根，形如 alias=path；可重复（ADR-0036）")
+	flag.Usage = func() { helppkg.Write(os.Stdout, tuiHelp(flag.CommandLine)) }
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -166,4 +168,18 @@ func (r rootList) payloads() ([]protocol.SessionRootPayload, error) {
 		out = append(out, protocol.SessionRootPayload{Alias: alias, Path: path})
 	}
 	return out, nil
+}
+
+// tuiHelp 说明界面入口与「连不上就自己起服务端」的行为。
+func tuiHelp(fs *flag.FlagSet) helppkg.Spec {
+	return helppkg.Spec{
+		Summary: "jiaoag tui 打开终端界面；本机连不上服务端时会自动拉起一个 jiaoag serve。",
+		Usage:   []string{"jiaoag tui [-c | -s <会话 id>] [其他标志]"},
+		Flags:   fs,
+		Examples: []string{
+			"jiaoag tui",
+			"jiaoag tui -c            # 继续本目录最近更新的会话",
+			"jiaoag tui -s ses_3f2a19c4",
+		},
+	}
 }

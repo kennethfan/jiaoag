@@ -16,7 +16,7 @@
 make build          # 产出唯一的二进制 bin/jiaoag
 ```
 
-服务端、TUI、会话管理、事件导出、规则 feed、冒烟脚本都是这一个二进制的子命令（`jiaoag help` 看全量），早先的 `jiaoag-server` / `jiaoag-tui` / `jiaoag-events` 等独立二进制已移除。
+服务端、TUI、会话管理、事件导出、规则 feed、冒烟脚本都是这一个二进制的子命令（`jiaoag help` 看全量，`jiaoag sessions -h` 看子命令自己的用法），早先的 `jiaoag-server` / `jiaoag-tui` / `jiaoag-events` 等独立二进制已移除。
 
 ## 静态检查
 
@@ -102,7 +102,7 @@ server:
 
 ```bash
 jiaoag sessions list                 # 当前目录的会话
-jiaoag sessions list -all            # 跨工作区全列
+jiaoag sessions list -all            # 跨工作区全列（默认只列当前目录）
 jiaoag sessions rename ses_8d64 修登录超时
 jiaoag sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
 ```
@@ -249,6 +249,7 @@ make demo-mcp
 | v2.30 | 命令行收口：七个二进制合并为 `jiaoag` 一个入口（`serve` / `tui` / `sessions` / `events` / `policy` / `demo` / `plugin-example`），裸跑即 TUI；旧名 `jiaoag-*` 移除 | ✅ |
 | v2.31 | 修空闲退出：只认执行中与真正在内存队列里等槽的任务，库里孤立的 `queued` 不再把服务端拖住不退（ADR-0019 修订） | ✅ |
 | v2.32 | `sessions` / `events` 也会在本地连不上时自动拉起服务端（复用 TUI 那套 spawn + 空闲退出，`-no-spawn` 可关） | ✅ |
+| v2.33 | 每个子命令自带 `-h`：一句话说明 + 用法 + 子命令 + 标志 + 示例，裸跑子命令也打印帮助（`jiaoag sessions` / `jiaoag policy`） | ✅ |
 
 ## 安全边界
 
