@@ -40,7 +40,10 @@ type Rule struct {
 	Subcommands []string `yaml:"subcommands,omitempty" json:"subcommands,omitempty"`
 	// AllowFlags 非空时，argv 里的 flag 必须命中这里（`--` 始终允许）。
 	// 合并短 flag（如 -la）按字母逐个匹配，不必枚举每种组合。
-	AllowFlags []string `yaml:"allow_flags,omitempty" json:"allow_flags,omitempty"`
+	// RiskSubcommands 命中的子命令不禁止，但一定落到审批：这类操作会离开
+	// 本机（发布）或操作凭据，误操作的代价不可回滚（ADR-0043）。
+	RiskSubcommands []string `yaml:"risk_subcommands,omitempty" json:"risk_subcommands,omitempty"`
+	AllowFlags      []string `yaml:"allow_flags,omitempty" json:"allow_flags,omitempty"`
 	// DenyFlags 显式拒绝的 flag（--output、-exec 等），优先于 AllowFlags。
 	DenyFlags []string `yaml:"deny_flags,omitempty" json:"deny_flags,omitempty"`
 	// PathArgs 为 true 时，所有非 flag 参数必须落在命令 cwd 之内。
@@ -235,9 +238,10 @@ func hashRules(version string, rules []Rule) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "version=%s\n", version)
 	for _, rule := range rules {
-		fmt.Fprintf(h, "id=%s|tool=%s|programs=%s|subcommands=%s|allow_flags=%s|deny_flags=%s|path_args=%t|tighten=%t|reason=%s\n",
+		fmt.Fprintf(h, "id=%s|tool=%s|programs=%s|subcommands=%s|risk=%s|allow_flags=%s|deny_flags=%s|path_args=%t|tighten=%t|reason=%s\n",
 			rule.ID, rule.Tool, strings.Join(rule.Programs, ","),
-			strings.Join(rule.Subcommands, ","), strings.Join(rule.AllowFlags, ","),
+			strings.Join(rule.Subcommands, ","), strings.Join(rule.RiskSubcommands, ","),
+			strings.Join(rule.AllowFlags, ","),
 			strings.Join(rule.DenyFlags, ","), rule.PathArgs, rule.Tighten, rule.Reason)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -371,6 +375,16 @@ func (r *Ruleset) evaluateCommand(toolName string, cmd *tools.Command) Decision 
 				RuleID:        rule.ID,
 			}
 		}
+		// 高风险子命令不禁止，但一定要人看一眼：发布、部署、凭据操作
+		// 出错是不可回滚的，和「在错目录跑了次构建」不是一个量级。
+		if risk := riskySubcommand(rule, argv); risk != "" {
+			return Decision{
+				Verdict:       RequireUser,
+				Reason:        fmt.Sprintf("risky_subcommand: %s %s 会对外发布或操作凭据，请先确认目录与参数", base, risk),
+				PolicyVersion: r.Version,
+				RuleID:        rule.ID,
+			}
+		}
 		return Decision{
 			Verdict:       Allow,
 			Reason:        "whitelist: " + rule.ID,
@@ -415,6 +429,37 @@ func (r *Ruleset) version() string {
 		return ""
 	}
 	return r.Version
+}
+
+// riskySubcommand 返回命中的高风险子命令，未命中返回空串。
+//
+// 支持 `release` 匹配 `release:prepare`（Maven 的插件目标按冒号分段），
+// 这样一条规则就能覆盖同一类目标，而不必枚举每个插件前缀。
+func riskySubcommand(rule Rule, argv []string) string {
+	if len(rule.RiskSubcommands) == 0 || len(argv) < 2 {
+		return ""
+	}
+	sub := argv[1]
+	for _, risk := range rule.RiskSubcommands {
+		if sub == risk || strings.HasPrefix(sub, risk+":") || strings.HasPrefix(sub, risk+"/") {
+			return sub
+		}
+	}
+	// make 的目标可能出现在 flags 之后：`make -s install`。
+	if len(argv) > 2 {
+		for _, token := range argv[2:] {
+			if strings.HasPrefix(token, "-") {
+				continue
+			}
+			for _, risk := range rule.RiskSubcommands {
+				if token == risk {
+					return token
+				}
+			}
+			break
+		}
+	}
+	return ""
 }
 
 // ruleArgsVerdict 是白名单的程序/子命令匹配之后的第二道约束：flag 必须在

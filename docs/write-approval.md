@@ -33,6 +33,7 @@ agent:
 
 - 任一层目录叫 `.git`、`.jiaoag`、`.agents`；
 - `.github/workflows/` 下的文件；
+- `Makefile`、`makefile`、`GNUmakefile`、`*.mk`（`make` 已免审，改构建入口必须看 diff）；
 - `AGENTS.md`、`MEMORY.md`、`.npmrc`、`.netrc`、`.git-credentials`、`.pgpass`；
 - `.env` 与 `.env.*`；
 - `id_rsa*`、`id_dsa*`、`id_ecdsa*`、`id_ed25519*`；

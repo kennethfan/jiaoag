@@ -22,6 +22,10 @@ func (b *Sandbox) Prepare(context.Context, Command) (Plan, error) {
 	return Plan{}, fmt.Errorf("%w: 当前平台没有 sandbox 后端", ErrNotAvailable)
 }
 
+func (b *Sandbox) Start(Plan, Spec) (*Process, error) {
+	return nil, ErrNotAvailable
+}
+
 func (b *Sandbox) Run(context.Context, Plan, Spec) (Result, error) {
 	return Result{}, fmt.Errorf("%w: 当前平台没有 sandbox 后端", ErrNotAvailable)
 }

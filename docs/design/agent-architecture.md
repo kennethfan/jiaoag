@@ -236,7 +236,7 @@ case <-ctx.Done():       // 取消 / 服务端关闭
 
 ### 5.4 权限是纯函数（ADR-0004）
 
-层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。`go build` 与 git 子命令不在命令白名单里：前者会写工作区产物，后者会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。模型的 shell 需求走显式 `shell` 字段（ADR-0038）：整条命令由 `sh -c` / `cmd /c` 解释，固定要审批，理由写作 `shell: …`，不再借用元字符判定给模型的行为贴错标签。
+层序固定、任一失败短路、禁止「先清洗再匹配」。M4 落地了 `workspace.Resolve` 的路径边界与工具副作用分级；M5 把判定入口换成 `Ruleset.Evaluate`：写入/本地收紧 → 只读 → 命令白名单（程序名必须与 `argv[0]` 完全一致 + 子命令 + flag 白名单 + 路径参数必须在工作区内）→ 默认审批。构建/打包类命令（`go build`、`npm`、`pnpm`、`mvn`、`gradle`、`make`）在 v2.41 进入白名单（ADR-0043）：工作区写入默认免审之后，「产物落在当前目录」不再是拦它的理由；会对外发布或操作凭据的子命令（`npm publish`、`mvn deploy`、`make install` 等）仍落到审批，理由写作 `risky_subcommand`。git 子命令仍不在白名单里——它会执行仓库配置里的外部程序（专用 git 工具已注入 `core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`）。`Decision` 的 `PolicyVersion` / `RuleID` 随 `exec.*` 审计一起落库。模型的 shell 需求走显式 `shell` 字段（ADR-0038）：整条命令由 `sh -c` / `cmd /c` 解释，固定要审批，理由写作 `shell: …`，不再借用元字符判定给模型的行为贴错标签。
 
 ### 5.5 LLM 端口 + 装饰器（ADR-0008）
 
@@ -331,6 +331,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 通知 | 服务端把 `approval.requested` 与任务终态 POST 到 `notify.webhooks[]`；异步有界队列、3 次重试、可选 HMAC-SHA256（ADR-0035） | v2.23 已实现 |
 | 访问令牌 | `server.tokens[]` 命名令牌 + `read_only`；权限在握手时定格在连接上，写命令由消息循环统一拦（`forbidden`）；`SIGHUP` 只重载令牌，失败保留旧集合（ADR-0029） |
 | 写入审批 | `agent.write_approval`：默认 `workspace` 让会话根与临时目录内的写入直接落盘（敏感路径除外），`always` 逐次审批，`off` 全放行；免审写入仍算 diff、做 CAS、写 `proposal.*{auto}` 与 `write.auto` 审计（actor=policy）；命令与外部工具不受影响（ADR-0042） |
+| 后台命令 | `run_command background=true` 非阻塞启动，id 复用 `tool_call_id`；进程按会话登记在 `exec.ProcTable`（单会话上限 4），任务结束继续跑，会话删除/服务端关闭/空闲退出时整体终止；输出只进日志，`read_output` 补看，`stop_command` 停止；不算忙（ADR-0044） |
 | 会话标签 | 一个连接可同时订阅多条会话（`clientConn.subs` 按会话分键）：标签只存标题/状态/待审批/未读，正文靠 `subscribe from_seq=0` 重放；背景事件只更新徽标；切换不退订，`ctrl+w` 关标签才退订（ADR-0040） |
 | 会话管理 | `/sessions` 面板走 `session.manage`（同工作区 + 任务/token 计数）；切换先 `event.unsubscribe` 再 `subscribe from_seq=0`，两帧顺序写；改名只写标题并落 `session.renamed`；删除在一个事务里按序清七张表，有未结束任务时拒绝。会话之外用 `jiaoag sessions list/rename/rm`（`session.manage` 另支持 `workspace` 与 `all` 两种入参，id 前缀补全）（ADR-0039） |
 | Web 前端 | 同端口 `/` 挂 `go:embed` 的原生页面，复用同一套 WS 协议与事件重放；静态资源匿名可读、`/api/info` 与 `/ws` 校验令牌，`/ws` 额外接受 `?token=`（浏览器 WS 设不了请求头）；范围对齐 TUI，唯一例外是 `!` 本机命令（ADR-0041） |

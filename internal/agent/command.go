@@ -36,7 +36,10 @@ type execAuditDetail struct {
 	Cwd  string   `json:"cwd"`
 	Root string   `json:"root,omitempty"`
 	// Shell 标记这条命令由 shell 解释；Argv 此时是 [sh,-c,<整条>]。
-	Shell          bool            `json:"shell,omitempty"`
+	Shell bool `json:"shell,omitempty"`
+	// Background 标记这条命令是非阻塞启动的：ExitCode 为空，进程归
+	// ProcTable 管，直到 stop_command 或服务端关闭。
+	Background     bool            `json:"background,omitempty"`
 	Backend        string          `json:"backend,omitempty"`
 	BackendVersion string          `json:"backend_version,omitempty"`
 	PolicyVersion  string          `json:"policy_version,omitempty"`
@@ -133,6 +136,7 @@ func commandAudit(action, actor string, prepared tools.Prepared, result tools.Re
 		detail.Cwd = cmd.Cwd
 		detail.Root = cmd.Root
 		detail.Shell = cmd.Shell != ""
+		detail.Background = cmd.Background
 		detail.Backend = cmd.Backend
 	}
 	raw, err := json.Marshal(detail)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/kennethfan/jiaoag/internal/domain"
 	"github.com/kennethfan/jiaoag/internal/event"
+	execpkg "github.com/kennethfan/jiaoag/internal/exec"
 	workspacepkg "github.com/kennethfan/jiaoag/internal/workspace"
 )
 
@@ -70,6 +71,8 @@ type App struct {
 	// resumeQueued 表示重启后继续执行库里的 queued 任务：关闭时不再把它们
 	// 标成 canceled，启动收尾也跳过它们。
 	resumeQueued bool
+	// procs 是本进程的后台命令表（受 runtimeMu 保护）。
+	procs *execpkg.ProcTable
 
 	// approvals 保存审批等待者与会话级白名单，见 approval.go。它有自己的锁：
 	// 等待裁决是长时间阻塞的，不能占用 runtimeMu（否则取消与提交都会被卡住）。
@@ -189,6 +192,10 @@ func (a *App) close(grace time.Duration) error {
 
 	if a.baseCancel != nil {
 		a.baseCancel()
+	}
+	// 后台进程不属于任何任务：任务取消不会带走它们，必须在关库前统一收掉。
+	if a.procs != nil {
+		a.procs.CloseAll()
 	}
 	if !resumeQueued {
 		a.cancelQueuedOnClose(queued)
@@ -324,6 +331,9 @@ const maxSessionTitleRunes = 60
 func (a *App) DeleteSession(ctx context.Context, id domain.SessionID) error {
 	if a.closedNow() {
 		return ErrAppClosed
+	}
+	if a.procs != nil {
+		a.procs.StopSession(string(id))
 	}
 	return a.store.DeleteSession(ctx, id)
 }

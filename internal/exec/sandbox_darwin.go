@@ -62,6 +62,16 @@ func (b *Sandbox) Prepare(ctx context.Context, cmd Command) (Plan, error) {
 }
 
 // Run 把资源限制套在 sandbox-exec 外层：ulimit 会由子进程继承。
+// Start 用后端包装后的 argv 非阻塞启动（sandbox 包装器留在前台，
+// 被包装的命令因此仍处于沙箱内）。
+func (b *Sandbox) Start(plan Plan, spec Spec) (*Process, error) {
+	argv := plan.wrapped
+	if len(argv) == 0 {
+		argv = plan.Argv
+	}
+	return startBackground(plan, spec, argv)
+}
+
 func (b *Sandbox) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) {
 	return runPlan(ctx, plan, spec, wrapLimits(plan.wrapped, plan.Limits))
 }

@@ -11,22 +11,57 @@
 # 执行通道。只读 git 走 internal/tools 的三个专用工具，它们固定注入了
 # `-c core.fsmonitor=false` 与 `--no-ext-diff --no-textconv`；run_command 里的
 # git 一律需要审批。
-version: builtin-2
+version: builtin-3
 rules:
   - id: exec.go
     programs: [go]
-    # build 已移出白名单：go build 会把二进制写到当前目录（`go build ./...`
-    # 也会为每个 main 包落一个产物），等于绕过了「写入必须审批」。需要构建
-    # 产物时让用户批准，或用 `go vet` / `go test` 做只编译检查。
-    subcommands: [test, vet, run]
+    # build 在 v2.41 回到白名单：工作区写入默认免审（ADR-0042）之后，
+    # “产物落在当前目录”不再构成绕过审批的理由。会写到任意位置的 flag
+    # （-o、-pkgdir）仍被 deny_flags 拦住。
+    subcommands: [test, vet, run, build, mod]
     allow_flags:
       [-v, -run, -count, -timeout, -short, -race, -bench, -benchtime,
        -json, -failfast, -tags, -p, -cover, -covermode, -parallel,
-       -shuffle, -vet, -trimpath, -mod, -buildvcs]
+       -shuffle, -vet, -trimpath, -mod, -buildvcs, -a, -n, -x]
     deny_flags:
       [-exec, -toolexec, -o, -overlay, -C, -modfile, -coverprofile,
        -cpuprofile, -memprofile, -blockprofile, -mutexprofile, -trace,
        -outputdir, -ldflags, -gcflags, -asmflags, -buildmode, -pkgdir]
+    path_args: true
+
+  # 打包/构建类工具：日常开发主循环，默认放行（ADR-0043）。
+  # 不放行列出的“高风险子命令”仍然审批——它们会离开本机或操作凭据，
+  # 与“在错目录跑了一次构建”不是一个量级。
+  - id: exec.npm
+    programs: [npm, pnpm]
+    risk_subcommands:
+      [publish, unpublish, exec, x, dlx, login, adduser, logout,
+       token, owner, access, deprecate, dist-tag, deploy]
+    deny_flags:
+      [-g, --global, --prefix, --registry, --userconfig, --globalconfig,
+       --location, --global-dir, --global-bin-dir]
+    path_args: true
+
+  - id: exec.mvn
+    programs: [mvn, mvnw]
+    risk_subcommands: [deploy, release, versions:set]
+    deny_flags:
+      [-f, --file, -s, --settings, -gs, --global-settings, -t, --toolchains,
+       -Dmaven.repo.local]
+    path_args: true
+
+  - id: exec.gradle
+    programs: [gradle, gradlew]
+    risk_subcommands: [publish, uploadArchives, deploy]
+    deny_flags:
+      [-p, --project-dir, -b, --build-file, -c, --settings-file,
+       --init-script, -g, --gradle-user-home, --project-cache-dir]
+    path_args: true
+
+  - id: exec.make
+    programs: [make]
+    risk_subcommands: [install, uninstall]
+    deny_flags: [-f, --file, -C, --directory, -I, --include-dir, --eval]
     path_args: true
 
   - id: exec.ls

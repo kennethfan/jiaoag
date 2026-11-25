@@ -58,13 +58,84 @@ func TestWhitelistRejectsPathQualifiedProgram(t *testing.T) {
 	}
 }
 
-// go build 会把产物写进当前目录（`go build ./...` 也会为每个 main 包落一个），
-// 绕过「写入必须审批」；git 读命令会执行仓库配置里的外部程序，统一收进审批。
-func TestWorkspaceWritingOrConfigDrivenCommandsNeedApproval(t *testing.T) {
+// git 读命令会执行仓库配置里的外部程序（diff.external、fsmonitor），
+// 统一收进审批；只读 git 走三个专用工具。
+// 构建/打包类工具属于日常主循环：默认放行（ADR-0043）。argv 里的相对
+// 词（脚本名、Maven goal、make 目标）按工作区内的路径处理，不会逃出。
+func TestBuildToolsAreWhitelisted(t *testing.T) {
 	rs := perm.DefaultRuleset()
 	cases := [][]string{
 		{"go", "build", "./..."},
 		{"go", "build"},
+		{"go", "mod", "tidy"},
+		{"npm", "run", "build"},
+		{"npm", "install"},
+		{"npm", "test"},
+		{"pnpm", "build"},
+		{"mvn", "test"},
+		{"mvn", "-DskipTests", "package"},
+		{"gradle", "build"},
+		{"make", "build"},
+		{"make", "-j8", "test"},
+	}
+	for _, argv := range cases {
+		d := rs.Evaluate(context.Background(), commandPrepared(argv...))
+		if d.Verdict != perm.Allow {
+			t.Fatalf("%v 应自动放行，实际 %q（%s）", argv, d.Verdict, d.Reason)
+		}
+	}
+}
+
+// 高风险子命令不禁止，但一定落到审批：发布、部署、凭据操作。
+func TestRiskySubcommandsStillAskForApproval(t *testing.T) {
+	rs := perm.DefaultRuleset()
+	cases := [][]string{
+		{"npm", "publish"},
+		{"npm", "exec", "some-cli"},
+		{"pnpm", "dlx", "some-cli"},
+		{"mvn", "deploy"},
+		{"mvn", "release:prepare"},
+		{"mvn", "versions:set", "-DnewVersion=1.2.3"},
+		{"gradle", "publish"},
+		{"make", "install"},
+		{"make", "-s", "install"},
+	}
+	for _, argv := range cases {
+		d := rs.Evaluate(context.Background(), commandPrepared(argv...))
+		if d.Verdict != perm.RequireUser {
+			t.Fatalf("%v 应要求审批，实际 %q（%s）", argv, d.Verdict, d.Reason)
+		}
+		if !strings.Contains(d.Reason, "risky_subcommand") {
+			t.Fatalf("%v 的理由应说明高风险子命令，实际 %q", argv, d.Reason)
+		}
+	}
+}
+
+// 会改变“命令读哪个文件”或写到任意位置的 flag 仍然硬拒。
+func TestBuildToolDangerousFlagsAreRejected(t *testing.T) {
+	rs := perm.DefaultRuleset()
+	cases := [][]string{
+		{"go", "build", "-o", "/tmp/x", "./cmd"},
+		{"go", "build", "-toolexec", "/tmp/evil", "./..."},
+		{"make", "-f", "other.mk", "build"},
+		{"make", "-C", "/tmp", "build"},
+		{"mvn", "-f", "/tmp/pom.xml", "test"},
+		{"mvn", "-Dmaven.repo.local=/tmp/repo", "test"},
+		{"gradle", "--init-script", "/tmp/x.gradle", "build"},
+		{"npm", "--prefix", "/tmp", "install"},
+		{"npm", "--global", "install", "left-pad"},
+	}
+	for _, argv := range cases {
+		d := rs.Evaluate(context.Background(), commandPrepared(argv...))
+		if d.Verdict == perm.Allow {
+			t.Fatalf("%v 不应放行（%s）", argv, d.Reason)
+		}
+	}
+}
+
+func TestConfigDrivenCommandsNeedApproval(t *testing.T) {
+	rs := perm.DefaultRuleset()
+	cases := [][]string{
 		{"git", "status"},
 		{"git", "diff"},
 		{"git", "diff", "--stat", "HEAD"},

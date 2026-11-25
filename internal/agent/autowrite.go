@@ -161,6 +161,12 @@ func sensitiveWrite(rel string) bool {
 	case "AGENTS.md", "MEMORY.md", ".npmrc", ".netrc", ".git-credentials", ".pgpass":
 		return true
 	}
+	// 构建入口：make 已在命令白名单里免审，如果 Makefile 也能静默改写，
+	// 就等于「改脚本 → 自动执行」的免审链路。改它必须让人看 diff。
+	if base == "Makefile" || base == "makefile" || base == "GNUmakefile" ||
+		strings.HasSuffix(strings.ToLower(base), ".mk") {
+		return true
+	}
 	if base == ".env" || strings.HasPrefix(base, ".env.") {
 		return true
 	}

@@ -119,7 +119,9 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 	notifier := notifypkg.New(notifyHooks(cfg, log), log)
 	defer notifier.Close()
 
-	deps := runtimeDeps(cfg, log, backend, ruleset, mcpManager, pluginManager)
+	// 后台命令表按单会话上限 4 条（超出由工具层报错，不排队）。
+	procs := execpkg.NewProcTable(4)
+	deps := runtimeDeps(cfg, log, backend, ruleset, mcpManager, pluginManager, procs)
 	deps.Notify = notifier.Observe
 	if err := application.ConfigureRuntime(deps); err != nil {
 		return err
@@ -241,12 +243,13 @@ func newExecBackend(name string) (execpkg.Backend, error) {
 }
 
 // runtimeDeps 把配置翻译成执行依赖：app 不认识 config，这里做唯一的接线。
-func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset, mcpManager *mcppkg.Manager, pluginManager *pluginpkg.Manager) app.RuntimeDeps {
+func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, ruleset *perm.Ruleset, mcpManager *mcppkg.Manager, pluginManager *pluginpkg.Manager, procs *execpkg.ProcTable) app.RuntimeDeps {
 	outputDir, err := config.ExpandHome(cfg.Storage.OutputDir)
 	if err != nil {
 		outputDir = cfg.Storage.OutputDir
 	}
 	return app.RuntimeDeps{
+		Procs: procs,
 		Provider: func(sess domain.Session) (llm.Provider, string, error) {
 			provider, ok := cfg.Provider(sess.Provider)
 			if sess.Provider == "" {
@@ -274,7 +277,7 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 				tools.NewGlobWithRoots(ws, env.Roots),
 				tools.NewWriteFileWithRoots(ws, env.Roots), tools.NewEditFileWithRoots(ws, env.Roots),
 				tools.NewRunCommand(ws, env), tools.NewCheckCommand(ws, env),
-				tools.NewReadOutput(env),
+				tools.NewReadOutput(env), tools.NewStopCommand(env),
 				tools.NewGitStatus(ws, env), tools.NewGitDiff(ws, env), tools.NewGitLog(ws, env),
 			}
 			if cfg.Agent.MemoryEnabled() {

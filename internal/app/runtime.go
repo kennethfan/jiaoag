@@ -49,6 +49,8 @@ type RuntimeDeps struct {
 	ResumeQueued bool
 	// ApprovalTTL 是 allow_session 授权的有效期；0 用 DefaultApprovalTTL。
 	ApprovalTTL time.Duration
+	// Procs 登记 run_command background=true 启动的进程；宿主负责关闭时收尾。
+	Procs *execpkg.ProcTable
 	// WriteApproval 控制文件写入是否必须人工审批：workspace（默认）在工作区
 	// 与临时目录内直接落盘，敏感路径与工作区之外仍审批；always 每次审批；
 	// off 从不审批。空串等价于 always，库的零值必须是安全的那一档。
@@ -102,6 +104,8 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 		a.slots = make(chan struct{}, deps.MaxConcurrentTasks)
 	}
 	a.resumeQueued = deps.ResumeQueued
+	// 后台进程表由宿主创建、按会话隔离；这里只保存引用，关闭时统一收掉。
+	a.procs = deps.Procs
 	// allow_session 的授权落库并带过期（ADR-0030）：重启后仍然生效，但不会
 	// 变成永久豁免。TTL 在启动时定死，运行中改配置需要重启。
 	a.sessionApprovalTTL = deps.ApprovalTTL
@@ -205,6 +209,7 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		Timeout:        deps.ExecTimeout,
 		Limits:         deps.Limits,
 		OutputPath:     a.outputPath,
+		Procs:          deps.Procs,
 	})
 	if err != nil {
 		return nil, "", "", err

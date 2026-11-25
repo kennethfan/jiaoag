@@ -19,6 +19,9 @@ func TestSensitiveWriteTable(t *testing.T) {
 		"deploy/keys.pem",
 		".github/workflows/ci.yml",
 		".npmrc",
+		"Makefile",
+		"sub/GNUmakefile",
+		"build/local.mk",
 	}
 	for _, rel := range sensitive {
 		if !sensitiveWrite(rel) {

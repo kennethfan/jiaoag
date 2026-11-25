@@ -56,6 +56,9 @@ type Command struct {
 	// Writable 是本次命令可写的根（主根 + 附加根），交给隔离后端算权限；
 	// direct 后端不读它。
 	Writable []string
+	// Background 表示这次要非阻塞启动：启动成功即返回，进程登记在
+	// ProcTable 里，输出持续写日志，直到 stop_command 或服务端关闭。
+	Background bool
 }
 
 // RuntimeEnv 是命令类工具的宿主依赖。工具不自己构造执行后端，也不自己
@@ -80,6 +83,9 @@ type RuntimeEnv struct {
 	ProjectServers []project.Server
 	// Roots 是会话挂载的根集合（ADR-0036/ADR-0037）；nil 表示只有主根。
 	Roots *workspace.Roots
+	// Procs 登记后台进程（run_command background=true），按会话隔离。
+	// nil 表示宿主未启用后台命令，工具会明确报错而不是假装启动。
+	Procs *execpkg.ProcTable
 }
 
 // NewRunCommand 返回带回正文的命令工具。
@@ -104,6 +110,9 @@ type commandArgs struct {
 	// Shell 是整条由系统 shell 解释的命令，与 Argv 二选一。
 	Shell    string `json:"shell,omitempty"`
 	TimeoutS *int   `json:"timeout_s,omitempty"`
+	// Background 把命令放到后台跑：立即返回 id，输出写日志，用
+	// stop_command 停止。与 timeout_s 互斥——后台进程本来就不该被超时杀掉。
+	Background bool `json:"background,omitempty"`
 	// Root 指定在哪个附加根下执行；省略即主根。
 	Root string `json:"root,omitempty"`
 }
@@ -128,7 +137,8 @@ func (t *commandTool) Spec() Spec {
   "properties": {
     "argv":      {"type": "array", "items": {"type": "string"}, "description": "逐 token 的 argv，例如 [\"go\",\"test\",\"./...\"]；不要写成 [\"sh\",\"-c\",\"…\"]"},
     "shell":     {"type": "string", "description": "需要管道、重定向、通配符或多条命令时写整条命令，例如 \"go test ./... 2>&1 | tail -20\"；与 argv 二选一，且一定要用户批准"},
-    "timeout_s": {"type": "integer", "description": "超时秒数，默认 120，范围 1-600"},
+    "timeout_s": {"type": "integer", "description": "超时秒数，默认 120，范围 1-600；与 background 互斥"},
+    "background": {"type": "boolean", "description": "放到后台跑（dev server、监听进程）：立即返回 id，输出写日志，用 read_output 查看、stop_command 停止"},
     "root":      {"type": "string", "description": "在哪个附加根下执行（别名）；省略表示主根"}
   },
   "anyOf": [{"required": ["argv"]}, {"required": ["shell"]}]
@@ -193,6 +203,15 @@ func (t *commandTool) Prepare(ctx context.Context, call Call) (Prepared, error) 
 		}
 	}
 
+	if args.Background {
+		if !t.capture {
+			return Prepared{}, invalidArgs(call.Name, "check_command 不支持 background")
+		}
+		if args.TimeoutS != nil {
+			return Prepared{}, invalidArgs(call.Name, "background 与 timeout_s 只能二选一：后台进程不设超时")
+		}
+	}
+
 	timeout := t.env.Timeout
 	if timeout <= 0 {
 		timeout = defaultCommandTimeout
@@ -230,14 +249,15 @@ func (t *commandTool) Prepare(ctx context.Context, call Call) (Prepared, error) 
 	}
 
 	cmd := &Command{
-		Argv:     argv,
-		Shell:    shell,
-		Cwd:      target.Root(),
-		Timeout:  timeout,
-		Env:      commandEnv(os.Environ()),
-		Backend:  backend,
-		Root:     rootAlias,
-		Writable: writableRoots(t.ws, t.env.Roots),
+		Argv:       argv,
+		Shell:      shell,
+		Cwd:        target.Root(),
+		Timeout:    timeout,
+		Env:        commandEnv(os.Environ()),
+		Backend:    backend,
+		Root:       rootAlias,
+		Writable:   writableRoots(t.ws, t.env.Roots),
+		Background: args.Background,
 	}
 	return Prepared{
 		Call:    call,
@@ -270,6 +290,10 @@ func (t *commandTool) Execute(ctx context.Context, p Prepared) (Result, error) {
 	})
 	if err != nil {
 		return Result{}, err
+	}
+
+	if cmd.Background {
+		return t.startBackground(ctx, p, plan)
 	}
 
 	started := time.Now()
@@ -472,4 +496,40 @@ func envAllowed(key string) bool {
 		return true
 	}
 	return strings.HasPrefix(upper, "LC_")
+}
+
+// startBackground 启动一条后台命令并登记到会话的进程表。
+//
+// 返回的 tool_call_id 就是后台 id：模型不需要另记一个标识，read_output 与
+// stop_command 都用它，事件与审计里也能对回同一行工具调用。
+func (t *commandTool) startBackground(ctx context.Context, p Prepared, plan execpkg.Plan) (Result, error) {
+	cmd := p.Command
+	if t.env.Procs == nil {
+		return Result{}, fmt.Errorf("tools: 宿主未启用后台命令")
+	}
+	bg, ok := t.env.Backend.(execpkg.Background)
+	if !ok {
+		return Result{}, fmt.Errorf("tools: 执行后端 %s 不支持后台命令", t.env.Backend.Name())
+	}
+	if p.LogPath == "" {
+		return Result{}, fmt.Errorf("tools: 后台命令缺少日志路径")
+	}
+	proc, err := bg.Start(plan, t.spec(p.LogPath))
+	if err != nil {
+		return Result{}, err
+	}
+	proc.ID = p.Call.ID
+	if err := t.env.Procs.Add(t.env.SessionID, proc); err != nil {
+		_ = proc.Stop()
+		return Result{}, err
+	}
+	command := strings.Join(cmd.Argv, " ")
+	content := fmt.Sprintf("已启动后台命令（id %s）：%s\n"+
+		"输出持续写入日志：用 read_output 传 tool_call_id=%s 查看；"+
+		"需要停止时调用 stop_command（同样传这个 id）。", proc.ID, command, proc.ID)
+	return Result{
+		Content:        content,
+		OutputPath:     proc.OutputPath,
+		BackendVersion: plan.Version,
+	}, nil
 }

@@ -46,6 +46,12 @@ func (b *Direct) Run(ctx context.Context, plan Plan, spec Spec) (Result, error) 
 
 // runPlan 是各后端共用的执行循环：起进程、收敛输出、按超时与取消杀进程组。
 // argv 已经是最终要交给内核的形状（后端包装 + 资源限制包装）。
+// Start 非阻塞启动一条命令并返回句柄。输出持续写入 spec.LogPath，
+// 生命周期由调用方（ProcTable）负责。
+func (b *Direct) Start(plan Plan, spec Spec) (*Process, error) {
+	return startBackground(plan, spec, plan.Argv)
+}
+
 func runPlan(ctx context.Context, plan Plan, spec Spec, argv []string) (Result, error) {
 	started := time.Now()
 	if err := ctx.Err(); err != nil {
