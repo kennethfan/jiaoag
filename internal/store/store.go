@@ -329,6 +329,13 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 	if version >= 5 {
 		probes = append(probes, `SELECT provider, model FROM tasks LIMIT 1`)
 	}
+	if version >= 7 {
+		probes = append(probes, `SELECT owner, lease_until FROM tasks LIMIT 1`,
+			`SELECT id, heartbeat_at FROM runtimes LIMIT 1`)
+	}
+	if version >= 8 {
+		probes = append(probes, `SELECT hunks FROM approvals LIMIT 1`)
+	}
 	for _, query := range probes {
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {

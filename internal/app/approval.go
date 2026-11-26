@@ -7,33 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/kennethfan/jiaoag/internal/agent"
 	"github.com/kennethfan/jiaoag/internal/domain"
 )
 
-// approvalState 保存审批的等待者。
-//
-// 等待者依附于正在运行的协程，进程一死就没有意义，所以只在内存里。
-// allow_session 的授权不在这里：它要跨重启存活，落在 session_approvals 表，
-// 并带过期时间（ADR-0030）。
 // DefaultApprovalTTL 是 allow_session 授权未配置时的有效期。
 const DefaultApprovalTTL = 12 * time.Hour
 
-type approvalState struct {
-	mu      sync.Mutex
-	waiters map[domain.ApprovalID]*approvalWait
-	// resolved 暂存「已经裁决、但等待的协程还没来取」的结果。
-	// 没有它就有丢裁决的窗口：事件先广播，用户可能比协程先看到并按下 y。
-	resolved map[domain.ApprovalID]agent.ApprovalResult
-}
-
-type approvalWait struct {
-	sessionID domain.SessionID
-	ch        chan agent.ApprovalResult
-}
+// approvalPollInterval 是等待裁决时轮询 approvals 表的间隔。
+//
+// 裁决写库而不是投递给进程内的等待者：多运行时下，批准可能发生在另一个
+// 进程里，执行任务的协程只能靠轮询来发现（ADR-0050）。400ms 是「人按下
+// 按钮到界面生效」与「空闲任务每秒两次读」之间的折中。
+const approvalPollInterval = 400 * time.Millisecond
 
 // AwaitApproval 实现 agent.Recorder：阻塞到用户裁决。
 //
@@ -49,34 +37,52 @@ func (a *App) AwaitApproval(ctx context.Context, req agent.ApprovalRequest) (age
 	if approved, err := a.store.SessionApproval(ctx, string(req.SessionID), approvalKey(req.Tool, req.Args), domain.Now()); err == nil && approved {
 		return agent.ApprovalResult{Decision: domain.DecisionAllowSession, Source: domain.SourcePolicy}, nil
 	}
-
-	a.approvals.mu.Lock()
-	if done, ok := a.approvals.resolved[req.ApprovalID]; ok {
-		delete(a.approvals.resolved, req.ApprovalID)
-		a.approvals.mu.Unlock()
-		return done, nil
-	}
-	wait := &approvalWait{sessionID: req.SessionID, ch: make(chan agent.ApprovalResult, 1)}
-	if a.approvals.waiters == nil {
-		a.approvals.waiters = make(map[domain.ApprovalID]*approvalWait)
-	}
-	a.approvals.waiters[req.ApprovalID] = wait
-	a.approvals.mu.Unlock()
-
-	defer func() {
-		a.approvals.mu.Lock()
-		if a.approvals.waiters[req.ApprovalID] == wait {
-			delete(a.approvals.waiters, req.ApprovalID)
-		}
-		a.approvals.mu.Unlock()
-	}()
-
-	select {
-	case res := <-wait.ch:
+	// 先看一眼：用户可能在协程走到这里之前就已经批了。
+	if res, done, err := a.pollApproval(ctx, req.ApprovalID); err != nil {
+		return agent.ApprovalResult{}, err
+	} else if done {
 		return res, nil
-	case <-ctx.Done():
-		return agent.ApprovalResult{}, ctx.Err()
 	}
+
+	ticker := time.NewTicker(approvalPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return agent.ApprovalResult{}, ctx.Err()
+		case <-ticker.C:
+			res, done, err := a.pollApproval(ctx, req.ApprovalID)
+			if err != nil {
+				return agent.ApprovalResult{}, err
+			}
+			if done {
+				return res, nil
+			}
+		}
+	}
+}
+
+// pollApproval 读一次库里的裁决。done=false 表示还没人裁决。
+//
+// 过期视为失败而不是「拒绝」：过期只发生在原协程已经不在的清理场景，
+// 这时继续走正常的拒绝流程会再写一遍已经写过的结局。
+func (a *App) pollApproval(ctx context.Context, id domain.ApprovalID) (agent.ApprovalResult, bool, error) {
+	approval, err := a.store.GetApproval(ctx, id)
+	if err != nil {
+		return agent.ApprovalResult{}, false, err
+	}
+	switch approval.Decision {
+	case "":
+		return agent.ApprovalResult{}, false, nil
+	case domain.DecisionExpired:
+		return agent.ApprovalResult{}, false, fmt.Errorf("app: 审批 %s 已过期", id)
+	}
+	return agent.ApprovalResult{
+		Decision: approval.Decision,
+		Source:   approval.Source,
+		Note:     approval.Note,
+		Hunks:    approval.Hunks,
+	}, true, nil
 }
 
 // ResolveApproval 把用户的裁决交给正在等待的协程。
@@ -117,26 +123,16 @@ func (a *App) ResolveApproval(ctx context.Context, sessionID domain.SessionID,
 		return fmt.Errorf("app: 审批 %s 不属于会话 %s: %w", approvalID, sessionID, domain.ErrNotFound)
 	}
 
-	result := agent.ApprovalResult{
-		Decision: decision,
-		Source:   domain.SourceUser,
-		Note:     note,
-		Hunks:    hunks,
+	// CAS 写库：两个进程同时裁决时只有一个成功，另一个按幂等处理。
+	// 返回 true 才轮得到写会话白名单，避免「别人批的」被重复记一次。
+	sticks, err := a.store.ResolveApprovalDecision(ctx, approvalID, decision,
+		domain.SourceUser, note, domain.Now(), hunks)
+	if err != nil {
+		return err
 	}
-	a.approvals.mu.Lock()
-	if wait := a.approvals.waiters[approvalID]; wait != nil {
-		select {
-		case wait.ch <- result:
-		default:
-			// 已经有人投递过：幂等，忽略。
-		}
-	} else {
-		if a.approvals.resolved == nil {
-			a.approvals.resolved = make(map[domain.ApprovalID]agent.ApprovalResult)
-		}
-		a.approvals.resolved[approvalID] = result
+	if !sticks {
+		return nil
 	}
-	a.approvals.mu.Unlock()
 
 	if decision == domain.DecisionAllowSession && len(hunks) == 0 {
 		call, err := a.store.GetToolCall(ctx, approval.ToolCallID)
@@ -186,6 +182,11 @@ func (a *App) ExpirePendingApprovals(ctx context.Context) error {
 		task, err := a.store.GetTask(ctx, approval.TaskID)
 		if err != nil {
 			return err
+		}
+		// 别的运行时还活着：这条审批有人等，结局由它自己写。多运行时下
+		// 启动清理不能把别人正在等的审批标成过期（ADR-0049/0050）。
+		if task.Owner != "" && task.Owner != a.owner && a.runtimeAlive(ctx, task.Owner) {
+			continue
 		}
 		approval.Decision = domain.DecisionExpired
 		approval.Source = domain.SourceSystem

@@ -450,7 +450,7 @@ func (s *Store) PendingApprovalPayloads(ctx context.Context, sessionID domain.Se
 // GetApproval 按标识读取审批。不存在时返回 domain.ErrNotFound。
 func (s *Store) GetApproval(ctx context.Context, id domain.ApprovalID) (domain.Approval, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, task_id, tool_call_id, kind, risk, decision, source, requested_at, resolved_at, note
+		`SELECT id, task_id, tool_call_id, kind, risk, decision, source, requested_at, resolved_at, note, hunks
 		 FROM approvals WHERE id = ?`, string(id))
 	var (
 		a                   domain.Approval
@@ -459,9 +459,10 @@ func (s *Store) GetApproval(ctx context.Context, id domain.ApprovalID) (domain.A
 		decision, source    string
 		note                string
 		requested, resolved string
+		rawHunks            string
 	)
 	if err := row.Scan(&rawID, &task, &call, &kind, &risk, &decision, &source,
-		&requested, &resolved, &note); err != nil {
+		&requested, &resolved, &note, &rawHunks); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return domain.Approval{}, fmt.Errorf("store: 审批 %s: %w", id, domain.ErrNotFound)
 		}
@@ -480,6 +481,9 @@ func (s *Store) GetApproval(ctx context.Context, id domain.ApprovalID) (domain.A
 		return domain.Approval{}, err
 	}
 	if a.ResolvedAt, err = parseTS(resolved); err != nil {
+		return domain.Approval{}, err
+	}
+	if a.Hunks, err = parseHunks(rawHunks); err != nil {
 		return domain.Approval{}, err
 	}
 	return a, nil

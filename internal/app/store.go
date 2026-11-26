@@ -93,6 +93,10 @@ type Store interface {
 	SessionApproval(ctx context.Context, sessionID, key string, now time.Time) (bool, error)
 	// RememberSessionApproval 记录一次 allow_session 及其过期时间。
 	RememberSessionApproval(ctx context.Context, sessionID, key string, now, expiresAt time.Time) error
+	// ResolveApprovalDecision 用 CAS 写入裁决，返回是否由本次调用落定。
+	ResolveApprovalDecision(ctx context.Context, id domain.ApprovalID,
+		decision domain.Decision, source domain.ApprovalSource, note string,
+		at time.Time, hunks []int) (bool, error)
 	// PruneSessionApprovals 删除已过期的授权，返回删除条数。
 	PruneSessionApprovals(ctx context.Context, now time.Time) (int64, error)
 

@@ -76,10 +76,6 @@ type App struct {
 	// owner 是本运行时的 id（host:pid:start），用于任务占位与租约续期。
 	// 为空表示没有注册成独立运行时（测试直接构造 App 的情形），此时不做占位。
 	owner string
-
-	// approvals 保存审批等待者与会话级白名单，见 approval.go。它有自己的锁：
-	// 等待裁决是长时间阻塞的，不能占用 runtimeMu（否则取消与提交都会被卡住）。
-	approvals approvalState
 }
 
 // commit 在 commitMu 内完成「存储提交 → hub 广播」，是应用层唯一的写入入口。

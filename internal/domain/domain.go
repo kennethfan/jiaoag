@@ -203,6 +203,9 @@ type Approval struct {
 	RequestedAt time.Time
 	ResolvedAt  time.Time
 	Note        string
+	// Hunks 是「只批了哪几块」的记录（0 起下标，空表示整份应用）。
+	// 裁决要跨进程读取，所以和 decision 一起落在 approvals 表。
+	Hunks []int
 }
 
 type ProposalStatus string
