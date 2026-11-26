@@ -196,6 +196,19 @@ func (s *Store) migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("store: 开始迁移 %s: %w", m.name, err)
 		}
+		// 两个运行时同时启动会各自读到旧的 current。BEGIN IMMEDIATE 拿到的写锁
+		// 保证这里读到的是最新已提交版本：对方已经建完这张表时直接跳过，
+		// 否则第二个进程会撞上「table sessions already exists」。
+		var applied int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&applied); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: 复核迁移 %s: %w", m.name, err)
+		}
+		if applied >= m.version {
+			tx.Rollback()
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("store: 应用迁移 %s: %w", m.name, err)
