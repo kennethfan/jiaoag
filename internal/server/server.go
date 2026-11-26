@@ -23,6 +23,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
+	"github.com/kennethfan/jiaoag/internal/rpc"
 	"github.com/kennethfan/jiaoag/internal/webui"
 )
 
@@ -34,6 +35,9 @@ type Server struct {
 	startedAt time.Time
 	httpSrv   *http.Server
 	app       *app.App
+	// core/streams 是契约层：WS 适配器与 TUI 本地调用共用同一份实现。
+	core    *rpc.Core
+	streams *rpc.Streams
 
 	// tokens 是当前的令牌集合。SIGHUP 会整体替换它，所以读写都要走锁；
 	// 认证循环不做短路，尽量让「匹配第几个令牌」不体现在耗时上。
@@ -189,6 +193,8 @@ func (s *Server) Handler() http.Handler { return s.httpSrv.Handler }
 // 这样 M0 的握手测试不需要构造数据库。
 func (s *Server) WithApp(a *app.App) *Server {
 	s.app = a
+	s.core = rpc.NewCore(a, s.cfg, s.log)
+	s.streams = rpc.NewStreams(a, s.log)
 	return s
 }
 
