@@ -333,6 +333,7 @@ TUI 记录已收到的最后一条持久事件序号 `lastSeq`（流式 delta �
 | 写入审批 | `agent.write_approval`：默认 `workspace` 让会话根与临时目录内的写入直接落盘（敏感路径除外），`always` 逐次审批，`off` 全放行；免审写入仍算 diff、做 CAS、写 `proposal.*{auto}` 与 `write.auto` 审计（actor=policy）；命令与外部工具不受影响（ADR-0042） |
 | 后台命令 | `run_command background=true` 非阻塞启动，id 复用 `tool_call_id`；进程按会话登记在 `exec.ProcTable`（单会话上限 4），任务结束继续跑，会话删除/服务端关闭/空闲退出时整体终止；输出只进日志，`read_output` 补看，`stop_command` 停止；不算忙（ADR-0044） |
 | 会话标签 | 一个连接可同时订阅多条会话（`clientConn.subs` 按会话分键）：标签只存标题/状态/待审批/未读，正文靠 `subscribe from_seq=0` 重放；背景事件只更新徽标；切换不退订，`ctrl+w` 关标签才退订（ADR-0040） |
+| 配置管理 | `jiaoag config path/show/check/set/edit`：show 报生效值与来源（密钥只报长度），set 走 yaml.Node 定位 + 文本片段替换（保住注释与空行），默认 dry-run、写前备份、写后校验失败回滚；`jiaoag policy test` 只读解释命令判定（ADR-0046） |
 | 会话管理 | `/sessions` 面板走 `session.manage`（同工作区 + 任务/token 计数）；切换先 `event.unsubscribe` 再 `subscribe from_seq=0`，两帧顺序写；改名只写标题并落 `session.renamed`；删除在一个事务里按序清七张表，有未结束任务时拒绝。会话之外用 `jiaoag sessions list/rename/rm`（`session.manage` 另支持 `workspace` 与 `all` 两种入参，id 前缀补全）（ADR-0039） |
 | Web 前端 | 同端口 `/` 挂 `go:embed` 的原生页面，复用同一套 WS 协议与事件重放；静态资源匿名可读、`/api/info` 与 `/ws` 校验令牌，`/ws` 额外接受 `?token=`（浏览器 WS 设不了请求头）；范围对齐 TUI，唯一例外是 `!` 本机命令（ADR-0041） |
 

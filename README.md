@@ -8,7 +8,7 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 
@@ -265,6 +265,7 @@ make demo-mcp
 | v2.40 | 写入审批默认只拦工作区外与敏感路径：`agent.write_approval`（workspace/always/off），免审写入仍写 diff、CAS 与 `write.auto` 审计（ADR-0042） | ✅ |
 | v2.41 | 构建/打包命令进白名单（go/npm/pnpm/mvn/gradle/make），高风险子命令仍审批；`run_command background=true` + `stop_command` 支持长驻服务（ADR-0043、ADR-0044） | ✅ |
 | v2.42 | 白名单可配置：默认规则首次启动落盘到 `policy.d/default.yaml` 并归用户编辑，同目录其他文件只能收紧；`publish`/`deploy` 类子命令是代码底线（ADR-0045） | ✅ |
+| v2.43 | 配置子命令：`config path/show/check/set/edit` 与 `policy test`；show 报来源并脱敏，set 只改目标片段、默认 dry-run、写前备份写后校验回滚（ADR-0046） | ✅ |
 
 ## 安全边界
 

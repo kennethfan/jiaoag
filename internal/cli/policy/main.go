@@ -30,6 +30,8 @@ func Main() {
 		case "verify", "check":
 			verifyMode = true
 			args = args[1:]
+		case "test":
+			os.Exit(runTest(args[1:], os.Stdout, os.Stderr))
 		case "help", "-h", "--help":
 			fs := flag.NewFlagSet("jiaoag policy", flag.ExitOnError)
 			declarePolicyFlags(fs, false)
@@ -178,16 +180,20 @@ func policyHelp(fs *flag.FlagSet) helppkg.Spec {
 		Usage: []string{
 			"jiaoag policy sync [-url 地址] [-key 公钥]... [-force]",
 			"jiaoag policy verify [-dir 目录]",
+			"jiaoag policy test -- <命令 argv…>",
 		},
 		Commands: []helppkg.Command{
 			{Name: "sync", Desc: "从 url 拉取 feed，验签、挡回滚、写 policy.d"},
 			{Name: "verify", Desc: "只校验已安装的 feed，不联网"},
+			{Name: "test", Desc: "解释一条命令会被放行还是需要审批（读本机规则，不改任何文件）"},
 		},
 		Flags: fs,
 		Examples: []string{
 			"jiaoag policy sync",
 			"jiaoag policy verify",
 			"jiaoag policy sync -url file:///tmp/feed.yaml -key $(cat feed.pub)",
+			"jiaoag policy test -- go build ./...",
+			"jiaoag policy test --shell 'ls | wc -l'",
 		},
 	}
 }
