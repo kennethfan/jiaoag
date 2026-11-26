@@ -21,24 +21,21 @@ v3 只改「进程与边界」，不改三条不变量：事件日志的语义�
 
 - **契约**：`internal/rpc`。只有它知道「一个操作要做哪些校验、返回什么错误码」。
 - **传输**：WebSocket（`internal/server/adapters.go`）与进程内（`internal/tui/local.go`）。两者都不含业务判断，只做编码/派发。
-- **运行时**：`internal/boot`。谁持有 store 与 agent，谁就是运行时；用文件锁保证只有一个。
+- **运行时**：`internal/boot`。谁持有 store 与 agent，谁就是运行时；可以有多个同时存在。
 
 ## 2. 两种运行形态
 
 | 形态 | 触发 | 端口 | 令牌 | 事件流 |
 |---|---|---|---|---|
-| embedded | 裸跑 `jiaoag`，拿到数据目录锁 | 无 | 不需要 | `rpc.Streams` 直接写 channel |
-| served | `jiaoag serve`，或 TUI 拿不到锁但端口可达 | 有 | 有 | `rpc.Streams` → WS 帧 |
+| embedded | 裸跑 `jiaoag` | 无 | 不需要 | `rpc.Streams` 直接写 channel |
+| served | `jiaoag serve`，或 TUI 探测到端口可达 | 有 | 有 | `rpc.Streams` → WS 帧 |
 
 TUI 的选择逻辑：
 
 ```text
-url 指定 ────────────────► WS 客户端
-否则 try lock
-  ├─ 成功 ───────────────► boot.Open + localTransport
-  └─ ErrLocked
-       ├─ 端口可达 ──────► WS 客户端（连已有 serve）
-       └─ 否则 ──────────► 报错退出
+url 指定 ──────────────────────► WS 客户端
+否则端口可达（serve 在跑）─────► WS 客户端
+否则 ─────────────────────────► boot.Open + localTransport（内嵌）
 ```
 
 `-no-spawn` 的含义随之变化：**不内嵌、也不拉起**，只连已有 serve。
@@ -63,7 +60,10 @@ url 指定 ────────────────► WS 客户端
 
 ## 5. 生命周期
 
-- 锁：`<db 目录>/runtime.lock`，flock(`LOCK_EX|LOCK_NB`)，进程退出自动释放。
+- 调度：任务启动前用一条原子 `UPDATE` 抢占 `queued` 任务（`owner` + `lease_until`），
+  同一会话天然串行，全局受并发上限约束；执行期间每 10s 续租，60s 过期后由别的
+  运行时标 `failed(owner_lost)`，不重跑（ADR-0049）。
+- 运行时表：`runtimes` 记录 `host/pid/kind/heartbeat_at`，每 5s 心跳；30s 无心跳视为失联。
 - `boot.Stack.Close()` 幂等，顺序：通知 → 插件 → MCP → app（含后台进程与 store）→ 锁。
 - 退出确认：有任务或后台进程时二次确认；确认后取消任务、停后台进程，再关运行时。
 

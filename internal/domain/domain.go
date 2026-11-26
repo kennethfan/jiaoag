@@ -98,12 +98,14 @@ type Task struct {
 	SystemPromptHash string
 	ExtensionsDigest string
 	LastSeq          Seq
-	CreatedAt        time.Time
-	StartedAt        time.Time
-	FinishedAt       time.Time
-	Error            string
-	PromptTokens     int
-	CompleteTokens   int
+	// Owner 是占用这条任务的运行时 id（见 store.ClaimTask）。空表示还没有人占位。
+	Owner          string
+	CreatedAt      time.Time
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	Error          string
+	PromptTokens   int
+	CompleteTokens int
 }
 
 // Round 是一次「模型调用 + 工具执行」的完整循环，不单独存表，

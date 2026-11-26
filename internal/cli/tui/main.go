@@ -3,7 +3,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -84,9 +83,8 @@ func Main() {
 	}
 
 	// 本机且没指定 -url：TUI 直接持有运行时，不经过端口、令牌与 WebSocket。
-	// 但配置的地址上已经有人在监听时，一律当客户端——那可能是新版本的 serve
-	// （它持有运行时锁），也可能是升级前就在跑的旧进程（它不持有锁）。后者
-	// 如果我们照常内嵌，两个运行时就会同时写同一个库。
+	// 地址上已经有人在监听时一律当客户端：那可能是一个 serve（web 与远程
+	// 共用同一份运行时）。多个运行时同时写一个库是支持的（任务占位 + 租约）。
 	var stack *boot.Stack
 	if *url == "" && !*noSpawn && !serverReachable(target) {
 		st, err := boot.Open(context.Background(), boot.Options{
@@ -105,11 +103,6 @@ func Main() {
 					Listen:          "embedded",
 				}, nil
 			}
-		case errors.Is(err, boot.ErrLocked):
-			// 锁被占着但端口没人监听：说明占用者是一个内嵌 TUI，
-			// 它不提供端口，第二个客户端没有入口。
-			fatal(fmt.Errorf("已有一个 jiaoag 在运行并占用数据目录，但它没有监听 %s。"+
-				"\n先退出那个实例，或用 -url 指定要连接的服务端", target))
 		default:
 			fatal(err)
 		}

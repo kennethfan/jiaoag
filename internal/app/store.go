@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kennethfan/jiaoag/internal/domain"
+	"github.com/kennethfan/jiaoag/internal/store"
 )
 
 // Store 是应用层对持久化的全部要求，由 internal/store 实现。
@@ -48,6 +49,17 @@ type Store interface {
 	UnfinishedToolCalls(ctx context.Context) ([]domain.ToolCall, error)
 	// UnfinishedTasks 返回所有还没走到终态的任务，供启动时把幽灵任务标成 canceled。
 	UnfinishedTasks(ctx context.Context) ([]domain.Task, error)
+
+	// 多运行时调度：任务占位/租约与运行时心跳（见 app/lease.go）。
+	ClaimTask(ctx context.Context, id domain.TaskID, owner string, until time.Time, maxRunning int) (bool, error)
+	ReleaseTaskClaim(ctx context.Context, id domain.TaskID, owner string) error
+	RenewTaskLeases(ctx context.Context, owner string, until time.Time) (int64, error)
+	ExpiredTasks(ctx context.Context, now time.Time) ([]domain.Task, error)
+	TaskOwner(ctx context.Context, id domain.TaskID) (string, error)
+	RegisterRuntime(ctx context.Context, rt store.Runtime) error
+	HeartbeatRuntime(ctx context.Context, id string, now time.Time) error
+	RemoveRuntime(ctx context.Context, id string) error
+	LiveRuntimes(ctx context.Context, since time.Time) ([]store.Runtime, error)
 	// ResolvedApprovalsWithoutToolResult 返回已裁决、但对应工具调用没有
 	// tool.result 事件的审批，供启动时的一致性检查报告。
 	ResolvedApprovalsWithoutToolResult(ctx context.Context) ([]domain.Approval, error)

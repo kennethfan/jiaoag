@@ -2,13 +2,13 @@ package boot_test
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kennethfan/jiaoag/internal/boot"
 	"github.com/kennethfan/jiaoag/internal/protocol"
@@ -58,23 +58,32 @@ func open(t *testing.T, cfgPath string) *boot.Stack {
 	return stack
 }
 
-// 同一数据目录只允许一个运行时：内嵌 TUI 与 serve 不能同时写同一个库。
-func TestOpenExcludesSecondRuntime(t *testing.T) {
+// 同一数据目录允许多个运行时：调度靠任务占位与租约，不靠文件锁。
+func TestOpenAllowsMultipleRuntimes(t *testing.T) {
 	cfgPath := writeConfig(t)
 	first := open(t, cfgPath)
-	defer first.Close()
+	second := open(t, cfgPath)
 
-	_, err := boot.Open(context.Background(), boot.Options{
-		CfgPath: cfgPath,
-		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	if !errors.Is(err, boot.ErrLocked) {
-		t.Fatalf("第二个运行时应当拿到 ErrLocked，实际 %v", err)
+	if first.RuntimeID() == second.RuntimeID() {
+		t.Fatalf("两个运行时应当有不同的 id：%q", first.RuntimeID())
+	}
+	live, err := first.DB().LiveRuntimes(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("LiveRuntimes: %v", err)
+	}
+	if len(live) != 2 {
+		t.Fatalf("应当看到 2 个存活运行时，实际 %d", len(live))
 	}
 
-	first.Close()
-	second := open(t, cfgPath)
 	second.Close()
+	live, err = first.DB().LiveRuntimes(context.Background(), time.Time{})
+	if err != nil {
+		t.Fatalf("LiveRuntimes: %v", err)
+	}
+	if len(live) != 1 || live[0].ID != first.RuntimeID() {
+		t.Fatalf("关掉一个后应当只剩第一个，实际 %+v", live)
+	}
+	first.Close()
 }
 
 // 内嵌模式下 TUI 真的能拿到契约与事件流，不依赖端口。

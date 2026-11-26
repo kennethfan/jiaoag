@@ -70,7 +70,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	dsn := (&url.URL{
 		Scheme:   "file",
 		Path:     slash,
-		RawQuery: "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
+		RawQuery: "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate",
 	}).String()
 
 	db, err := sql.Open("sqlite", dsn)
@@ -81,7 +81,9 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetConnMaxLifetime(0)
 
 	s := &Store{db: db, path: abs}
-	if err := s.migrate(ctx); err != nil {
+	// 多个运行时同时启动时迁移会撞上对方的写锁。busy_timeout 对 DDL 不总是
+	// 生效，这里再加一层退避重试：先启动的那个几秒钟内一定会忙完。
+	if err := retryBusy(ctx, s.migrate); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -129,6 +131,29 @@ func loadMigrations() ([]migration, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
 	return out, nil
+}
+
+// retryBusy 在数据库被别的进程锁住时退避重试，最多 30 秒。
+func retryBusy(ctx context.Context, fn func(context.Context) error) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := fn(ctx)
+		if err == nil {
+			return nil
+		}
+		text := err.Error()
+		if !strings.Contains(text, "SQLITE_BUSY") && !strings.Contains(text, "database is locked") {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func (s *Store) migrate(ctx context.Context) error {

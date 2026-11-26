@@ -88,6 +88,19 @@ func (a *App) ReapUnfinished(ctx context.Context, logger *slog.Logger) error {
 		if task.Status.Terminal() {
 			continue
 		}
+		// 同一个数据目录可能还有别的运行时在跑：它的任务不能被我们收尾，
+		// 否则会把一个正在执行的任务标成 canceled，而那边还在写结果。
+		if a.owner != "" {
+			owner, err := a.store.TaskOwner(ctx, task.ID)
+			if err != nil {
+				logger.Warn("读取任务归属失败，跳过收尾", "task", task.ID, "err", err)
+				continue
+			}
+			if owner != "" && owner != a.owner && a.runtimeAlive(ctx, owner) {
+				logger.Info("任务属于另一个活跃运行时，跳过收尾", "task", task.ID, "owner", owner)
+				continue
+			}
+		}
 		// 开启续跑时，排队任务没有产生任何副作用，重启后可以安全重拉；
 		// 它们由 resumeQueuedTasks 接手，这里不能标成 canceled。
 		if a.resumeQueued && task.Status == domain.TaskQueued {

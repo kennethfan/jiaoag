@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -40,8 +40,8 @@ type Options struct {
 	// Listen 非空时覆盖配置里的 server.listen（只有 serve 需要）。
 	Listen string
 	Log    *slog.Logger
-	// NoLock 只有在测试里才应设置：同一数据目录只允许一个运行时。
-	NoLock bool
+	// Kind 是运行时类型（serve / tui），只用于观测，不影响调度。
+	Kind string
 }
 
 // Stack 是一次启动的全部资源。Close 幂等，按依赖逆序收尾。
@@ -52,12 +52,20 @@ type Stack struct {
 	Streams *rpc.Streams
 	Procs   *execpkg.ProcTable
 
-	lock   *fileLock
-	notify *notifypkg.Dispatcher
-	mcp    *mcppkg.Manager
-	plugin *pluginpkg.Manager
-	closed bool
+	db        *store.Store
+	runtimeID string
+	stopBeat  chan struct{}
+	notify    *notifypkg.Dispatcher
+	mcp       *mcppkg.Manager
+	plugin    *pluginpkg.Manager
+	closed    bool
 }
+
+// RuntimeID 是本进程的运行时标识，写进任务占位与 runtimes 表。
+func (s *Stack) RuntimeID() string { return s.runtimeID }
+
+// DB 暴露存储句柄，供测试与只读用途核对运行时/占位状态。
+func (s *Stack) DB() *store.Store { return s.db }
 
 // Close 关闭运行时。顺序与启动相反：旁路能力先关，最后才是数据库。
 func (s *Stack) Close() {
@@ -74,11 +82,16 @@ func (s *Stack) Close() {
 	if s.mcp != nil {
 		s.mcp.Close()
 	}
+	if s.stopBeat != nil {
+		close(s.stopBeat)
+	}
+	if s.db != nil && s.runtimeID != "" {
+		// 正常退出：立刻注销，别让别的运行时等到心跳超时。
+		// 必须早于 App.Close：App.Close 会关掉数据库。
+		_ = s.db.RemoveRuntime(context.Background(), s.runtimeID)
+	}
 	if s.App != nil {
 		s.App.Close()
-	}
-	if s.lock != nil {
-		s.lock.release()
 	}
 }
 
@@ -106,14 +119,6 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 		return nil, err
 	}
 
-	if !opts.NoLock {
-		lock, err := acquireLock(lockPath(cfg))
-		if err != nil {
-			return nil, err
-		}
-		stack.lock = lock
-	}
-
 	policyDir, err := config.ExpandHome(cfg.Policy.Dir)
 	if err != nil {
 		return fail(err)
@@ -138,6 +143,23 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 	if err != nil {
 		return fail(err)
 	}
+	stack.db = db
+	// 运行时注册与心跳：多进程共用一个数据目录时，靠它判断谁还活着。
+	stack.runtimeID = newRuntimeID()
+	kind := opts.Kind
+	if kind == "" {
+		kind = "tui"
+	}
+	now := time.Now()
+	if err := db.RegisterRuntime(ctx, store.Runtime{
+		ID: stack.runtimeID, PID: os.Getpid(), Host: hostname(),
+		Kind: kind, StartedAt: now, HeartbeatAt: now,
+	}); err != nil {
+		return fail(err)
+	}
+	stack.stopBeat = make(chan struct{})
+	go heartbeatLoop(db, stack.runtimeID, stack.stopBeat, log)
+
 	application := app.New(db, event.NewHub())
 	stack.App = application
 
@@ -152,6 +174,7 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 	// 后台命令表按单会话上限 4 条（超出由工具层报错，不排队）。
 	stack.Procs = execpkg.NewProcTable(4)
 	deps := runtimeDeps(cfg, log, backend, ruleset, stack.mcp, stack.plugin, stack.Procs)
+	deps.RuntimeID = stack.runtimeID
 	if stack.notify != nil {
 		deps.Notify = stack.notify.Observe
 	}
@@ -167,9 +190,34 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 	return stack, nil
 }
 
-// lockPath 放在数据库旁边：一个数据目录只能有一个运行时，锁跟着数据走。
-func lockPath(cfg *config.Config) string {
-	return filepath.Join(filepath.Dir(cfg.Storage.DBPath), "runtime.lock")
+// newRuntimeID 生成运行时标识：主机 + pid + 启动时刻，足以区分同机多进程，
+// 也能在看日志时一眼认出是谁。
+func newRuntimeID() string {
+	return fmt.Sprintf("%s:%d:%d", hostname(), os.Getpid(), time.Now().UnixNano())
+}
+
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "unknown"
+	}
+	return h
+}
+
+// heartbeatLoop 每 5 秒刷新一次心跳。进程崩溃时心跳停止，30 秒后被视为死亡。
+func heartbeatLoop(db *store.Store, id string, stop <-chan struct{}, log *slog.Logger) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := db.HeartbeatRuntime(context.Background(), id, time.Now()); err != nil {
+				log.Warn("刷新运行时心跳失败", "err", err)
+			}
+		}
+	}
 }
 
 // notifyHooks 把配置翻译成通知端点。secret 解析失败只跳过该端点：

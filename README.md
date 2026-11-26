@@ -51,8 +51,7 @@ cd ~/agent/code/some-project
 /Users/kenneth/agent/code/jiaoag/bin/jiaoag        # 裸跑就是 TUI
 ```
 
-默认**不经过网络**：TUI 在自己进程里直接持有运行时（会话、任务、工具执行都在同一个进程），不开端口、不需要令牌、不连 WebSocket。数据目录同一时刻只允许一个运行时——用的是 `<db 所在目录>/runtime.lock` 的文件锁：拿到锁就内嵌，拿不到且发现 `jiaoag serve` 在监听就降级成它的客户端；既拿不到锁、又没人在监听，就报「已有一个 jiaoag 在运行并占用数据目录」并退出。第二个 TUI、或者 TUI 内嵌时再起 `jiaoag serve`，都会撞到这个锁。
-
+默认**不经过网络**：TUI 在自己进程里直接持有运行时（会话、任务、工具执行都在同一个进程），不开端口、不需要令牌、不连 WebSocket。多个运行时可以同时使用同一个数据目录——调度不靠文件锁，而靠库里的**任务占位 + 租约**：启动任务前用一条原子 UPDATE 抢占 `queued` 任务（同一会话天然串行、全局遵守并发上限），执行期间每 10 秒续租，进程崩溃后 60 秒租约过期，任务被标为 `failed(owner_lost)` 而不是重跑。所以两个内嵌 TUI、或 TUI 与 `jiaoag serve` 并存都不会重复执行同一个任务；`serve` 在监听时 TUI 会当客户端，只是因为它能顺便给 web / 远程用。
 需要多客户端、浏览器或远程访问时，先起 `jiaoag serve`（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。TUI 发现数据目录被它占用后会直接连上去，行为和以前一样。没有任何运行时在跑时开 TUI，才会用自己这个二进制拉起 `serve`（带 `-exit-when-idle=30s`，最后一个客户端断开后自行退出）——这条兜底路径只在 `-url` 指向远端或 `-no-spawn` 时才有意义。
 
 - 不带参数打开时，**本目录的会话会全部恢复成标签**，并接到最近更新的那条上（没有会话才新建）；想另开一条新会话用 `/new`。`-s <id>` 直接指定要接的会话。
@@ -270,7 +269,8 @@ make demo-mcp
 | v2.43 | 配置子命令：`config path/show/check/set/edit` 与 `policy test`；show 报来源并脱敏，set 只改目标片段、默认 dry-run、写前备份写后校验回滚（ADR-0046） | ✅ |
 | v2.44 | 斜杠命令补全：输入 `/` 列出命令并按前缀过滤，`tab` 补全、打全后 `enter` 才执行，浮层计入全屏高度预算（ADR-0047） | ✅ |
 | v2.45 | 仅手动技能变成斜杠命令：`/技能名 问题` 一步提交，会话建立后拉取 `skill.list` 进补全（ADR-0024 修订） | ✅ |
-| v2.46 | 契约与传输分离：`internal/rpc` 一份契约，TUI 默认进程内直接调用（无端口/令牌/WS），数据目录用 flock 保证单一运行时（ADR-0048） | ✅ |
+| v2.46 | 契约与传输分离：`internal/rpc` 一份契约，TUI 默认进程内直接调用（无端口/令牌/WS）（ADR-0048） | ✅ |
+| v2.47 | 多运行时调度：任务占位 + 租约 + 运行时心跳，不再用文件锁；崩溃后标 `owner_lost` 不重跑（ADR-0049） | ✅ |
 
 ## 安全边界
 

@@ -43,6 +43,14 @@ func (s *Store) Apply(ctx context.Context, tr domain.Transition) ([]domain.Event
 			string(task.Status), ts(task.StartedAt), ts(task.FinishedAt), task.Error, string(task.ID)); err != nil {
 			return nil, fmt.Errorf("store: 更新任务 %s 状态: %w", task.ID, err)
 		}
+		if task.Status.Terminal() {
+			// 终态必须立刻让出占位：否则同一会话的后续任务要等租约过期
+			// 才能被别的运行时捡起来。
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE tasks SET owner = '', lease_until = 0 WHERE id = ?`, string(task.ID)); err != nil {
+				return nil, fmt.Errorf("store: 释放任务 %s 的占位: %w", task.ID, err)
+			}
+		}
 	}
 
 	if tr.ToolCall != nil {

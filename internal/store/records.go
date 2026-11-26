@@ -225,12 +225,12 @@ func (s *Store) CreateTask(ctx context.Context, task domain.Task, events []domai
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO tasks(id, session_id, status, prompt, skills, provider, model,
+		`INSERT INTO tasks(id, session_id, status, prompt, skills, provider, model, owner,
 		 system_prompt_hash, extensions_digest,
 		 last_seq, created_at, started_at, finished_at, error, prompt_tokens, completion_tokens)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		string(task.ID), string(task.SessionID), string(task.Status), task.Prompt,
-		skillsColumn(task.Skills), task.Provider, task.Model,
+		skillsColumn(task.Skills), task.Provider, task.Model, task.Owner,
 		task.SystemPromptHash, task.ExtensionsDigest, int64(task.LastSeq),
 		ts(task.CreatedAt), ts(task.StartedAt), ts(task.FinishedAt), task.Error,
 		task.PromptTokens, task.CompleteTokens); err != nil {
@@ -281,7 +281,7 @@ func skillsColumn(names []string) string {
 	return string(raw)
 }
 
-const taskColumns = `id, session_id, status, prompt, skills, provider, model,
+const taskColumns = `id, session_id, status, prompt, skills, provider, model, owner,
 	system_prompt_hash, extensions_digest,
 	last_seq, created_at, started_at, finished_at, error, prompt_tokens, completion_tokens`
 
@@ -293,7 +293,7 @@ func scanTask(row interface{ Scan(...any) error }) (domain.Task, error) {
 		lastSeq                    int64
 		created, started, finished string
 	)
-	if err := row.Scan(&id, &session, &status, &task.Prompt, &skills, &task.Provider, &task.Model,
+	if err := row.Scan(&id, &session, &status, &task.Prompt, &skills, &task.Provider, &task.Model, &task.Owner,
 		&task.SystemPromptHash,
 		&task.ExtensionsDigest, &lastSeq, &created, &started, &finished, &task.Error,
 		&task.PromptTokens, &task.CompleteTokens); err != nil {

@@ -73,6 +73,9 @@ type App struct {
 	resumeQueued bool
 	// procs 是本进程的后台命令表（受 runtimeMu 保护）。
 	procs *execpkg.ProcTable
+	// owner 是本运行时的 id（host:pid:start），用于任务占位与租约续期。
+	// 为空表示没有注册成独立运行时（测试直接构造 App 的情形），此时不做占位。
+	owner string
 
 	// approvals 保存审批等待者与会话级白名单，见 approval.go。它有自己的锁：
 	// 等待裁决是长时间阻塞的，不能占用 runtimeMu（否则取消与提交都会被卡住）。
@@ -165,6 +168,9 @@ func (a *App) HasBusyTasks(ctx context.Context) (bool, error) {
 			return true, nil
 		}
 	}
+	// 别的运行时在跑的任务同样落在库里（status=running），上面已经算进去了；
+	// 仅仅是「另一个运行时活着」不该阻止空闲退出——否则开着一个空闲 TUI，
+	// serve 就永远退不掉了。
 	return false, nil
 }
 

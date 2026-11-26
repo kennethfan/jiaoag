@@ -27,7 +27,9 @@ import (
 //
 // Provider 由调用方按会话配置构造：app 不认识配置文件，也不该认识。
 type RuntimeDeps struct {
-	Provider func(sess domain.Session) (llm.Provider, string, error)
+	// RuntimeID 是本运行时的唯一标识（host:pid:start），用于任务占位与租约。
+	RuntimeID string
+	Provider  func(sess domain.Session) (llm.Provider, string, error)
 	// Tools 按会话工作区构造工具集：工具绑定具体根目录，不能全局复用。
 	// env 携带执行后端、输出目录与 tool_call_id 反查，由 app 统一注入。
 	Tools       func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error)
@@ -104,6 +106,7 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 		a.slots = make(chan struct{}, deps.MaxConcurrentTasks)
 	}
 	a.resumeQueued = deps.ResumeQueued
+	a.owner = deps.RuntimeID
 	// 后台进程表由宿主创建、按会话隔离；这里只保存引用，关闭时统一收掉。
 	a.procs = deps.Procs
 	// allow_session 的授权落库并带过期（ADR-0030）：重启后仍然生效，但不会
@@ -148,6 +151,8 @@ func (a *App) ConfigureRuntime(deps RuntimeDeps) error {
 	// 恢复之后再点名：此刻还停在 queued、又不在内存队列里的任务不会自己跑，
 	// 必须让人看见。空闲退出按内存判断，这类行不再拖住服务端。
 	a.warnOrphanQueued(context.Background(), deps.Logger)
+	// 续租、接管过期租约、给等槽的会话补位。
+	a.startMaintenance()
 	return nil
 }
 
@@ -321,6 +326,16 @@ func (a *App) startLocked(sess domain.Session, task domain.Task, ag *agent.Agent
 		return
 	}
 
+	// 跨进程占位：同一份数据库可能被多个运行时同时使用。抢不到说明别的
+	// 进程已经在跑这个会话（或全局并发已满），把任务放回队首等下一轮。
+	if !a.claimTask(a.baseCtx, task) {
+		a.releaseSlot()
+		a.queue[sess.ID] = append([]pendingTask{{
+			sess: sess, task: task, ag: ag, deps: deps,
+		}}, a.queue[sess.ID]...)
+		return
+	}
+
 	ctx, cancel := context.WithCancel(a.baseCtx)
 	run := &taskRun{taskID: task.ID, cancel: cancel, done: make(chan struct{})}
 	a.runs[sess.ID] = run
@@ -332,6 +347,13 @@ func (a *App) startLocked(sess domain.Session, task domain.Task, ag *agent.Agent
 		defer close(run.done)
 		defer cancel()
 		defer a.clearRun(sess.ID, task.ID)
+		// 续租：进程活着但执行很久（含等审批）时，不能让别的运行时把任务
+		// 当成失联接管。执行结束（含 panic）由 defer 停掉。
+		if a.owner != "" {
+			stopRenew := make(chan struct{})
+			defer close(stopRenew)
+			go a.renewLoop(stopRenew)
+		}
 		// 槽必须在 clearRun 的 pump 之前释放（defer 是 LIFO）：补位时要看得见空位。
 		defer a.releaseSlot()
 		started := false
