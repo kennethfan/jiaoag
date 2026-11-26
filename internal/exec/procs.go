@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -26,7 +27,41 @@ type ProcTable struct {
 	mu       sync.Mutex
 	max      int
 	sessions map[string]map[string]*Process
+
+	// store 是跨运行时的登记与停止意图通道，由装配层注入；nil 表示纯进程内。
+	store   ProcStore
+	owner   string
+	watched map[string]bool
 }
+
+// ProcRecord 是后台进程在共享存储里的投影。
+type ProcRecord struct {
+	ID         string
+	SessionID  string
+	Owner      string
+	OutputPath string
+	PID        int
+	StartedAt  time.Time
+	Status     string
+}
+
+// ProcStore 让后台进程跨运行时可见、可停止。exec 不依赖存储实现，
+// 由 boot 注入（store 适配器负责落表）。
+type ProcStore interface {
+	RegisterProc(ctx context.Context, rec ProcRecord) error
+	MarkProc(ctx context.Context, id, status string) error
+	ListProcs(ctx context.Context, sessionID string) ([]ProcRecord, error)
+	RequestStop(ctx context.Context, sessionID, id string) error
+	StopRequested(ctx context.Context, id string) (bool, error)
+}
+
+// 后台进程状态，和 store 包保持一致。
+const (
+	ProcRunning  = "running"
+	ProcExited   = "exited"
+	ProcStopped  = "stopped"
+	ProcOrphaned = "orphaned"
+)
 
 // NewProcTable 创建进程表。max 是单会话并发上限，<=0 时取 4。
 func NewProcTable(max int) *ProcTable {
@@ -46,6 +81,10 @@ func (t *ProcTable) Max() int {
 
 // Add 登记一个刚启动的进程，超出上限时调用方必须自行停掉进程。
 func (t *ProcTable) Add(sessionID string, p *Process) error {
+	return t.add(sessionID, p)
+}
+
+func (t *ProcTable) add(sessionID string, p *Process) error {
 	if t == nil {
 		return fmt.Errorf("exec: 后台进程表不可用")
 	}
@@ -77,7 +116,109 @@ func (t *ProcTable) Add(sessionID string, p *Process) error {
 		pruneOldestExited(list)
 	}
 	list[p.ID] = p
+	store, owner := t.store, t.owner
+	if store != nil {
+		// 登记失败只影响可观测性，不该让已经跑起来的进程失去句柄，
+		// 所以异步做、错误忽略。
+		rec := ProcRecord{
+			ID:         p.ID,
+			SessionID:  sessionID,
+			Owner:      owner,
+			OutputPath: p.OutputPath,
+			PID:        p.PID,
+			StartedAt:  p.StartedAt,
+			Status:     ProcRunning,
+		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = store.RegisterProc(ctx, rec)
+		}()
+	}
 	return nil
+}
+
+// Attach 注入共享存储并启动「停止意图」轮询。ctx 结束即停止轮询。
+func (t *ProcTable) Attach(store ProcStore, owner string, ctx context.Context) {
+	if t == nil || store == nil {
+		return
+	}
+	t.mu.Lock()
+	t.store = store
+	t.owner = owner
+	t.watched = make(map[string]bool)
+	t.mu.Unlock()
+	go t.watchStop(ctx)
+}
+
+// watchStop 每秒检查两件事：别的运行时投递的停止意图，以及本地进程退出后
+// 把状态回写（否则库里会永远显示 running）。
+func (t *ProcTable) watchStop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		type entry struct {
+			id      string
+			running bool
+		}
+		t.mu.Lock()
+		store, owner := t.store, t.owner
+		var entries []entry
+		for _, list := range t.sessions {
+			for id, p := range list {
+				entries = append(entries, entry{id: id, running: p.Running()})
+			}
+		}
+		marked := make(map[string]bool, len(t.watched))
+		for id := range t.watched {
+			marked[id] = true
+		}
+		t.mu.Unlock()
+		if store == nil {
+			continue
+		}
+		_ = owner
+		for _, e := range entries {
+			callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			if e.running {
+				if stop, err := store.StopRequested(callCtx, e.id); err == nil && stop {
+					if p, ok := t.getByID(e.id); ok {
+						_ = p.Stop()
+					}
+					_ = store.MarkProc(callCtx, e.id, ProcStopped)
+					t.markWatched(e.id)
+				}
+			} else if !marked[e.id] {
+				_ = store.MarkProc(callCtx, e.id, ProcExited)
+				t.markWatched(e.id)
+			}
+			cancel()
+		}
+	}
+}
+
+func (t *ProcTable) markWatched(id string) {
+	t.mu.Lock()
+	if t.watched != nil {
+		t.watched[id] = true
+	}
+	t.mu.Unlock()
+}
+
+func (t *ProcTable) getByID(id string) (*Process, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, list := range t.sessions {
+		if p, ok := list[id]; ok {
+			return p, true
+		}
+	}
+	return nil, false
 }
 
 // pruneOldestExited 删掉一条已退出且最早启动的条目。
@@ -130,20 +271,44 @@ func (t *ProcTable) List(sessionID string) []ProcInfo {
 }
 
 // Stop 停止指定后台进程。返回 false 表示该会话没有这个 id。
-func (t *ProcTable) Stop(sessionID, id string) (bool, error) {
+// Stop 返回 (found, local, err)。local 为假表示进程属于别的运行时：
+// 这里只能投递 stop_requested，由属主在 1 秒内真正杀掉。
+func (t *ProcTable) Stop(sessionID, id string) (bool, bool, error) {
 	p, ok := t.Get(sessionID, id)
 	if !ok {
-		return false, nil
+		// 进程可能是别的运行时启动的：只能投递停止意图。
+		t.mu.Lock()
+		store := t.store
+		t.mu.Unlock()
+		if store == nil {
+			return false, false, nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		procs, err := store.ListProcs(ctx, sessionID)
+		if err != nil {
+			return false, false, err
+		}
+		for _, rec := range procs {
+			if rec.ID == id {
+				if rec.Status != ProcRunning {
+					return true, false, nil
+				}
+				return true, false, store.RequestStop(ctx, sessionID, id)
+			}
+		}
+		return false, false, nil
 	}
 	if err := p.Stop(); err != nil {
-		return true, err
+		return true, true, err
 	}
+	t.markStopped(p.ID)
 	// 等一小段：SIGKILL 后通常立即退出，等不到也不阻塞调用方。
 	select {
 	case <-p.done:
 	case <-time.After(2 * time.Second):
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // StopSession 停掉一个会话的全部后台进程（会话删除时调用）。
@@ -154,8 +319,41 @@ func (t *ProcTable) StopSession(sessionID string) {
 	t.mu.Lock()
 	list := t.sessions[sessionID]
 	delete(t.sessions, sessionID)
+	store := t.store
 	t.mu.Unlock()
 	stopAll(list)
+	if store == nil {
+		return
+	}
+	// 别的运行时启动的进程只能请求停止；本地已杀的直接标 stopped。
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	procs, err := store.ListProcs(ctx, sessionID)
+	if err != nil {
+		return
+	}
+	for _, rec := range procs {
+		if rec.Status != ProcRunning {
+			continue
+		}
+		if _, local := list[rec.ID]; local {
+			_ = store.MarkProc(ctx, rec.ID, ProcStopped)
+			continue
+		}
+		_ = store.RequestStop(ctx, sessionID, rec.ID)
+	}
+}
+
+func (t *ProcTable) markStopped(id string) {
+	t.mu.Lock()
+	store := t.store
+	t.mu.Unlock()
+	if store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = store.MarkProc(ctx, id, ProcStopped)
 }
 
 // CloseAll 停掉所有会话的后台进程（服务端关闭 / 空闲退出）。

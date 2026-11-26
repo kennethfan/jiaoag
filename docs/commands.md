@@ -69,7 +69,7 @@ run_command {"argv":["npm","run","dev"],"background":true}
 ```
 已启动后台命令（id call_9f3c…）：npm run dev
 输出持续写入日志：用 read_output 传 tool_call_id=call_9f3c… 查看；
-需要停止时调用 stop_command（同样传这个 id）。
+需要停止时调用 stop_command（同样传这个 id）；如果进程是别的运行时启动的，返回的是「已发出停止请求」，属主会在 1 秒内真正杀掉。
 ```
 
 - `background` 与 `timeout_s` 互斥。

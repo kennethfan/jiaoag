@@ -66,6 +66,11 @@ url 指定 ──────────────────────►
 - 运行时表：`runtimes` 记录 `host/pid/kind/heartbeat_at`，每 5s 心跳；30s 无心跳视为失联。
 - 审批：裁决写在 `approvals` 表（CAS，`decision=''` 才能写），执行任务的协程每
   400ms 轮询一次，所以批准可以发生在任意一个运行时；块号随裁决落库（ADR-0050）。
+- 事件：本地 `event.Hub` 负责本进程的实时帧（含 `assistant.delta`），另外每 250ms
+  按 `seq` 从库里补拉一次，覆盖别的运行时写的事件；两路按 seq 去重（ADR-0051）。
+- 后台进程：`background_procs` 记录属主与状态，句柄只在启动它的运行时里。别的运行时
+  的停止请求写成 `stop_requested=1`，属主每秒轮询执行；属主失联的进程标 `orphaned`，
+  不按库里的 pid 代为 kill（ADR-0051）。
 - `boot.Stack.Close()` 幂等，顺序：通知 → 插件 → MCP → app（含后台进程与 store）→ 注销运行时。
 - 退出确认：有任务或后台进程时二次确认；确认后取消任务、停后台进程，再关运行时。
 

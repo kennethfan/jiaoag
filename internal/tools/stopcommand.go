@@ -67,7 +67,7 @@ func (t *stopCommandTool) Execute(ctx context.Context, p Prepared) (Result, erro
 	if t.env.Procs == nil {
 		return Result{Content: "宿主未启用后台命令，没有可停止的进程", IsError: true}, nil
 	}
-	found, err := t.env.Procs.Stop(t.env.SessionID, args.ID)
+	found, local, err := t.env.Procs.Stop(t.env.SessionID, args.ID)
 	if err != nil {
 		return Result{Content: "停止后台进程失败：" + err.Error(), IsError: true}, nil
 	}
@@ -76,6 +76,9 @@ func (t *stopCommandTool) Execute(ctx context.Context, p Prepared) (Result, erro
 			Content: "没有找到这个后台进程（" + args.ID + "）；可能已经退出，或不属于本会话",
 			IsError: true,
 		}, nil
+	}
+	if !local {
+		return Result{Content: "已向它的属主发出停止请求：" + args.ID + "（1 秒内退出；用 read_output 可看最后输出）"}, nil
 	}
 	return Result{Content: "已停止后台进程 " + args.ID}, nil
 }

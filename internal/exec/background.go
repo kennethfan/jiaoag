@@ -29,6 +29,7 @@ type Process struct {
 	ID         string
 	Argv       []string
 	OutputPath string
+	PID        int
 	StartedAt  time.Time
 
 	cmd  *exec.Cmd
@@ -130,9 +131,14 @@ func startBackground(plan Plan, spec Spec, argv []string) (*Process, error) {
 		return nil, err
 	}
 
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
 	p := &Process{
 		Argv:       argv,
 		OutputPath: spec.LogPath,
+		PID:        pid,
 		StartedAt:  time.Now(),
 		cmd:        cmd,
 		pg:         pg,

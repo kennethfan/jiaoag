@@ -112,14 +112,14 @@ func TestProcTableCapsAndCloses(t *testing.T) {
 	}
 	_ = p3.Stop()
 
-	found, err := table.Stop("ses", p1.ID)
+	found, _, err := table.Stop("ses", p1.ID)
 	if err != nil || !found {
 		t.Fatalf("Stop: found=%v err=%v", found, err)
 	}
 	if p1.Running() {
 		t.Fatal("Stop 之后 p1 仍在运行")
 	}
-	if found, _ := table.Stop("ses", "nope"); found {
+	if found, _, _ := table.Stop("ses", "nope"); found {
 		t.Fatal("未知 id 应返回 false")
 	}
 

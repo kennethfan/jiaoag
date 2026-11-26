@@ -55,6 +55,7 @@ type Stack struct {
 	db        *store.Store
 	runtimeID string
 	stopBeat  chan struct{}
+	stopProcs context.CancelFunc
 	notify    *notifypkg.Dispatcher
 	mcp       *mcppkg.Manager
 	plugin    *pluginpkg.Manager
@@ -73,6 +74,9 @@ func (s *Stack) Close() {
 		return
 	}
 	s.closed = true
+	if s.stopProcs != nil {
+		s.stopProcs()
+	}
 	if s.notify != nil {
 		s.notify.Close()
 	}
@@ -172,7 +176,23 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 	stack.notify = notifypkg.New(notifyHooks(cfg, log), log)
 
 	// 后台命令表按单会话上限 4 条（超出由工具层报错，不排队）。
+	// 接上共享存储：别的运行时能看到这些进程，并只能投递停止意图。
 	stack.Procs = execpkg.NewProcTable(4)
+	procCtx, stopProcs := context.WithCancel(context.Background())
+	stack.stopProcs = stopProcs
+	stack.Procs.Attach(procStore{db: db}, stack.runtimeID, procCtx)
+	// 属主已经失联的后台进程只标 orphaned，不代为 kill（pid 可能被复用）。
+	if lives, err := db.LiveRuntimes(ctx, time.Now().Add(-30*time.Second)); err == nil {
+		ids := make([]string, 0, len(lives))
+		for _, rt := range lives {
+			ids = append(ids, rt.ID)
+		}
+		if n, err := db.OrphanBackgroundProcs(ctx, ids); err != nil {
+			log.Warn("标记孤儿后台进程失败", "err", err)
+		} else if n > 0 {
+			log.Warn("发现属主已失联的后台进程，只读展示不再管理", "count", n)
+		}
+	}
 	deps := runtimeDeps(cfg, log, backend, ruleset, stack.mcp, stack.plugin, stack.Procs)
 	deps.RuntimeID = stack.runtimeID
 	if stack.notify != nil {
@@ -442,3 +462,51 @@ func pluginServers(cfg *config.Config) []pluginpkg.Server {
 
 // ErrLocked 表示同一数据目录已经有运行时在跑。
 var ErrLocked = errors.New("boot: 已经有一个 jiaoag 运行时在使用这个数据目录")
+
+// procStore 把 exec 的后台进程投影写进共享库。放在 boot 里而不是 exec 内部，
+// 是为了让 exec 保持「不依赖存储」的定位。
+type procStore struct{ db *store.Store }
+
+func (p procStore) RegisterProc(ctx context.Context, rec execpkg.ProcRecord) error {
+	return p.db.RegisterBackgroundProc(ctx, store.BackgroundProc{
+		ID:         rec.ID,
+		SessionID:  rec.SessionID,
+		Owner:      rec.Owner,
+		PID:        rec.PID,
+		OutputPath: rec.OutputPath,
+		StartedAt:  rec.StartedAt,
+		Status:     rec.Status,
+	})
+}
+
+func (p procStore) MarkProc(ctx context.Context, id, status string) error {
+	return p.db.MarkBackgroundProc(ctx, id, status)
+}
+
+func (p procStore) ListProcs(ctx context.Context, sessionID string) ([]execpkg.ProcRecord, error) {
+	list, err := p.db.ListBackgroundProcs(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]execpkg.ProcRecord, 0, len(list))
+	for _, rec := range list {
+		out = append(out, execpkg.ProcRecord{
+			ID:         rec.ID,
+			SessionID:  rec.SessionID,
+			Owner:      rec.Owner,
+			OutputPath: rec.OutputPath,
+			PID:        rec.PID,
+			StartedAt:  rec.StartedAt,
+			Status:     rec.Status,
+		})
+	}
+	return out, nil
+}
+
+func (p procStore) RequestStop(ctx context.Context, sessionID, id string) error {
+	return p.db.RequestBackgroundProcStop(ctx, sessionID, id)
+}
+
+func (p procStore) StopRequested(ctx context.Context, id string) (bool, error) {
+	return p.db.BackgroundProcStopRequested(ctx, id)
+}

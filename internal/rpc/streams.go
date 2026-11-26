@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/kennethfan/jiaoag/internal/app"
 	"github.com/kennethfan/jiaoag/internal/domain"
@@ -18,6 +19,11 @@ const replayBatch = 500
 // streamBuffer 是本地订阅通道的容量。远程 WS 的积压由服务器连接的写队列
 // 吸收；进程内没有网络缓冲，必须自己给一个上限，否则慢消费者会把内存吃光。
 const streamBuffer = 256
+
+// tailInterval 是跨运行时补拉事件库的间隔。本地 hub 负责本进程事件（含流式
+// delta），库里补拉负责别的运行时写的会话事件；250ms 是「像在同一台机器上」
+// 与「每秒 4 次只读查询」的折中。
+const tailInterval = 250 * time.Millisecond
 
 // Streams 把「订阅 → 回放 → 快照 → 去重 → 实时」这条链路封成一份实现，
 // 输出统一的协议信封。WS 适配器把它写进连接，TUI 直接读这个通道。
@@ -120,10 +126,20 @@ func (s *Streams) run(ctx context.Context, out chan<- protocol.Envelope, sub *ev
 
 live:
 	// 4) 实时推送。缓冲写满意味着消费者跟不上：明确告知，让它带 from_seq 重连。
+	//
+	// 同时按 tailInterval 从事件库补拉：别的运行时写的会话事件不会经过本地
+	// hub，只靠内存订阅会永远看不到。两路按 seq 去重，本地流式 delta（seq=0）
+	// 不受影响。
+	ticker := time.NewTicker(tailInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			if !s.tail(ctx, out, sessionID, &sent) {
+				return
+			}
 		case <-sub.Overflow():
 			s.reportOverflow(ctx, out, sub)
 			return
@@ -141,6 +157,38 @@ live:
 			if ev.Seq != 0 {
 				sent = ev.Seq
 			}
+		}
+	}
+}
+
+// tail 把事件库里 sent 之后的新事件补发出去。返回 false 表示订阅应当结束。
+//
+// 只按 seq 去重：本地已推送过的事件在这里会被跳过（seq<=sent）；反过来，若
+// 补拉先拿到某条事件，本地 hub 随后送达的同一 seq 也会被丢弃。
+func (s *Streams) tail(ctx context.Context, out chan<- protocol.Envelope,
+	sessionID domain.SessionID, sent *domain.Seq) bool {
+	for {
+		batch, err := s.app.Replay(ctx, sessionID, *sent, replayBatch)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false
+			}
+			s.pushError(ctx, out, protocol.CodeInternal, err.Error())
+			return false
+		}
+		for _, ev := range batch {
+			if ev.Seq != 0 && ev.Seq <= *sent {
+				continue
+			}
+			if !pushEvent(ctx, out, ev) {
+				return false
+			}
+			if ev.Seq != 0 {
+				*sent = ev.Seq
+			}
+		}
+		if len(batch) < replayBatch {
+			return true
 		}
 	}
 }
