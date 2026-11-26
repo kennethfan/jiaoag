@@ -184,6 +184,34 @@ func (t *localTransport) Send(env protocol.Envelope) error {
 			out, err = t.svc.AuditTail(ctx, t.pr, p)
 			err = t.finish(err, protocol.TypeAuditTailResult, out, "")
 		}
+	case protocol.TypeProcList:
+		var p protocol.ProcListPayload
+		if err = env.Decode(&p); err == nil {
+			var out protocol.ProcListResultPayload
+			out, err = t.svc.ProcList(ctx, t.pr, p)
+			err = t.finish(err, protocol.TypeProcListResult, out, "")
+		}
+	case protocol.TypeProcStop:
+		var p protocol.ProcActionPayload
+		if err = env.Decode(&p); err == nil {
+			var out protocol.ProcActionResultPayload
+			out, err = t.svc.ProcStop(ctx, t.pr, p)
+			err = t.finish(err, protocol.TypeProcActionResult, out, "")
+		}
+	case protocol.TypeProcKill:
+		var p protocol.ProcActionPayload
+		if err = env.Decode(&p); err == nil {
+			var out protocol.ProcActionResultPayload
+			out, err = t.svc.ProcKill(ctx, t.pr, p)
+			err = t.finish(err, protocol.TypeProcActionResult, out, "")
+		}
+	case protocol.TypeProcClean:
+		var p protocol.ProcActionPayload
+		if err = env.Decode(&p); err == nil {
+			var out protocol.ProcActionResultPayload
+			out, err = t.svc.ProcClean(ctx, t.pr, p)
+			err = t.finish(err, protocol.TypeProcActionResult, out, "")
+		}
 	default:
 		err = &rpc.Error{Code: protocol.CodeUnsupported, Message: "不支持的消息类型: " + env.Type}
 	}

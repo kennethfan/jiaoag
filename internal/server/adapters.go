@@ -373,3 +373,70 @@ func (s *Server) handleEventHead(ctx context.Context, c *clientConn, env protoco
 	}
 	s.reply(ctx, c, protocol.TypeEventHeadResult, out, p.SessionID)
 }
+
+func (s *Server) handleProcList(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if !s.requireCore(ctx, c) {
+		return
+	}
+	var p protocol.ProcListPayload
+	if !s.decode(ctx, c, env, &p) {
+		return
+	}
+	if p.SessionID == "" {
+		p.SessionID = env.SessionID
+	}
+	out, err := s.core.ProcList(ctx, c.principal(), p)
+	if err != nil {
+		s.fail(ctx, c, err)
+		return
+	}
+	s.reply(ctx, c, protocol.TypeProcListResult, out, p.SessionID)
+}
+
+func (s *Server) handleProcStop(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if !s.requireCore(ctx, c) {
+		return
+	}
+	var p protocol.ProcActionPayload
+	if !s.decode(ctx, c, env, &p) {
+		return
+	}
+	out, err := s.core.ProcStop(ctx, c.principal(), p)
+	if err != nil {
+		s.fail(ctx, c, err)
+		return
+	}
+	s.reply(ctx, c, protocol.TypeProcActionResult, out, env.SessionID)
+}
+
+func (s *Server) handleProcKill(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if !s.requireCore(ctx, c) {
+		return
+	}
+	var p protocol.ProcActionPayload
+	if !s.decode(ctx, c, env, &p) {
+		return
+	}
+	out, err := s.core.ProcKill(ctx, c.principal(), p)
+	if err != nil {
+		s.fail(ctx, c, err)
+		return
+	}
+	s.reply(ctx, c, protocol.TypeProcActionResult, out, env.SessionID)
+}
+
+func (s *Server) handleProcClean(ctx context.Context, c *clientConn, env protocol.Envelope) {
+	if !s.requireCore(ctx, c) {
+		return
+	}
+	var p protocol.ProcActionPayload
+	if !s.decode(ctx, c, env, &p) {
+		return
+	}
+	out, err := s.core.ProcClean(ctx, c.principal(), p)
+	if err != nil {
+		s.fail(ctx, c, err)
+		return
+	}
+	s.reply(ctx, c, protocol.TypeProcActionResult, out, env.SessionID)
+}

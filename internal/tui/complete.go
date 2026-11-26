@@ -26,6 +26,7 @@ var commandHints = []commandHint{
 	{name: "/model", usage: "[名字]", desc: "只给下一条任务指定模型"},
 	{name: "/skill", usage: "[名字]", desc: "指定下一条任务加载的技能"},
 	{name: "/mcp", usage: "", desc: "MCP server 与工具数"},
+	{name: "/ps", usage: "", desc: "后台进程（含孤儿）"},
 	{name: "/roots", usage: "", desc: "会话挂载的附加根"},
 	{name: "/new", usage: "", desc: "新开一条会话（作为新标签，旧会话继续在后台跑）"},
 	{name: "/sessions", usage: "", desc: "会话列表：切换、改名、删除"},

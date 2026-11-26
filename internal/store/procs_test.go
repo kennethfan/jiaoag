@@ -2,7 +2,9 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,5 +111,45 @@ func TestOrphanBackgroundProcs(t *testing.T) {
 	}
 	if status["alive"] != store.ProcRunning || status["gone"] != store.ProcOrphaned {
 		t.Fatalf("状态 = %+v", status)
+	}
+}
+
+func TestBackgroundProcArgvAndDelete(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "jiaoag.db"))
+	if err != nil {
+		t.Fatalf("打开库: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sess := makeSession(t, db, "ses_argv")
+
+	rec := store.BackgroundProc{
+		ID: "call_argv", SessionID: string(sess.ID), Owner: "rt_1", PID: 42,
+		Argv:      []string{"npm", "run", "dev"},
+		StartedAt: time.Now(), Status: store.ProcRunning,
+	}
+	if err := db.RegisterBackgroundProc(ctx, rec); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	got, err := db.GetBackgroundProc(ctx, "call_argv")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.Join(got.Argv, " ") != "npm run dev" {
+		t.Fatalf("argv 往返失败: %v", got.Argv)
+	}
+
+	// running 不允许删记录：进程还在系统里，删了行就再也没人认领它。
+	if err := db.DeleteBackgroundProc(ctx, "call_argv"); err == nil {
+		t.Fatal("删除运行中的记录应当被拒绝")
+	}
+	if err := db.MarkBackgroundProc(ctx, "call_argv", store.ProcExited); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	if err := db.DeleteBackgroundProc(ctx, "call_argv"); err != nil {
+		t.Fatalf("删除已退出记录: %v", err)
+	}
+	if _, err := db.GetBackgroundProc(ctx, "call_argv"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("删除后应当 NotFound，实际 %v", err)
 	}
 }

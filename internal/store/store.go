@@ -352,6 +352,9 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 	if version >= 9 {
 		probes = append(probes, `SELECT id, session_id, status, stop_requested FROM background_procs LIMIT 1`)
 	}
+	if version >= 10 {
+		probes = append(probes, `SELECT argv FROM background_procs LIMIT 1`)
+	}
 	for _, query := range probes {
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {

@@ -93,6 +93,8 @@ type Model struct {
 	skillPanel *skillPanelView
 	// mcpPanel 非空表示 /mcp 的 MCP server 面板打开（只读）。
 	mcpPanel *mcpPanelView
+	// procsPanel 非空表示 /ps 的后台进程面板打开。
+	procsPanel *procsPanelView
 	// sessionsPanel 非空表示 /sessions 的会话管理面板打开。
 	sessionsPanel *sessionsPanelView
 	// tabs 是同窗口打开的多条会话；当前那条由 sessionID 指出，对话区只渲染它。
@@ -605,6 +607,9 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.mcpPanel != nil {
 		return m.handleMCPKey(key)
 	}
+	if m.procsPanel != nil {
+		return m.handleProcsKey(key)
+	}
 	if m.sessionsPanel != nil {
 		return m.handleSessionsKey(key)
 	}
@@ -770,6 +775,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, sendCmd(m.conn, protocol.TypeMCPList, protocol.MCPListPayload{
 				SessionID: m.sessionID,
 			})
+		}
+		// /ps 列出后台进程：故意跨会话，否则属主失联的孤儿永远看不到。
+		if text == "/ps" {
+			m.input = ""
+			m.appendLine("正在获取后台进程…")
+			return m, sendCmd(m.conn, protocol.TypeProcList, protocol.ProcListPayload{})
 		}
 		// /sessions 打开会话管理面板：只看本工作区，能切换、改名、删除。
 		if text == "/new" {
@@ -1049,6 +1060,29 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			return nil
 		}
 		m.mcpPanel = newMCPPanel(p.Servers)
+		return nil
+
+	case protocol.TypeProcListResult:
+		var p protocol.ProcListResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if len(p.Procs) == 0 {
+			m.procsPanel = nil
+			m.appendLine("没有后台进程")
+			return nil
+		}
+		m.procsPanel = newProcsPanel(p.Procs)
+		return nil
+
+	case protocol.TypeProcActionResult:
+		var p protocol.ProcActionResultPayload
+		if err := env.Decode(&p); err != nil {
+			return nil
+		}
+		if p.Message != "" {
+			m.appendLine(p.Message)
+		}
 		return nil
 
 	case protocol.TypeTaskQueued:
@@ -1418,6 +1452,8 @@ func (m *Model) View() tea.View {
 		modalText = m.renderSkillPanel()
 	case m.mcpPanel != nil:
 		modalText = m.renderMCPPanel()
+	case m.procsPanel != nil:
+		modalText = m.renderProcsPanel()
 	case m.sessionsPanel != nil:
 		modalText = m.renderSessionsPanel()
 	case m.help:
@@ -1789,6 +1825,8 @@ func (m *Model) hintParts(width int) []string {
 		parts = []string{k("↑↓", "选择"), k("enter", "指定"), k("x", "清除"), k("esc", "关闭")}
 	case m.mcpPanel != nil:
 		parts = []string{k("↑↓", "选择"), k("esc", "关闭")}
+	case m.procsPanel != nil:
+		parts = []string{k("↑↓", "选择"), k("s", "停止"), k("x", "终止孤儿"), k("d", "删记录"), k("r", "刷新"), k("esc", "关闭")}
 	case m.sessionsPanel != nil:
 		parts = []string{k("↑↓", "选择"), k("enter", "切换"), k("t", "改名"), k("d", "删除"), k("esc", "关闭")}
 	case m.help:
@@ -1865,6 +1903,7 @@ func (m *Model) helpRows() [][2]string {
 		{"/skill", "指定下一条任务加载的技能"},
 		{"/技能名 问题", "用某个「仅手动」技能直接提交任务（不带问题则先指定）"},
 		{"/mcp", "MCP server 与工具数"},
+		{"/ps", "后台进程（含孤儿，可停止/终止/删记录）"},
 		{"/roots", "会话挂载的附加根"},
 		{"/new", "新开一条会话（作为新标签，旧会话继续在后台跑）"},
 		{"/sessions", "会话列表：切换、改名、删除"},
@@ -2012,6 +2051,7 @@ func (m *Model) resetView() {
 	m.modelPanel = nil
 	m.skillPanel = nil
 	m.mcpPanel = nil
+	m.procsPanel = nil
 	m.sessionsPanel = nil
 	m.round, m.tokens = 0, 0
 	m.contextTokens, m.contextBudget = 0, 0

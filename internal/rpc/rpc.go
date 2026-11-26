@@ -75,4 +75,8 @@ type Service interface {
 
 	EventHead(ctx context.Context, p Principal, in protocol.EventHeadPayload) (protocol.EventHeadResultPayload, error)
 	AuditTail(ctx context.Context, p Principal, in protocol.AuditTailPayload) (protocol.AuditTailResultPayload, error)
+	ProcList(ctx context.Context, p Principal, in protocol.ProcListPayload) (protocol.ProcListResultPayload, error)
+	ProcStop(ctx context.Context, p Principal, in protocol.ProcActionPayload) (protocol.ProcActionResultPayload, error)
+	ProcKill(ctx context.Context, p Principal, in protocol.ProcActionPayload) (protocol.ProcActionResultPayload, error)
+	ProcClean(ctx context.Context, p Principal, in protocol.ProcActionPayload) (protocol.ProcActionResultPayload, error)
 }

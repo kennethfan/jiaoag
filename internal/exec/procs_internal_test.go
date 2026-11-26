@@ -52,6 +52,12 @@ func (f *fakeProcStore) StopRequested(context.Context, string) (bool, error) {
 	return f.stop, nil
 }
 
+func (f *fakeProcStore) DeleteProc(context.Context, string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return nil
+}
+
 func (f *fakeProcStore) setStop() {
 	f.mu.Lock()
 	f.stop = true

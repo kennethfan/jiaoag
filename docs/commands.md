@@ -92,6 +92,31 @@ ORDER BY id DESC LIMIT 20;
 SELECT output_path FROM tool_calls WHERE id = 'call_9f3c…';
 ```
 
+## /ps：后台进程与孤儿
+
+`/ps` 列出**所有会话**的后台进程（不是只看当前会话——孤儿常属于已关闭的会话）。排序：孤儿 → 运行中 → 其他，同组新的在前。
+
+| 键 | 作用 | 限制 |
+|---|---|---|
+| `j`/`k`、`↑`/`↓` | 移动 | |
+| `s` | 停止（写 `stop_requested`，属主 1 秒内执行） | 只对运行中 |
+| `d` | 删除记录（不碰进程） | 不能删运行中的 |
+| `x` | 校验后终止 | 只对孤儿；`ps -o lstart=` 与库里启动时间偏差超过 3 秒会拒绝（pid 可能已被复用） |
+| `r` | 刷新 | |
+| `esc` | 关闭 | |
+
+`d` 与 `x` 都要按两次：第一次只进入确认状态，第二次才执行。
+
+孤儿是「属主运行时崩溃、没人再持有句柄」的进程。它们不会被自动杀掉——pid 会被系统复用，盲目按库里的 pid 发送信号可能杀掉无关进程。`x` 的启动时间校验就是为这个场景准备的；Windows 没有可靠接口，`x` 会直接拒绝。
+
+```sql
+SELECT id, session_id, pid, status, stop_requested, datetime(started_at,'unixepoch','localtime')
+FROM background_procs ORDER BY started_at DESC;
+
+-- 孤儿
+SELECT id, session_id, pid, argv FROM background_procs WHERE status = 'orphaned';
+```
+
 ## 边界
 
 - 白名单只属于宿主：项目级 `.jiaoag/` 不能放宽（只能收紧），也不随仓库内容变化。

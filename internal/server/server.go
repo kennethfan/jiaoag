@@ -384,6 +384,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			s.handleMCPList(ctx, c, env)
 		case protocol.TypeAuditTail:
 			s.handleAuditTail(ctx, c, env)
+		case protocol.TypeProcList:
+			s.handleProcList(ctx, c, env)
+		case protocol.TypeProcStop:
+			s.handleProcStop(ctx, c, env)
+		case protocol.TypeProcKill:
+			s.handleProcKill(ctx, c, env)
+		case protocol.TypeProcClean:
+			s.handleProcClean(ctx, c, env)
 		case protocol.TypeEventHead:
 			s.handleEventHead(ctx, c, env)
 		case protocol.TypeProjectTrust:
@@ -440,7 +448,10 @@ func isWriteCommand(typ string) bool {
 		protocol.TypeTaskCancel,
 		protocol.TypeApprovalResolve,
 		protocol.TypeProjectTrust,
-		protocol.TypeProjectRevoke:
+		protocol.TypeProjectRevoke,
+		protocol.TypeProcStop,
+		protocol.TypeProcKill,
+		protocol.TypeProcClean:
 		return true
 	default:
 		return false

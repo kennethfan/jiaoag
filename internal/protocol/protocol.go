@@ -43,6 +43,12 @@ const (
 	TypeSkillListResult      = "skill.list.result"      // S→C
 	TypeMCPList              = "mcp.list"               // C→S：列出 MCP server 与运行状态（供 /mcp 面板）
 	TypeMCPListResult        = "mcp.list.result"        // S→C
+	TypeProcList             = "proc.list"              // C→S：列出后台进程（session_id 为空即全部会话）
+	TypeProcListResult       = "proc.list.result"       // S→C
+	TypeProcStop             = "proc.stop"              // C→S：停止一个后台进程（跨运行时只投递停止请求）
+	TypeProcKill             = "proc.kill"              // C→S：校验启动时间后终止孤儿进程
+	TypeProcClean            = "proc.clean"             // C→S：删除一条非 running 的进程记录
+	TypeProcActionResult     = "proc.action.result"     // S→C：proc.stop/kill/clean 的结果
 	// TypeAuditTail 是只读的审计增量拉取：按 audit.id 游标向后取，供
 	// jiaoag events 之类的导出/监控客户端使用。after_id 为负表示只取
 	// 当前水位（不返回记录，只给 next_id）。
@@ -438,4 +444,38 @@ type ApprovalResolvePayload struct {
 	// 会被写入。allow_session 与 hunks 同时出现时按 allow_once 处理：部分应用
 	// 是一次性决定，不该变成「同类请求以后都放行」。
 	Hunks []int `json:"hunks,omitempty"`
+}
+
+// ProcInfo 是 /ps 面板看到的一条后台进程。Argv 只用于展示：属主失联后
+// 没有它根本判断不出这条进程是什么。
+type ProcInfo struct {
+	ID            string   `json:"id"`
+	SessionID     string   `json:"session_id"`
+	Owner         string   `json:"owner"`
+	PID           int      `json:"pid"`
+	Argv          []string `json:"argv,omitempty"`
+	OutputPath    string   `json:"output_path,omitempty"`
+	Status        string   `json:"status"`
+	StartedAt     int64    `json:"started_at"`
+	StopRequested bool     `json:"stop_requested,omitempty"`
+}
+
+// ProcListPayload 的 SessionID 为空时列全部会话的进程。
+type ProcListPayload struct {
+	SessionID string `json:"session_id,omitempty"`
+}
+
+type ProcListResultPayload struct {
+	Procs []ProcInfo `json:"procs"`
+}
+
+type ProcActionPayload struct {
+	ID string `json:"id"`
+}
+
+// ProcActionResultPayload 说明这次动作是就地完成还是只投递给了属主。
+type ProcActionResultPayload struct {
+	ID      string `json:"id"`
+	Local   bool   `json:"local,omitempty"`
+	Message string `json:"message,omitempty"`
 }

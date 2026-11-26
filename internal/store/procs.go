@@ -3,10 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/kennethfan/jiaoag/internal/domain"
 )
 
 // BackgroundProc 是后台进程在库里的投影。它只回答「谁在这个会话里起过什么、
@@ -17,6 +20,7 @@ type BackgroundProc struct {
 	Owner         string
 	PID           int
 	OutputPath    string
+	Argv          []string
 	StartedAt     time.Time
 	Status        string // running | exited | stopped | orphaned
 	StopRequested bool
@@ -42,14 +46,16 @@ func (s *Store) RegisterBackgroundProc(ctx context.Context, p BackgroundProc) er
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO background_procs (id, session_id, owner, pid, output_path, started_at, status, stop_requested)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO background_procs (id, session_id, owner, pid, output_path, argv, started_at, status, stop_requested)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     owner = excluded.owner,
     pid = excluded.pid,
     output_path = excluded.output_path,
+    argv = excluded.argv,
     status = excluded.status`,
-		p.ID, p.SessionID, p.Owner, p.PID, p.OutputPath, p.StartedAt.Unix(), p.Status, boolInt(p.StopRequested))
+		p.ID, p.SessionID, p.Owner, p.PID, p.OutputPath, argvColumn(p.Argv),
+		p.StartedAt.Unix(), p.Status, boolInt(p.StopRequested))
 	if err != nil {
 		return fmt.Errorf("store: 登记后台进程: %w", err)
 	}
@@ -103,9 +109,18 @@ func (s *Store) BackgroundProcStopRequested(ctx context.Context, id string) (boo
 
 // ListBackgroundProcs 返回一个会话的后台进程（含别的运行时启动的）。
 func (s *Store) ListBackgroundProcs(ctx context.Context, sessionID string) ([]BackgroundProc, error) {
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, session_id, owner, pid, output_path, started_at, status, stop_requested
-FROM background_procs WHERE session_id = ? ORDER BY started_at, id`, sessionID)
+	// sessionID 为空表示「所有会话」：/ps 面板要能看到别的会话里留下的孤儿。
+	query := `
+SELECT id, session_id, owner, pid, output_path, argv, started_at, status, stop_requested
+FROM background_procs ORDER BY started_at, id`
+	args := []any{}
+	if sessionID != "" {
+		query = `
+SELECT id, session_id, owner, pid, output_path, argv, started_at, status, stop_requested
+FROM background_procs WHERE session_id = ? ORDER BY started_at, id`
+		args = append(args, sessionID)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: 查询后台进程: %w", err)
 	}
@@ -114,15 +129,21 @@ FROM background_procs WHERE session_id = ? ORDER BY started_at, id`, sessionID)
 	for rows.Next() {
 		var (
 			p     BackgroundProc
+			argv  string
 			start int64
 			flag  int
 		)
 		if err := rows.Scan(&p.ID, &p.SessionID, &p.Owner, &p.PID, &p.OutputPath,
-			&start, &p.Status, &flag); err != nil {
+			&argv, &start, &p.Status, &flag); err != nil {
 			return nil, fmt.Errorf("store: 读取后台进程: %w", err)
 		}
 		p.StartedAt = time.Unix(start, 0)
 		p.StopRequested = flag != 0
+		if argv != "" {
+			if err := json.Unmarshal([]byte(argv), &p.Argv); err != nil {
+				return nil, fmt.Errorf("store: 后台进程 %s 的命令行损坏", p.ID)
+			}
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -153,4 +174,67 @@ func boolInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+// DeleteBackgroundProc 删掉一条进程记录。running 的不允许删：那会让
+// 「谁在跑」从面板上消失，却仍然占着端口和资源。
+func (s *Store) DeleteBackgroundProc(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("store: 后台进程 id 为空")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM background_procs WHERE id = ? AND status <> ?`, id, ProcRunning)
+	if err != nil {
+		return fmt.Errorf("store: 删除后台进程: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("store: 没有可删的后台进程 %s（可能还在运行）", id)
+	}
+	return nil
+}
+
+// GetBackgroundProc 按 id 取一条记录，供「校验后终止」使用。
+func (s *Store) GetBackgroundProc(ctx context.Context, id string) (BackgroundProc, error) {
+	if id == "" {
+		return BackgroundProc{}, fmt.Errorf("store: 后台进程 id 为空")
+	}
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, session_id, owner, pid, output_path, argv, started_at, status, stop_requested
+FROM background_procs WHERE id = ?`, id)
+	var (
+		p     BackgroundProc
+		argv  string
+		start int64
+		flag  int
+	)
+	if err := row.Scan(&p.ID, &p.SessionID, &p.Owner, &p.PID, &p.OutputPath,
+		&argv, &start, &p.Status, &flag); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return BackgroundProc{}, fmt.Errorf("store: 后台进程 %s: %w", id, domain.ErrNotFound)
+		}
+		return BackgroundProc{}, fmt.Errorf("store: 读取后台进程: %w", err)
+	}
+	p.StartedAt = time.Unix(start, 0)
+	p.StopRequested = flag != 0
+	if argv != "" {
+		_ = json.Unmarshal([]byte(argv), &p.Argv)
+	}
+	return p, nil
+}
+
+func argvColumn(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(argv)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }

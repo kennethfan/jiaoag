@@ -40,6 +40,7 @@ type ProcRecord struct {
 	SessionID  string
 	Owner      string
 	OutputPath string
+	Argv       []string
 	PID        int
 	StartedAt  time.Time
 	Status     string
@@ -53,6 +54,7 @@ type ProcStore interface {
 	ListProcs(ctx context.Context, sessionID string) ([]ProcRecord, error)
 	RequestStop(ctx context.Context, sessionID, id string) error
 	StopRequested(ctx context.Context, id string) (bool, error)
+	DeleteProc(ctx context.Context, id string) error
 }
 
 // 后台进程状态，和 store 包保持一致。
@@ -125,6 +127,7 @@ func (t *ProcTable) add(sessionID string, p *Process) error {
 			SessionID:  sessionID,
 			Owner:      owner,
 			OutputPath: p.OutputPath,
+			Argv:       p.Argv,
 			PID:        p.PID,
 			StartedAt:  p.StartedAt,
 			Status:     ProcRunning,
@@ -387,4 +390,35 @@ func stopAll(list map[string]*Process) {
 		}(p)
 	}
 	wg.Wait()
+}
+
+// ListStored 返回库里登记的全部后台进程（可按会话过滤），供 /ps 面板使用。
+func (t *ProcTable) ListStored(ctx context.Context, sessionID string) ([]ProcRecord, error) {
+	if t == nil || t.store == nil {
+		return nil, fmt.Errorf("exec: 后台进程存储不可用")
+	}
+	return t.store.ListProcs(ctx, sessionID)
+}
+
+// DropRecord 删掉库里的记录并丢掉本地句柄。running 的进程由存储层拒绝删除。
+func (t *ProcTable) DropRecord(ctx context.Context, id string) error {
+	if t == nil || t.store == nil {
+		return fmt.Errorf("exec: 后台进程存储不可用")
+	}
+	if err := t.store.DeleteProc(ctx, id); err != nil {
+		return err
+	}
+	t.dropHandle(id)
+	return nil
+}
+
+func (t *ProcTable) dropHandle(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, list := range t.sessions {
+		delete(list, id)
+	}
+	if t.watched != nil {
+		delete(t.watched, id)
+	}
 }

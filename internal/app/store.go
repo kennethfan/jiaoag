@@ -94,6 +94,8 @@ type Store interface {
 	// RememberSessionApproval 记录一次 allow_session 及其过期时间。
 	RememberSessionApproval(ctx context.Context, sessionID, key string, now, expiresAt time.Time) error
 	// ResolveApprovalDecision 用 CAS 写入裁决，返回是否由本次调用落定。
+	GetBackgroundProc(ctx context.Context, id string) (store.BackgroundProc, error)
+	MarkBackgroundProc(ctx context.Context, id, status string) error
 	ResolveApprovalDecision(ctx context.Context, id domain.ApprovalID,
 		decision domain.Decision, source domain.ApprovalSource, note string,
 		at time.Time, hunks []int) (bool, error)

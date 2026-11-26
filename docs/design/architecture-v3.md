@@ -20,7 +20,7 @@
 └────────┬─────────────┴───────┬────────┴────┬────┘
          ▼                     ▼             ▼
 ┌────────────────── 契约 internal/rpc ──────────────────┐
-│ Service：16 个强类型方法，全部带 Principal             │
+│ Service：20 个强类型方法，全部带 Principal             │
 │ Streams：回放 → 快照 → 去重 → live + 库补拉           │
 │ Error{Code,Message}：错误码只在这里定义                │
 └────────────────────────┬───────────────────────────────┘
@@ -38,7 +38,7 @@
 |---|---|
 | `internal/domain` | Task / ToolCall / Approval / Proposal 的类型与合法迁移表；`Transition`、`Decision`、`ApprovalSource` |
 | `internal/protocol` | 信封与全部 C→S / S→C 载荷，**含事件载荷**（线上格式，协议号 v1） |
-| `internal/rpc` | 契约：16 个强类型方法、`Principal`、错误码；`Streams` 是事件流的唯一实现 |
+| `internal/rpc` | 契约：20 个强类型方法、`Principal`、错误码；`Streams` 是事件流的唯一实现 |
 | `internal/server` | WS 传输：鉴权、帧编解码、连接注册、订阅桥接；**无业务判断** |
 | `internal/boot` | 唯一装配点：配置 → 规则集 → 后端 → store → app → MCP/插件/通知 → 运行时注册 |
 | `internal/app` | 会话与任务生命周期、审批裁决、队列与并发槽、租约续期、事件广播；唯一的事务边界 |
@@ -69,7 +69,7 @@
 
 ## 2. 契约
 
-`rpc.Service` 的 16 个方法：
+`rpc.Service` 的 20 个方法：
 
 | 组 | 方法 |
 |---|---|
@@ -79,6 +79,7 @@
 | 能力查询 | `ProviderModels` / `SkillList` / `MCPList` |
 | 项目扩展 | `ProjectTrust` / `ProjectRevoke` |
 | 只读观测 | `EventHead` / `AuditTail` |
+| 后台进程 | `ProcList` / `ProcStop` / `ProcKill` / `ProcClean`（孤儿校验启动时间后才终止） |
 
 规则：
 
@@ -120,7 +121,7 @@ Web 与 TUI 的差异只有一个：浏览器没有 shell，所以没有 `!命�
 | 任务不重复执行 | 一条 `UPDATE` 抢占 `queued`（写 `owner` + `lease_until`）；同会话天然串行，全局受并发上限；10s 续租，60s 过期由别人标 `failed(owner_lost)`，**不重跑** | 0049 |
 | 审批跨进程 | 裁决 CAS 写 `approvals.decision`（`decision=''` 才能写）；执行方 400ms 轮询；`hunks` 随裁决落库 | 0050 |
 | 事件跨进程 | 本地 hub（含 `assistant.delta`）+ 每 250ms 按 `seq` 从 `events` 补拉；两路按 seq 去重 | 0051 |
-| 后台进程 | `background_procs` 记属主；别的运行时只能置 `stop_requested=1`，属主每秒执行；属主失联标 `orphaned`，**不按 pid 代杀** | 0051 |
+| 后台进程 | `background_procs` 记属主与 argv；别的运行时只能置 `stop_requested=1`，属主每秒执行；属主失联标 `orphaned`，**不按 pid 代杀**，`/ps` 里核对启动时间后才允许终止（0052） | 0051 / 0052 |
 | 存活判定 | `runtimes` 每 5s 心跳，30s 无心跳视为失联 | 0049 |
 
 明确代价：跨进程看不到逐字流式（delta 不入库），只看到 `assistant.message`；长期不用的人要清理 `orphaned` 进程。

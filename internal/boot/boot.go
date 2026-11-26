@@ -474,6 +474,7 @@ func (p procStore) RegisterProc(ctx context.Context, rec execpkg.ProcRecord) err
 		Owner:      rec.Owner,
 		PID:        rec.PID,
 		OutputPath: rec.OutputPath,
+		Argv:       rec.Argv,
 		StartedAt:  rec.StartedAt,
 		Status:     rec.Status,
 	})
@@ -496,6 +497,7 @@ func (p procStore) ListProcs(ctx context.Context, sessionID string) ([]execpkg.P
 			Owner:      rec.Owner,
 			OutputPath: rec.OutputPath,
 			PID:        rec.PID,
+			Argv:       rec.Argv,
 			StartedAt:  rec.StartedAt,
 			Status:     rec.Status,
 		})
@@ -509,4 +511,8 @@ func (p procStore) RequestStop(ctx context.Context, sessionID, id string) error 
 
 func (p procStore) StopRequested(ctx context.Context, id string) (bool, error) {
 	return p.db.BackgroundProcStopRequested(ctx, id)
+}
+
+func (p procStore) DeleteProc(ctx context.Context, id string) error {
+	return p.db.DeleteBackgroundProc(ctx, id)
 }
