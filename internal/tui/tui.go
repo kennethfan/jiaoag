@@ -151,9 +151,18 @@ type Model struct {
 	// scroll 是全屏模式下从底部往回翻的行数；unseen 是翻页期间新增的行数。
 	scroll int
 	unseen int
-	// mouse 决定是否向终端申请鼠标事件（只为滚轮）。
+	// mouse 决定是否向终端申请鼠标事件（滚轮 + 拖选复制）。
 	mouse  bool
 	height int
+	// viewRows 是最近一帧排好版的屏幕行（纯文本 + 软折行分组）。鼠标框选
+	// 靠它把屏幕坐标映射回文字，因此在 View() 里更新。
+	viewRows []viewLine
+	// sel 是正在拖拽的选区；松开左键即清空，不保留历史选区。
+	sel selectionState
+	// notice 是状态栏右侧的临时提示（复制结果这类一次性反馈），
+	// 下一次按键或开始新的框选就清掉：它不该占着对话区。
+	notice    string
+	noticeErr bool
 	// help 打开键位面板；fullscreen 决定是否用 alternate screen（状态栏
 	// 才会真正钉在终端底行）。两者都只是本地视图状态，不落库。
 	help       bool
@@ -532,6 +541,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendLine("连接断开：" + errText(msg.err))
 		return m, nil
 
+	case tea.MouseClickMsg:
+		return m.handleMousePress(msg)
+
+	case tea.MouseMotionMsg:
+		return m.handleMouseDrag(msg)
+
+	case tea.MouseReleaseMsg:
+		return m.handleMouseRelease(msg)
+
+	case clipboardMsg:
+		return m.handleClipboard(msg)
+
 	case tea.MouseWheelMsg:
 		if !m.fullscreen {
 			return m, nil
@@ -571,6 +592,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.Keystroke()
+	// 一次性提示只活到下一次按键：它回答的是「刚才那下成了没有」。
+	m.notice = ""
+	m.noticeErr = false
 	// ctrl+c 是退出入口：审批面板也不能把用户困在界面里。但正在跑任务时
 	// 先确认一次——内嵌模式下退出等于关掉整个运行时，不能靠手滑承担。
 	if key == "ctrl+c" {
@@ -1412,12 +1436,28 @@ func (m *Model) View() tea.View {
 	// 一、内容：历史 + 正在流式的段落。样式只在渲染时施加，
 	// m.dialog 里始终是纯文本，回放与测试都不受颜色影响。
 	content := make([]string, 0, len(m.dialog)+1)
+	// contentMeta 与 content 逐行对应：记下纯文本与软折行分组，鼠标框选
+	// 与复制靠它把屏幕坐标还原成文字。
+	contentMeta := make([]viewLine, 0, len(m.dialog)+1)
+	group := 0
+	appendContent := func(styled string) {
+		for _, seg := range strings.Split(styled, "\n") {
+			for _, row := range wrapStyled(seg, width) {
+				content = append(content, row)
+				// 流式段末尾的光标不属于正文，复制时去掉。
+				contentMeta = append(contentMeta, viewLine{
+					text:       strings.TrimSuffix(stripANSI(row), "▏"),
+					group:      group,
+					selectable: true,
+				})
+			}
+			group++
+		}
+	}
 	for _, line := range m.dialog {
 		// 一条历史里可能夹着换行（工具输出、面板摘要）。先拆开，否则下面
 		// 按「条目数」算高度会低估实际占用的行数，底部区就被推出屏幕。
-		for _, part := range strings.Split(line, "\n") {
-			content = append(content, m.styler.stylizeLine(part))
-		}
+		appendContent(m.styler.stylizeLine(line))
 	}
 	if m.stream != "" {
 		// 流式文本里带换行是常态：按行拆开，首行带角色前缀，续行缩进两格。
@@ -1433,7 +1473,7 @@ func (m *Model) View() tea.View {
 			if i == len(parts)-1 && m.cancelable() {
 				line += m.styler.paint(styleAccent, "▏")
 			}
-			content = append(content, line)
+			appendContent(line)
 		}
 	}
 
@@ -1524,8 +1564,10 @@ func (m *Model) View() tea.View {
 			avail = 1
 		}
 		// 终端会按显示宽度折行：一行 200 字在实际屏幕上是两三行。只按条目数
-		// 裁剪会低估高度，底部区就被挤出屏幕——先把内容摊成视觉行，再按行开窗。
-		rows := wrapAll(content)
+		// 裁剪会低估高度，底部区就被挤出屏幕——内容在上面已经摊成视觉行，
+		// 这里只按视觉行开窗。
+		rows := content
+		meta := contentMeta
 		maxScroll := len(rows) - avail
 		if maxScroll < 0 {
 			maxScroll = 0
@@ -1539,26 +1581,43 @@ func (m *Model) View() tea.View {
 			start = 0
 		}
 		rows = rows[start:end]
+		meta = meta[start:end]
 		if start > 0 {
 			rows[0] = m.styler.paint(styleMuted, fmt.Sprintf("… 上方还有 %d 行（pgup/pgdn 翻）", start))
+			// 提示行不是正文，不能被框选。
+			meta[0] = viewLine{group: -1}
 		}
 		for len(rows) < avail {
 			rows = append(rows, "")
+			meta = append(meta, viewLine{group: -1})
 		}
 		content = rows
+		contentMeta = meta
 	}
 
 	// 最终组装。极端窄屏或超长输入会让底部区自己就超过一屏：这时只能
 	// 从顶部裁，保证状态栏永远在最后一行——它被挤掉就等于失去了唯一的
 	// 状态读数。
 	out := make([]string, 0, len(top)+len(content)+len(modalLines)+len(dock)+1)
+	// meta 与 out 逐行对应，只为了鼠标框选：非内容行一律不可选。
+	meta := make([]viewLine, 0, cap(out))
+	appendFixed := func(n int) {
+		for i := 0; i < n; i++ {
+			meta = append(meta, viewLine{group: -1})
+		}
+	}
 	out = append(out, top...)
+	appendFixed(len(top))
 	out = append(out, content...)
+	meta = append(meta, contentMeta...)
 	if len(modalLines) > 0 {
 		out = append(out, "")
+		appendFixed(1)
 		out = append(out, modalLines...)
+		appendFixed(len(modalLines))
 	}
 	out = append(out, dock...)
+	appendFixed(len(dock))
 	if m.fullscreen && height > 0 && len(out) > height {
 		// 从顶部裁时先裁内容，别先裁标签行：它是导航，被裁掉就不知道
 		// 还有哪些会话开着。只有连标签都放不下（极小终端）才继续丢。
@@ -1571,10 +1630,29 @@ func (m *Model) View() tea.View {
 			keep = rest
 		}
 		out = append(append([]string{}, top...), out[len(out)-keep:]...)
+		meta = append(append([]viewLine{}, meta[:len(top)]...), meta[len(meta)-keep:]...)
 		if len(out) > height {
 			out = out[len(out)-height:]
+			meta = meta[len(meta)-height:]
 		}
 	}
+
+	// 框选高亮：选区期间内容行改按纯文本渲染，反显才不会被原有配色淹没。
+	if m.sel.active {
+		for i := range out {
+			if !meta[i].selectable {
+				continue
+			}
+			from, to, on := m.sel.span(i, displayWidth(meta[i].text))
+			if on {
+				out[i] = highlightCells(meta[i].text, from, to, m.styler.enabled)
+			} else {
+				out[i] = meta[i].text
+			}
+		}
+	}
+	// 记下来给下一帧的鼠标事件用：屏幕坐标 → 文字的映射只在这一帧有效。
+	m.viewRows = meta
 
 	// 全屏模式下末尾不能再跟一个换行：渲染器按整个屏幕画帧，多出的空行
 	// 会让帧高变成 height+1，终端于是滚动一行，最后一行（状态栏）与它上面
@@ -1648,6 +1726,15 @@ func (m *Model) renderStatusBar(width int, withHints bool) string {
 		left = append(left, segment{s.paint(styleStrong, "⌂ "+dir), 1})
 	}
 	left = append(left, segment{m.statusChip(), 0})
+	if m.notice != "" {
+		kind := styleOK
+		if m.noticeErr {
+			kind = styleWarn
+		}
+		// 临时提示放前面（紧挨状态），但可丢弃等级最低——放不下时先让位给
+		// 模型/上下文这类持续信息。
+		left = append(left, segment{s.paint(kind, m.notice), 5})
+	}
 	if m.taskID != "" {
 		left = append(left, segment{s.paint(styleMuted, shortID(m.taskID)), 3})
 	}
@@ -1913,6 +2000,7 @@ func (m *Model) helpRows() [][2]string {
 		{"!cmd", "在本机执行命令（不进模型、不审计）"},
 		{"v", "审批时逐块选择"},
 		{"tab", "审批时切换三个按钮"},
+		{"拖选", "按住左键拖动框选，松开即复制到剪贴板"},
 		{"/exit", "退出（等同 ctrl+c）"},
 		{"ctrl+c", "退出（有任务时确认一次）"},
 	}
@@ -2059,6 +2147,10 @@ func (m *Model) resetView() {
 	m.completionSel, m.completionHidden = 0, false
 	m.dialog = nil
 	m.approval = nil
+	// 选区绑定的是上一帧的屏幕行，换会话后必须作废，否则坐标会指向别的文字。
+	m.sel = selectionState{}
+	m.viewRows = nil
+	m.notice = ""
 }
 
 // cancelable 报告本地是否认为有任务未结束（含排队）。esc 不依赖它：

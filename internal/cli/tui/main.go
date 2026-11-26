@@ -35,7 +35,7 @@ func Main() {
 		srvBin   = flag.String("server-bin", "", "jiaoag serve 路径（默认同目录或 PATH）")
 		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 		inline   = flag.Bool("inline", false, "不用全屏：保留终端 scrollback，状态栏跟在内容末尾")
-		noMouse  = flag.Bool("no-mouse", false, "关闭鼠标滚轮（默认开启；开启时会占用终端原生选中，复制需按住 shift）")
+		noMouse  = flag.Bool("no-mouse", false, "关闭鼠标事件（滚轮与拖选复制；关闭后交还终端原生选中）")
 	)
 	flag.StringVar(&sesID, "s", "", "恢复指定会话（进程重启后用 -s <id> 回到原会话）")
 	flag.StringVar(&sesID, "session", "", "同 -s（保留旧写法）")
