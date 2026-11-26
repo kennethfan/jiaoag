@@ -3,12 +3,12 @@
 单用户的编码自动化 agent。服务端在本机直接操作真实文件系统与 shell，TUI 客户端只负责渲染与审批；两者通过 WebSocket 长连接通信。
 
 - 术语表：`CONTEXT.md`
-- 架构与分层：`docs/design/agent-architecture.md`
+- 架构与分层：`docs/design/architecture-v3.md`（现行；`agent-architecture.md` 是 v1 历史设计）
 - 关键取舍：`docs/adr/`
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）。架构 v3 的契约/传输分层见 `docs/design/architecture-v3.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）。分层、契约、多运行时与扩展点的完整说明见 `docs/design/architecture-v3.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 

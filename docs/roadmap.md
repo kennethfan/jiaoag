@@ -71,4 +71,4 @@
 1. 有 issue 的先看 issue；没有就先写成 issue（模板见 `docs/agents/issue-tracker.md`），把验收标准写清楚。
 2. 改动前确认它不碰三条不变量；碰了就说明理由并记 ADR。
 3. 实现完跑 `make check`，需要肉眼验收的（TUI、通知、真实 provider）单独验一遍。
-4. 文档同步：`README.md` 进度表加一行、`docs/design/agent-architecture.md` 对应小节更新、必要时补 ADR 与专题文档。
+4. 文档同步：`README.md` 进度表加一行、`docs/design/architecture-v3.md` 对应小节更新、必要时补 ADR 与专题文档。

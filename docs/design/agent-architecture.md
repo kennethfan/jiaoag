@@ -1,6 +1,9 @@
-# jiaoag agent 架构
+# jiaoag agent 架构（v1 历史设计）
 
-状态：v1 设计基线。M0–M6 已落地；本文描述的是当前实现。
+状态：**已被 [`architecture-v3.md`](architecture-v3.md) 取代**，保留用于追溯早期决策与里程碑映射。
+文中「7 张表」「11 个内置工具」「server 无业务逻辑」等描述在 v2 后期已变化：
+业务已上移到 `internal/rpc`，运行时装配在 `internal/boot`，存储到 11 张业务表，
+并支持多运行时（ADR-0049–0051）。
 关联：`CONTEXT.md`、`docs/adr/0001`–`0013`。
 
 ---
