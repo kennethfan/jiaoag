@@ -15,20 +15,24 @@ type commandHint struct {
 	name  string
 	usage string
 	desc  string
+	// tag 用于区分来源：内置命令为空，「仅手动」技能标「技能」。把它们
+	// 混在一张列表里，用户需要一眼看出哪条会改动会话状态、哪条只是
+	// 往下一条任务的系统提示里塞正文。
+	tag string
 }
 
 var commandHints = []commandHint{
-	{"/models", "", "切换会话模型"},
-	{"/model", "[名字]", "只给下一条任务指定模型"},
-	{"/skill", "[名字]", "指定下一条任务加载的技能"},
-	{"/mcp", "", "MCP server 与工具数"},
-	{"/roots", "", "会话挂载的附加根"},
-	{"/new", "", "新开一条会话（作为新标签，旧会话继续在后台跑）"},
-	{"/sessions", "", "会话列表：切换、改名、删除"},
-	{"/rename", "[标题]", "改当前会话标题（不带参数则填入输入行）"},
-	{"/trust", "", "信任并加载项目级扩展（AGENTS.md / .jiaoag）"},
-	{"/untrust", "", "撤销信任，不再加载项目级扩展"},
-	{"/exit", "", "退出（等同 ctrl+c，/quit 同义）"},
+	{name: "/models", usage: "", desc: "切换会话模型"},
+	{name: "/model", usage: "[名字]", desc: "只给下一条任务指定模型"},
+	{name: "/skill", usage: "[名字]", desc: "指定下一条任务加载的技能"},
+	{name: "/mcp", usage: "", desc: "MCP server 与工具数"},
+	{name: "/roots", usage: "", desc: "会话挂载的附加根"},
+	{name: "/new", usage: "", desc: "新开一条会话（作为新标签，旧会话继续在后台跑）"},
+	{name: "/sessions", usage: "", desc: "会话列表：切换、改名、删除"},
+	{name: "/rename", usage: "[标题]", desc: "改当前会话标题（不带参数则填入输入行）"},
+	{name: "/trust", usage: "", desc: "信任并加载项目级扩展（AGENTS.md / .jiaoag）"},
+	{name: "/untrust", usage: "", desc: "撤销信任，不再加载项目级扩展"},
+	{name: "/exit", usage: "", desc: "退出（等同 ctrl+c，/quit 同义）"},
 }
 
 // completionMaxRows 是补全浮层的默认高度上限。
@@ -53,16 +57,62 @@ func (m *Model) visibleCompletion() []commandHint {
 	prefix := strings.ToLower(text)
 	// 打全了就收起浮层：此刻 enter 的语义是执行这条命令。也避免 /model
 	// 同时是 /models 的前缀时，浮层高亮停在另一条上造成误读。
-	if isCommandName(prefix) {
+	if m.isCommandName(prefix) {
 		return nil
 	}
-	items := make([]commandHint, 0, len(commandHints))
-	for _, c := range commandHints {
+	hints := m.completionHints()
+	items := make([]commandHint, 0, len(hints))
+	for _, c := range hints {
 		if strings.HasPrefix(strings.ToLower(c.name), prefix) {
 			items = append(items, c)
 		}
 	}
 	return items
+}
+
+// completionHints 把内置命令与「仅手动」技能拼成候选列表。
+//
+// 技能名由服务端下发（skill.list），客户端不再扫目录：技能目录属于服务端
+// 配置，可能含项目级 .jiaoag/skills，客户端本地的目录不代表实际生效的那份。
+// 内置命令排在前面且重名时优先——技能目录是用户的、随时会变，不能让一个
+// 叫 models 的技能把真命令顶掉。
+func (m *Model) completionHints() []commandHint {
+	out := make([]commandHint, 0, len(commandHints)+len(m.skillCatalog))
+	out = append(out, commandHints...)
+	for _, s := range m.skillCatalog {
+		if !s.Manual {
+			continue
+		}
+		name := "/" + s.Name
+		if builtinCommandName(name) || skillHintExists(out, name) {
+			continue
+		}
+		out = append(out, commandHint{
+			name:  name,
+			usage: "[问题]",
+			desc:  s.Description,
+			tag:   "技能",
+		})
+	}
+	return out
+}
+
+func builtinCommandName(name string) bool {
+	for _, c := range commandHints {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func skillHintExists(hints []commandHint, name string) bool {
+	for _, c := range hints {
+		if c.name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // resetCompletion 在输入变化后清掉「用户按 esc 关过」的记忆，并把选中项
@@ -105,9 +155,9 @@ func (m *Model) handleCompletionKey(key string) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// isCommandName 报告 text 是否正好是某条命令的完整名字。
-func isCommandName(text string) bool {
-	for _, c := range commandHints {
+// isCommandName 报告 text 是否正好是某条命令（含仅手动技能）的完整名字。
+func (m *Model) isCommandName(text string) bool {
+	for _, c := range m.completionHints() {
 		if c.name == text {
 			return true
 		}
@@ -165,7 +215,8 @@ func (m *Model) renderCompletion(width int) []string {
 		}
 		name := padDisplay(items[i].name, 10)
 		usage := padDisplay(items[i].usage, 8)
-		raw := marker + name + usage
+		tag := padDisplay(items[i].tag, 4)
+		raw := marker + name + usage + tag
 		descWidth := width - displayWidth(raw) - 2
 		desc := ""
 		if descWidth > 6 {
@@ -177,4 +228,31 @@ func (m *Model) renderCompletion(width int) []string {
 		lines = append(lines, m.styler.paint(style, strings.TrimRight(raw, " ")))
 	}
 	return lines
+}
+
+// skillCommand 识别「/技能名 问题」形式的输入。
+//
+// 只有服务端标了 disable-model-invocation 的技能才有这个入口——它们本来
+// 就是「模型不许自选、只能用户点名」。内置命令优先：技能目录是用户随时
+// 会改的，不能让重名技能把真命令顶掉。
+func (m *Model) skillCommand(text string) (name, rest string, ok bool) {
+	cut := strings.IndexAny(text, " \t")
+	head := text
+	if cut >= 0 {
+		head = text[:cut]
+		rest = strings.TrimSpace(text[cut+1:])
+	}
+	if !strings.HasPrefix(head, "/") || builtinCommandName(head) {
+		return "", "", false
+	}
+	name = strings.TrimPrefix(head, "/")
+	if name == "" {
+		return "", "", false
+	}
+	for _, s := range m.skillCatalog {
+		if s.Manual && s.Name == name {
+			return name, rest, true
+		}
+	}
+	return "", "", false
 }

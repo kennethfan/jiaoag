@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
 	"github.com/kennethfan/jiaoag/internal/protocol"
@@ -137,11 +136,13 @@ func (m *Model) finishRename(title string) tea.Cmd {
 	})
 }
 
-// switchSessionCmd 先退订旧会话、再订阅新会话。
+// switchSessionCmd 先退订旧会话、再订阅新会话，必要时顺带要一份技能清单。
 //
-// 两帧在一个命令里顺序写：bubbletea 的 Batch 是并发执行的，两条命令各写一帧
-// 会让 wsjson 在同一个连接上并发写，帧会交错。
-func switchSessionCmd(conn *websocket.Conn, oldID string, sub protocol.EventSubscribePayload) tea.Cmd {
+// 三帧在一个命令里顺序写：bubbletea 的 Batch 是并发执行的，两条命令各写一帧
+// 会让 wsjson 在同一个连接上并发写，帧会交错（实测会导致技能请求被丢弃）。
+func (m *Model) switchSessionCmd(oldID string, sub protocol.EventSubscribePayload) tea.Cmd {
+	conn := m.conn
+	catalog := m.catalogToFetch(sub.SessionID)
 	return func() tea.Msg {
 		if conn == nil {
 			return closedMsg{err: errors.New("未连接到服务端")}
@@ -164,8 +165,30 @@ func switchSessionCmd(conn *websocket.Conn, oldID string, sub protocol.EventSubs
 		if err := wsjson.Write(ctx, conn, env); err != nil {
 			return closedMsg{err: err}
 		}
+		if catalog != nil {
+			env, err := protocol.New(protocol.TypeSkillList, *catalog)
+			if err != nil {
+				return connectErrMsg{err: err}
+			}
+			if err := wsjson.Write(ctx, conn, env); err != nil {
+				return closedMsg{err: err}
+			}
+		}
 		return nil
 	}
+}
+
+// catalogToFetch 决定这次切会话要不要顺带拉技能清单：同一个会话只拉一次，
+// 正在拉时也不重复请求。技能名用于斜杠命令补全。
+func (m *Model) catalogToFetch(sessionID string) *protocol.SkillListPayload {
+	if m.conn == nil || sessionID == "" {
+		return nil
+	}
+	if m.skillFetching || m.skillCatalogSession == sessionID {
+		return nil
+	}
+	m.skillFetching = true
+	return &protocol.SkillListPayload{SessionID: sessionID}
 }
 
 func (m *Model) renderSessionsPanel() string {

@@ -267,6 +267,7 @@ make demo-mcp
 | v2.42 | 白名单可配置：默认规则首次启动落盘到 `policy.d/default.yaml` 并归用户编辑，同目录其他文件只能收紧；`publish`/`deploy` 类子命令是代码底线（ADR-0045） | ✅ |
 | v2.43 | 配置子命令：`config path/show/check/set/edit` 与 `policy test`；show 报来源并脱敏，set 只改目标片段、默认 dry-run、写前备份写后校验回滚（ADR-0046） | ✅ |
 | v2.44 | 斜杠命令补全：输入 `/` 列出命令并按前缀过滤，`tab` 补全、打全后 `enter` 才执行，浮层计入全屏高度预算（ADR-0047） | ✅ |
+| v2.45 | 仅手动技能变成斜杠命令：`/技能名 问题` 一步提交，会话建立后拉取 `skill.list` 进补全（ADR-0024 修订） | ✅ |
 
 ## 安全边界
 

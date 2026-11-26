@@ -49,6 +49,8 @@ func TestSkillCommandWithNameArmsDirectly(t *testing.T) {
 // 列表返回后开面板，仅手动技能要有标记，选中技能显示说明。
 func TestSkillListResultOpensPanel(t *testing.T) {
 	m := newModel(t)
+	// 面板只应由用户显式 /skill 触发；会话建立时的自动拉取只更新补全缓存。
+	m.skillPanelRequested = true
 	env, err := protocol.New(protocol.TypeSkillListResult, protocol.SkillListResultPayload{
 		Skills: []protocol.SkillInfo{
 			{Name: "auto-one", Description: "自动技能"},

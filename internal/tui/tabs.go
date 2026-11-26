@@ -117,7 +117,7 @@ func (m *Model) activateTab(id, oldID string) (tea.Model, tea.Cmd) {
 	m.taskStatus = t.Status
 	t.Unread = 0
 	m.appendLine(sessionHeadline("切换到会话", t.Title))
-	return m, switchSessionCmd(m.conn, oldID, protocol.EventSubscribePayload{
+	return m, m.switchSessionCmd(oldID, protocol.EventSubscribePayload{
 		SessionID: id,
 		FromSeq:   0,
 	})
@@ -331,7 +331,7 @@ func (m *Model) restoreWorkspaceSessions(sessions []protocol.SessionSummaryPaylo
 	if len(sessions) > 1 {
 		m.appendLine(fmt.Sprintf("⋯ 本目录有 %d 条会话，已全部开成标签（ctrl+n/ctrl+p 切换，/new 新开）", len(sessions)))
 	}
-	return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+	return m.switchSessionCmd("", protocol.EventSubscribePayload{
 		SessionID: cur.ID,
 		FromSeq:   0,
 	})

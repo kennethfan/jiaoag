@@ -103,12 +103,21 @@ type Model struct {
 	// 选中第几条，以及用户是否按过 esc 暂时关掉它。
 	completionSel    int
 	completionHidden bool
-	sessionProvider  string
-	sessionModel     string
-	taskID           string
-	taskStatus       string
-	round            int
-	tokens           int
+	// skillCatalog 是本会话可用的技能清单（来自服务端 skill.list）。
+	// 只有「仅手动」的技能会进斜杠命令补全；缓存按会话记，切换标签后
+	// 重新拉一次——项目级技能随工作区变化。
+	skillCatalog        []protocol.SkillInfo
+	skillCatalogSession string
+	skillFetching       bool
+	// skillPanelRequested 区分「用户按 /skill 要面板」与「会话建立时顺手拉
+	// 清单缓存」：后者不该突然弹出一个面板盖住对话。
+	skillPanelRequested bool
+	sessionProvider     string
+	sessionModel        string
+	taskID              string
+	taskStatus          string
+	round               int
+	tokens              int
 	// contextTokens/contextBudget 是最近一轮请求的上下文占用与预算（估算）。
 	// 供应商不回「还剩多少上下文」，只能用本地估算器：它按字符类别加权，
 	// 并用每轮 prompt_tokens 校准。
@@ -499,6 +508,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case closedMsg:
 		// 连接已死，留着指针只会让后续 sendCmd 往一条废连接上写。
 		m.conn = nil
+		m.skillFetching = false
 		m.status = "连接已断开（ctrl+r 重连 / ctrl+c 退出）"
 		m.appendLine("连接断开：" + errText(msg.err))
 		return m, nil
@@ -688,6 +698,21 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.appendLine("⚠ 尚未建立会话（正在连接），稍后再提交")
 			return m, nil
 		}
+		// 「/技能名 问题」是仅手动技能的命令式入口：带问题一步提交，
+		// 不带问题则先武装，等用户输入问题后按 enter。内置命令优先，
+		// 所以这段必须排在 /models、/model 等判断之前也不会抢它们的名字。
+		if name, rest, ok := m.skillCommand(text); ok {
+			m.input = ""
+			if rest == "" {
+				m.armSkill(name)
+				return m, nil
+			}
+			m.forcedSkills = []string{name}
+			payload := m.taskSubmitPayload(rest)
+			m.forcedSkills = nil
+			m.forcedModel = ""
+			return m, sendCmd(m.conn, protocol.TypeTaskSubmit, payload)
+		}
 		if text == "/models" {
 			m.input = ""
 			m.modelsForTask = false
@@ -717,6 +742,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.appendLine("正在获取技能列表…")
+			m.skillPanelRequested = true
 			return m, sendCmd(m.conn, protocol.TypeSkillList, protocol.SkillListPayload{
 				SessionID: m.sessionID,
 			})
@@ -919,7 +945,8 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 			}
 			m.noteProject(p.Project)
 		}
-		return sendCmd(m.conn, protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
+		// 订阅与技能清单在一个命令里顺序写（斜杠补全要用「仅手动」技能名）。
+		return m.switchSessionCmd("", protocol.EventSubscribePayload{
 			SessionID: m.sessionID,
 			FromSeq:   0,
 		})
@@ -969,8 +996,22 @@ func (m *Model) handleEnvelope(env protocol.Envelope) tea.Cmd {
 	case protocol.TypeSkillListResult:
 		var p protocol.SkillListResultPayload
 		if err := env.Decode(&p); err != nil {
+			m.skillFetching = false
 			return nil
 		}
+		// 顺带缓存整份清单：斜杠命令补全只取其中的「仅手动」技能。
+		// 结果可能属于切换前的会话，只认当前会话，避免把别人的工作区
+		// 技能名挂到当前补全上。
+		m.skillFetching = false
+		if env.SessionID == "" || env.SessionID == m.sessionID {
+			m.skillCatalog = p.Skills
+			m.skillCatalogSession = m.sessionID
+		}
+		if !m.skillPanelRequested {
+			// 会话建立时的自动拉取：只更新补全缓存，不打断对话。
+			return nil
+		}
+		m.skillPanelRequested = false
 		if len(p.Skills) == 0 {
 			m.appendLine("技能库为空：检查 agent.skills 与 skills_dirs")
 			return nil
@@ -1806,6 +1847,7 @@ func (m *Model) helpRows() [][2]string {
 		{"/models", "切换会话模型"},
 		{"/model", "只给下一条任务指定模型"},
 		{"/skill", "指定下一条任务加载的技能"},
+		{"/技能名 问题", "用某个「仅手动」技能直接提交任务（不带问题则先指定）"},
 		{"/mcp", "MCP server 与工具数"},
 		{"/roots", "会话挂载的附加根"},
 		{"/new", "新开一条会话（作为新标签，旧会话继续在后台跑）"},
