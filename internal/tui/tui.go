@@ -98,13 +98,17 @@ type Model struct {
 	// forcedModel 是 /model 选定的、只用于下一条任务的模型；提交后清空。
 	forcedModel string
 	// modelsForTask 标记正在等回包的模型列表用途：/model 只覆盖下一条任务。
-	modelsForTask   bool
-	sessionProvider string
-	sessionModel    string
-	taskID          string
-	taskStatus      string
-	round           int
-	tokens          int
+	modelsForTask bool
+	// completionSel / completionHidden 是斜杠命令补全浮层的状态：
+	// 选中第几条，以及用户是否按过 esc 暂时关掉它。
+	completionSel    int
+	completionHidden bool
+	sessionProvider  string
+	sessionModel     string
+	taskID           string
+	taskStatus       string
+	round            int
+	tokens           int
 	// contextTokens/contextBudget 是最近一轮请求的上下文占用与预算（估算）。
 	// 供应商不回「还剩多少上下文」，只能用本地估算器：它按字符类别加权，
 	// 并用每轮 prompt_tokens 校准。
@@ -585,6 +589,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// 斜杠命令补全：浮层打开时先吃导航键，其余按键继续当普通输入。
+	if cmd, handled := m.handleCompletionKey(key); handled {
+		return m, cmd
+	}
 	switch key {
 	case "pgup", "pgdown", "ctrl+u", "ctrl+d", "home", "end":
 		// 只有全屏才需要自己滚：内联模式交给终端 scrollback。
@@ -793,13 +801,16 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			_, size := utf8.DecodeLastRuneInString(m.input)
 			m.input = m.input[:len(m.input)-size]
 		}
+		m.resetCompletion()
 		return m, nil
 	case "space":
 		m.input += " "
+		m.resetCompletion()
 		return m, nil
 	}
 	if utf8.RuneCountInString(key) == 1 {
 		m.input += key
+		m.resetCompletion()
 	}
 	return m, nil
 }
@@ -1398,6 +1409,13 @@ func (m *Model) View() tea.View {
 	dock = wrapAll(dock)
 	top = wrapAll(top)
 	modalLines = wrapAll(modalLines)
+	// 斜杠命令补全贴在输入行上方：它是底部浮层而不是模态面板——输入行
+	// 仍可继续打字。面板打开时 modal=true，此时不展示，避免两层浮层叠在一起。
+	if !modal {
+		if lines := m.renderCompletion(width); len(lines) > 0 {
+			modalLines = wrapAll(lines)
+		}
+	}
 
 	// 四、全屏时按终端高度裁剪内容区：状态栏与输入必须真的贴底，
 	// 而不是被一堆历史行推到屏幕外。内联模式不裁——那正是它保留
@@ -1736,33 +1754,7 @@ func (m *Model) renderHelpPanel() string {
 	var b strings.Builder
 	b.WriteString(s.paint(styleAccent, "⌨ 键位与状态") + s.paint(styleMuted, fmt.Sprintf("  jiaoag %s", version.Version)) + "\n")
 	b.WriteString(s.paint(styleMuted, strings.Repeat("─", panelWidth)) + "\n")
-	rows := [][2]string{
-		{"enter", "提交任务 / 确认面板动作"},
-		{"esc", "取消运行中的任务 / 关闭面板 / 退出"},
-		{"?", "打开或关闭这个面板"},
-		{"ctrl+q", "队列面板"},
-		{"ctrl+n / ctrl+p", "在会话标签之间循环"},
-		{"ctrl+w", "关掉当前会话标签（至少保留一个）"},
-		{"ctrl+r", "重连"},
-		{"ctrl+f", "切换全屏 / 内联（默认全屏，状态栏钉底）"},
-		{"pgup/pgdn", "全屏下翻页"},
-		{"ctrl+u/d", "全屏下半页翻"},
-		{"home/end", "跳到最早 / 回到最新"},
-		{"ctrl+x", "终止正在跑的 !本机命令"},
-		{"/models", "切换会话模型"},
-		{"/model", "只给下一条任务指定模型"},
-		{"/skill", "指定下一条任务加载的技能"},
-		{"/mcp", "MCP server 与工具数"},
-		{"/roots", "会话挂载的附加根"},
-		{"/new", "新开一条会话（作为新标签，旧会话继续在后台跑）"},
-		{"/sessions", "会话列表：切换、改名、删除"},
-		{"/rename", "改当前会话标题（不带参数则填入输入行）"},
-		{"!cmd", "在本机执行命令（不进模型、不审计）"},
-		{"v", "审批时逐块选择"},
-		{"tab", "审批时切换三个按钮"},
-		{"/exit", "退出（等同 ctrl+c）"},
-		{"ctrl+c", "退出"},
-	}
+	rows := m.helpRows()
 	info := []string{}
 	if m.sessionID != "" {
 		info = append(info, "会话 "+m.sessionID)
@@ -1791,6 +1783,42 @@ func (m *Model) renderHelpPanel() string {
 		b.WriteString(s.paint(styleMuted, line) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// helpRows 返回 ? 面板的完整键位与命令列表。
+//
+// 单独抽出来是为了让测试能核对「斜杠命令都出现在帮助里」：面板展示时
+// 会按终端高度截断，直接对渲染结果断言会随高度漂移。
+func (m *Model) helpRows() [][2]string {
+	return [][2]string{
+		{"enter", "提交任务 / 确认面板动作"},
+		{"esc", "取消运行中的任务 / 关闭面板 / 退出"},
+		{"?", "打开或关闭这个面板"},
+		{"ctrl+q", "队列面板"},
+		{"ctrl+n / ctrl+p", "在会话标签之间循环"},
+		{"ctrl+w", "关掉当前会话标签（至少保留一个）"},
+		{"ctrl+r", "重连"},
+		{"ctrl+f", "切换全屏 / 内联（默认全屏，状态栏钉底）"},
+		{"pgup/pgdn", "全屏下翻页"},
+		{"ctrl+u/d", "全屏下半页翻"},
+		{"home/end", "跳到最早 / 回到最新"},
+		{"ctrl+x", "终止正在跑的 !本机命令"},
+		{"/models", "切换会话模型"},
+		{"/model", "只给下一条任务指定模型"},
+		{"/skill", "指定下一条任务加载的技能"},
+		{"/mcp", "MCP server 与工具数"},
+		{"/roots", "会话挂载的附加根"},
+		{"/new", "新开一条会话（作为新标签，旧会话继续在后台跑）"},
+		{"/sessions", "会话列表：切换、改名、删除"},
+		{"/rename", "改当前会话标题（不带参数则填入输入行）"},
+		{"/trust", "信任并加载项目级扩展（AGENTS.md / .jiaoag）"},
+		{"/untrust", "撤销信任，不再加载项目级扩展"},
+		{"!cmd", "在本机执行命令（不进模型、不审计）"},
+		{"v", "审批时逐块选择"},
+		{"tab", "审批时切换三个按钮"},
+		{"/exit", "退出（等同 ctrl+c）"},
+		{"ctrl+c", "退出"},
+	}
 }
 
 // abbrevWorkspace 把工作区路径缩成 ~/... 形式。状态栏宽度有限，
@@ -1930,6 +1958,7 @@ func (m *Model) resetView() {
 	m.round, m.tokens = 0, 0
 	m.contextTokens, m.contextBudget = 0, 0
 	m.localLines, m.localOmitted = 0, 0
+	m.completionSel, m.completionHidden = 0, false
 	m.dialog = nil
 	m.approval = nil
 }
