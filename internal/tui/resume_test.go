@@ -72,7 +72,7 @@ func TestStartupRestoresAllWorkspaceSessionsAsTabs(t *testing.T) {
 	}
 }
 
-// 单条会话时不开标签行，也不加「已全部开成标签」这类噪音提示。
+// 单条会话时不开标签行，但顶部标题栏要留着；也不加「已全部开成标签」这类噪音提示。
 func TestStartupSingleSessionHasNoTabStrip(t *testing.T) {
 	m := newModel(t)
 	m.sessionID = ""
@@ -84,8 +84,9 @@ func TestStartupSingleSessionHasNoTabStrip(t *testing.T) {
 	if m.sessionID != "ses_only" || len(m.tabs) != 1 {
 		t.Fatalf("应接到唯一一条：%q %+v", m.sessionID, m.tabs)
 	}
-	if strip := m.renderTabStrip(120); strip != "" {
-		t.Fatalf("单条会话不该画标签行：%q", strip)
+	strip := stripANSI(m.renderTabStrip(120))
+	if !strings.Contains(strip, "只有一条") {
+		t.Fatalf("单条会话也应显示顶部标题栏：%q", strip)
 	}
 	if strings.Contains(strings.Join(m.dialog, "\n"), "已全部开成标签") {
 		t.Fatalf("单条会话不该提示标签操作：%v", m.dialog)

@@ -149,12 +149,17 @@ func TestCloseLastTabIsRefused(t *testing.T) {
 	}
 }
 
-// 单会话时不画标签行：多一行只会挤掉内容。
-func TestTabStripHiddenForSingleSession(t *testing.T) {
+// 单会话时仍然占一行，但画成标题栏：历史滚过一屏后对话里的表头会消失，
+// 顶部必须还留着「你在哪个会话里」。
+func TestTabStripShowsSingleSessionTitle(t *testing.T) {
 	m := newModel(t)
-	m.openTab("ses_1", "一", "", "")
-	if strip := m.renderTabStrip(120); strip != "" {
-		t.Fatalf("单会话不该有标签行：%q", strip)
+	m.openTab("ses_1", "修登录超时", "", "")
+	strip := stripANSI(m.renderTabStrip(120))
+	if !strings.Contains(strip, "▤") || !strings.Contains(strip, "修登录超时") {
+		t.Fatalf("单会话标题栏应显示标题：%q", strip)
+	}
+	if strings.Contains(strip, "[1 ") {
+		t.Fatalf("单会话不该画成可切换标签：%q", strip)
 	}
 }
 
@@ -287,4 +292,24 @@ func taskStatusFrame(t *testing.T, sessionID, taskID string, payload any) protoc
 	}
 	env.SessionID = sessionID
 	return env
+}
+
+// 历史超过一屏时，顶部标题栏必须还在：它是「我在哪条会话里」的唯一常驻读数。
+func TestSingleSessionHeaderStaysVisibleWithLongHistory(t *testing.T) {
+	m := newModel(t)
+	m.width, m.height = 80, 20
+	m.openTab("ses_1", "修登录超时", "openai", "gpt-x")
+	for i := 0; i < 80; i++ {
+		m.appendLine(fmt.Sprintf("历史行 %02d", i))
+	}
+	lines := strings.Split(stripANSI(m.View().Content), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("帧高应为 %d，实际 %d", m.height, len(lines))
+	}
+	if !strings.Contains(lines[0], "▤ 修登录超时") {
+		t.Fatalf("首行应是标题栏：%q", lines[0])
+	}
+	if !strings.Contains(lines[len(lines)-1], "已连接") && !strings.Contains(lines[len(lines)-1], "未连接") {
+		t.Fatalf("末行仍是状态栏：%q", lines[len(lines)-1])
+	}
 }

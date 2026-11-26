@@ -1536,13 +1536,6 @@ func (m *Model) renderStatusBar(width int, withHints bool) string {
 	if dir := m.abbrevWorkspace(); dir != "" {
 		left = append(left, segment{s.paint(styleStrong, "⌂ "+dir), 1})
 	}
-	// 会话标签放在工作目录之后：改名以后总得在界面上看见自己叫什么，
-	// 否则「我在哪条会话里」只能靠打开 /sessions 面板确认。
-	if label := m.sessionLabel(); label != "" {
-		// 等级排在计数之后、工作目录之前：挤不下时先丢名字，目录留着——
-		// 目录决定了工具能碰哪里，比重名更硬。
-		left = append(left, segment{s.paint(styleStrong, label), 2})
-	}
 	left = append(left, segment{m.statusChip(), 0})
 	if m.taskID != "" {
 		left = append(left, segment{s.paint(styleMuted, shortID(m.taskID)), 3})
@@ -1825,17 +1818,6 @@ func (m *Model) retitleSessionHeadline(title string) {
 			}
 		}
 	}
-}
-
-// sessionLabel 是状态栏里的「我在哪条会话」：只有起了名字才显示。
-//
-// 没标题时退回短会话 id 看着像噪音——id 是给命令行与日志用的，人靠标题
-// 认会话；没名字就去 /sessions 里起一个。没有会话时不占位。
-func (m *Model) sessionLabel() string {
-	if m.sessionID == "" || m.sessionTitle == "" {
-		return ""
-	}
-	return "▤ " + truncateDisplay(m.sessionTitle, 24)
 }
 
 func (m *Model) abbrevWorkspace() string {

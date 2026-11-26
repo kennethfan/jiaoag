@@ -298,6 +298,7 @@ func TestRenameCommandRequiresSession(t *testing.T) {
 
 func TestSessionRenamedEventUpdatesTitle(t *testing.T) {
 	m := newModel(t)
+	m.openTab("ses_1", "旧标题", "", "")
 
 	payload := json.RawMessage(`{"title":"改自命令行"}`)
 	env, err := protocol.New(protocol.TypeEvent, protocol.StreamEventPayload{
@@ -312,8 +313,8 @@ func TestSessionRenamedEventUpdatesTitle(t *testing.T) {
 	if m.sessionTitle != "改自命令行" {
 		t.Fatalf("标题未跟随事件更新：%q", m.sessionTitle)
 	}
-	if bar := stripANSI(m.renderStatusBar(140, false)); !strings.Contains(bar, "▤ 改自命令行") {
-		t.Fatalf("状态栏没更新：%s", bar)
+	if head := stripANSI(m.renderTabStrip(140)); !strings.Contains(head, "改自命令行") {
+		t.Fatalf("顶部标题栏没更新：%s", head)
 	}
 }
 

@@ -190,9 +190,37 @@ func (m *Model) noteBackgroundEvent(env protocol.Envelope) tea.Cmd {
 
 // renderTabStrip 画出标签行。只有一条会话时不画——单会话没有「切换」可言，
 // 多一行只会挤掉内容。
-func (m *Model) renderTabStrip(width int) string {
-	if len(m.tabs) < 2 {
+// renderSingleTabHeader 画单会话时的顶部标题栏。
+//
+// 用「▤ 标题」而不是「[1 标题]」：它此刻不是可选中的标签，而是「你在哪个
+// 会话里」的常驻读数。状态标记照旧跟在后面，待审批/运行中一眼可见。
+func (m *Model) renderSingleTabHeader(width int) string {
+	t := m.currentTab()
+	if t == nil {
 		return ""
+	}
+	title := t.Title
+	if title == "" {
+		title = "(未命名)"
+	}
+	line := m.styler.paint(styleMuted, "▤ ") + m.styler.paint(styleAccent, truncateDisplay(title, 32))
+	if marker := strings.TrimSpace(tabMarker(t)); marker != "" {
+		line += " " + m.styler.paint(styleWarn, marker)
+	}
+	if displayWidth(line) > width {
+		line = truncateDisplay(line, width)
+	}
+	return line
+}
+
+func (m *Model) renderTabStrip(width int) string {
+	if len(m.tabs) == 0 {
+		return ""
+	}
+	// 只有一条会话时也占一行，但画成标题栏而不是标签：历史滚过一屏后，
+	// 对话区顶部那条「已进入会话：…」会随之滚走，标题就再也看不到了。
+	if len(m.tabs) == 1 {
+		return m.renderSingleTabHeader(width)
 	}
 	labels := make([]string, len(m.tabs))
 	current := 0
