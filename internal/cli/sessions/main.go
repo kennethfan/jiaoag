@@ -29,6 +29,7 @@ import (
 	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
+	"github.com/kennethfan/jiaoag/internal/store"
 )
 
 func Main() {
@@ -62,12 +63,14 @@ func Main() {
 	var (
 		all       *bool
 		workspace *string
+		dbPath    *string
 		format    *string
 	)
 	switch command {
 	case "list":
 		all = fs.Bool("all", false, "跨工作区列出全部会话")
 		workspace = fs.String("workspace", "", "按目录筛选（默认当前目录）")
+		dbPath = fs.String("db", "", "直接读取的数据库路径（默认取配置的 storage.db_path）")
 		format = fs.String("format", "text", "输出格式：text | json")
 	case "rm", "rename":
 	default:
@@ -95,6 +98,24 @@ func Main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	// 只读列表默认直接读 SQLite：不需要服务端在跑，也不需要令牌。
+	// 显式给了 -url 才走 WS（远程/跨机场景），写操作（rename/rm）仍走 WS。
+	if command == "list" && strings.TrimSpace(*urlFlag) == "" {
+		dir := *workspace
+		if dir == "" && !*all {
+			dir, err = os.Getwd()
+			if err != nil {
+				fatal(err)
+			}
+		}
+		summaries, err := listDirect(ctx, opts.cfg, *dbPath, dir, *all)
+		if err != nil {
+			fatal(err)
+		}
+		printSummaries(summaries, *format)
+		return
+	}
 
 	// 一个只会看数据的命令不该要求先手工起服务端：本地连不上就拉一个，
 	// 命令结束后服务端按自己的空闲倒计时退出。
@@ -374,6 +395,85 @@ func dial(ctx context.Context, opts options) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("发送 client.hello 失败: %w", err)
 	}
 	return conn, nil
+}
+
+// listDirect 直接读数据库，不经过服务端。
+//
+// 只读命令没有「必须有人在跑」的理由：少一次进程拉起、少一个令牌依赖，
+// 而且在服务端没起来时也能看。写操作仍走 WS，因为它们还牵涉运行中的任务。
+func listDirect(ctx context.Context, cfg *config.Config, dbFlag, workspace string, all bool) ([]protocol.SessionSummaryPayload, error) {
+	path := strings.TrimSpace(dbFlag)
+	if path == "" {
+		path = cfg.Storage.DBPath
+	} else {
+		expanded, err := config.ExpandHome(path)
+		if err != nil {
+			return nil, err
+		}
+		path = expanded
+	}
+	db, err := store.OpenReadOnly(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	raw, err := db.ListSessionSummaries(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	dir := ""
+	if workspace != "" {
+		dir = canonicalPath(workspace)
+	}
+	out := make([]protocol.SessionSummaryPayload, 0, len(raw))
+	for _, s := range raw {
+		if !all && dir != "" && canonicalPath(s.Workspace) != dir {
+			continue
+		}
+		out = append(out, protocol.SessionSummaryPayload{
+			ID:               string(s.ID),
+			Title:            s.Title,
+			Workspace:        s.Workspace,
+			Provider:         s.Provider,
+			Model:            s.Model,
+			Tasks:            s.Tasks,
+			ActiveTasks:      s.ActiveTasks,
+			PromptTokens:     s.PromptTokens,
+			CompletionTokens: s.CompletionTokens,
+			CreatedAt:        s.CreatedAt.UnixMilli(),
+			UpdatedAt:        s.UpdatedAt.UnixMilli(),
+		})
+	}
+	return out, nil
+}
+
+// canonicalPath 让「软链目录」与「真实目录」能比较相等：macOS 上
+// /tmp 与 /private/tmp 是同一处，字符串直接比会对不上。
+func canonicalPath(path string) string {
+	clean, err := filepath.Abs(path)
+	if err != nil {
+		clean = filepath.Clean(path)
+	}
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		return real
+	}
+	return clean
+}
+
+func printSummaries(summaries []protocol.SessionSummaryPayload, format string) {
+	if format == "json" {
+		out, err := json.MarshalIndent(summaries, "", "  ")
+		if err != nil {
+			fatal(err)
+		}
+		fmt.Println(string(out))
+		return
+	}
+	if format != "text" {
+		fatal(fmt.Errorf("未知输出格式 %q（text | json）", format))
+	}
+	printTable(summaries)
 }
 
 func list(ctx context.Context, conn *websocket.Conn, workspace string, all bool) ([]protocol.SessionSummaryPayload, error) {

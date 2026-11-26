@@ -171,3 +171,59 @@ func TestRemoveRefusesBusySession(t *testing.T) {
 		t.Fatalf("忙会话应拒绝删除，得到 %v", err)
 	}
 }
+
+// TestListDirectFiltersWorkspace 验证只读直连：不经过服务端，按工作区筛选
+// 且字段映射正确（时间是毫秒）。
+func TestListDirectFiltersWorkspace(t *testing.T) {
+	ctx := context.Background()
+	dbPath := t.TempDir() + "/jiaoag.db"
+	db, err := store.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	dirA, dirB := t.TempDir(), t.TempDir()
+	for _, s := range []domain.Session{
+		{ID: "ses_direct_a1", Workspace: dirA, Title: "甲"},
+		{ID: "ses_direct_a2", Workspace: dirA, Title: "乙"},
+		{ID: "ses_direct_b1", Workspace: dirB, Title: "别处"},
+	} {
+		sess := s
+		ev, err := domain.NewEvent(domain.EventSessionCreated, sess.ID, "", domain.SessionCreatedPayload{
+			Workspace: sess.Workspace, Title: sess.Title,
+		})
+		if err != nil {
+			t.Fatalf("构造事件: %v", err)
+		}
+		if _, err := db.CreateSession(ctx, sess, []domain.Event{ev}); err != nil {
+			t.Fatalf("创建会话: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("关闭数据库: %v", err)
+	}
+
+	cfg := &config.Config{Storage: config.Storage{DBPath: dbPath}}
+	got, err := listDirect(ctx, cfg, "", dirA, false)
+	if err != nil {
+		t.Fatalf("listDirect: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("dirA 应有 2 条会话，得到 %d 条: %+v", len(got), got)
+	}
+	for _, s := range got {
+		if s.Workspace != dirA {
+			t.Fatalf("混进了别的工作区: %+v", s)
+		}
+		if s.CreatedAt <= 0 || s.UpdatedAt <= 0 {
+			t.Fatalf("时间应为毫秒时间戳: %+v", s)
+		}
+	}
+
+	all, err := listDirect(ctx, cfg, "", "", true)
+	if err != nil {
+		t.Fatalf("listDirect all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("全部应有 3 条会话，得到 %d 条", len(all))
+	}
+}

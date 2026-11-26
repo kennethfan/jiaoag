@@ -240,7 +240,8 @@ workspace:memory    MEMORY.md（≤8 KB）
 
 ## 11. 可观测与运维
 
-- `jiaoag events`：只读 WS 导出事件与审计（JSONL），`--until-now` 做快照。
+- `jiaoag events`：默认用 `mode=ro` 直接读库（`-db` 可换路径，250ms 轮询做实时），`--until-now` 做快照；显式 `-url` 时才走 WS。
+- `jiaoag sessions list`：同样直连只读库；`rename`/`rm` 等写操作仍走 WS 或内嵌运行时。
 - `jiaoag sessions`：列会话、改名、删除（走 WS，不在跑时自动拉起 serve）。
 - `jiaoag config`：`path/show/check/edit/set`，show 标来源并脱敏，set 只改目标片段并备份。
 - `jiaoag policy test -- argv` / `--shell`：解释某条命令为什么被放行或要求审批。

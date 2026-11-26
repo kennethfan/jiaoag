@@ -59,19 +59,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		}
 	}
 
-	// Windows 的盘符（C:\…）在 file URI 里必须写成 file:///C:/…：直接把
-	// Path 设成 "C:\…" 会得到 file:C:%5C…，被 SQLite 当成非法 authority。
-	// Unix 路径已经是绝对路径（以 / 开头），转换后行为不变。
-	slash := filepath.ToSlash(abs)
-	if !strings.HasPrefix(slash, "/") {
-		slash = "/" + slash
-	}
-
-	dsn := (&url.URL{
-		Scheme:   "file",
-		Path:     slash,
-		RawQuery: "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate",
-	}).String()
+	dsn := sqliteDSN(abs, "_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate")
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -154,6 +142,24 @@ func retryBusy(ctx context.Context, fn func(context.Context) error) error {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+// sqliteDSN 生成 file URI 形式的 DSN。extra 是额外查询串（不含前导 &，
+// 可为空），基础 pragma 固定为 busy_timeout 与 foreign_keys。
+//
+// Windows 的盘符（C:\…）在 file URI 里必须写成 file:///C:/…：直接把
+// Path 设成 "C:\…" 会得到 file:C:%5C…，被 SQLite 当成非法 authority。
+// Unix 路径已经是绝对路径（以 / 开头），转换后行为不变。
+func sqliteDSN(abs, extra string) string {
+	slash := filepath.ToSlash(abs)
+	if !strings.HasPrefix(slash, "/") {
+		slash = "/" + slash
+	}
+	query := "_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	if extra != "" {
+		query += "&" + extra
+	}
+	return (&url.URL{Scheme: "file", Path: slash, RawQuery: query}).String()
 }
 
 func (s *Store) migrate(ctx context.Context) error {

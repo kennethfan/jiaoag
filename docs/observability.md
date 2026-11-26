@@ -10,6 +10,17 @@
 
 ## 用法
 
+### 直接读库（默认，不需要服务端）
+
+不给 `-url` 时 `jiaoag events` 用只读方式打开 `storage.db_path`（`-db` 可覆盖），不需要服务端、不需要令牌：
+
+```bash
+jiaoag events -s ses_xxx -from 0 --until-now > events.jsonl
+jiaoag events -db /backup/jiaoag.db -s ses_xxx --until-now -format text
+```
+
+实时部分用 250ms 轮询 `events` / `audit` 表实现（与跨运行时订阅同一节奏）。库不存在、未初始化或结构版本落后时会直接报错并提示先启动一次 `jiaoag`——只读命令不会替你建库或迁移。只有显式给 `-url` 时才走 WS（见下文）。
+
 ```bash
 # 跟最近的会话 tail（Ctrl+C 退出）；默认只看新事件、新审计
 ./bin/jiaoag events -config ~/.config/jiaoag/config.yaml

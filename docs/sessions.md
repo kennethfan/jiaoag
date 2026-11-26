@@ -79,9 +79,10 @@
 `/sessions` 要在某个会话里才打不开——命令行工具没有会话上下文，所以它给出两种取工作区的方式：
 
 ```bash
-jiaoag sessions list                    # 按当前目录筛（先绝对化再比对）
+jiaoag sessions list                    # 直接读库，按当前目录筛（先绝对化再比对）
 jiaoag sessions list -workspace ~/code/api
 jiaoag sessions list -all               # 跨工作区全列（列表始终带工作区列）
+jiaoag sessions list -db /backup/jiaoag.db -all   # 读指定的库文件
 jiaoag sessions list -format json       # 给脚本用
 jiaoag sessions rename ses_8d64 修登录超时
 jiaoag sessions rm ses_8d64 -yes

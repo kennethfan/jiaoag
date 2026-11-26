@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +28,7 @@ import (
 	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
+	"github.com/kennethfan/jiaoag/internal/store"
 )
 
 func Main() {
@@ -45,6 +45,7 @@ func Main() {
 		insecure  = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 		noSpawn   = flag.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
 		serverBin = flag.String("server-bin", "", "拉起服务端用的可执行文件（默认就是自己）")
+		dbPath    = flag.String("db", "", "不走服务端，直接读这个数据库文件（只读）")
 	)
 	flag.StringVar(&sessionID, "s", "", "会话 id（默认取最近活跃的会话）")
 	flag.StringVar(&sessionID, "session", "", "同 -s（保留旧写法）")
@@ -62,32 +63,53 @@ func Main() {
 	if err != nil {
 		fatal(err)
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// 只看事件的命令不需要服务端：库是唯一的真相，直连读比走 WS 少一层
+	// （不用 token、不用拉起进程，还能在服务端没跑的时候导出）。
+	if strings.TrimSpace(*url) == "" {
+		path := *dbPath
+		if path == "" {
+			path = cfg.Storage.DBPath
+		}
+		expanded, err := config.ExpandHome(path)
+		if err != nil {
+			fatal(err)
+		}
+		db, err := store.OpenReadOnly(ctx, expanded)
+		if err != nil {
+			fatal(err)
+		}
+		defer db.Close()
+		opts := options{
+			sessionID: sessionID,
+			from:      *from, auditFrom: *auditFrom,
+			format: *format, untilNow: *untilNow, interval: *interval,
+		}
+		if err := runLocal(ctx, db, expanded, opts); err != nil {
+			fatal(err)
+		}
+		return
+	}
+
 	if err := cfg.ValidateClient(); err != nil {
 		fatal(err)
 	}
 	if *token == "" {
-		secret, err := cfg.Server.ClientToken()
+		resolved, err := cfg.Server.ClientToken()
 		if err != nil {
 			fatal(err)
 		}
-		resolved, err := secret.Resolve()
+		value, err := resolved.Resolve()
 		if err != nil {
 			fatal(fmt.Errorf("解析 server.token 失败: %w", err))
 		}
-		*token = resolved
+		*token = value
 	}
 
 	target := *url
-	if target == "" {
-		scheme := "ws"
-		if cfg.Server.TLSEnabled() {
-			scheme = "wss"
-		}
-		target = scheme + "://" + dialableAddr(cfg.Server.Listen) + "/ws"
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// 只读导出同样不该要求先手工起服务端：本地连不上就拉一个，
 	// 命令结束后服务端按自己的空闲倒计时退出。
@@ -377,18 +399,6 @@ func insecureHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}}
-}
-
-// dialableAddr 与 TUI 一致：0.0.0.0 / 空主机名落到回环。
-func dialableAddr(listen string) string {
-	host, port, err := net.SplitHostPort(listen)
-	if err != nil {
-		return listen
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	return strings.TrimSpace(net.JoinHostPort(host, port))
 }
 
 func fatal(err error) {
