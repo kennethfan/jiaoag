@@ -1,4 +1,4 @@
-package serve
+package boot
 
 import (
 	"testing"
@@ -6,6 +6,8 @@ import (
 	"github.com/kennethfan/jiaoag/internal/config"
 )
 
+// mcpServers 把配置翻译成 MCP 管理器要的形态：禁用项跳过、trust 只在
+// 显式 allow 时为真。这条翻译错了会让「ask」变成免审，所以单独锁住。
 func TestMcpServersTrustMapping(t *testing.T) {
 	disabled := false
 	cfg := &config.Config{MCP: config.MCP{Servers: []config.MCPServer{

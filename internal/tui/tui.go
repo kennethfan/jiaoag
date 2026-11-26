@@ -45,11 +45,14 @@ type Options struct {
 	Inline bool
 	// Mouse 打开鼠标滚轮滚动（会占用终端原生选中，需要 shift 才复制）。
 	Mouse bool
+	// Local 非空时使用进程内传输：TUI 自己持有运行时，不连端口、不要令牌。
+	// 返回错误就退回 Options.URL 的 WebSocket 路径（已有 serve 在跑时）。
+	Local func() (Transport, protocol.HelloPayload, error)
 }
 
 type (
 	connectedMsg struct {
-		conn  *websocket.Conn
+		conn  Transport
 		hello protocol.HelloPayload
 	}
 	connectErrMsg struct{ err error }
@@ -62,7 +65,7 @@ type (
 // Model 是 bubbletea 的顶层模型。
 type Model struct {
 	opts   Options
-	conn   *websocket.Conn
+	conn   Transport
 	status string
 
 	sessionID string
@@ -72,6 +75,10 @@ type Model struct {
 	// lastSeq 是本地已收到的最后一条持久事件序号。首次连接为 0（全量回放），
 	// 断线重连从它之后增量回放；临时流式帧 seq=0，不推进它。
 	lastSeq int64
+	// quitArmed 表示「退出已确认过一次」：忙时按 ctrl+c 只提示，不直接退。
+	quitArmed bool
+	// quitting 表示用户已经决定退出：此后关闭传输导致的读错误不是断线。
+	quitting bool
 	// runTaskID 是正在执行（或等审批）的任务，esc 只取消它。提交排队任务时
 	// 服务端回执里的 id 不能覆盖它，否则 esc 会取消错误的任务。
 	runTaskID string
@@ -242,6 +249,13 @@ func (m *Model) Init() tea.Cmd { return m.connectCmd() }
 func (m *Model) connectCmd() tea.Cmd {
 	opts := m.opts
 	return func() tea.Msg {
+		if opts.Local != nil {
+			conn, hello, err := opts.Local()
+			if err != nil {
+				return connectErrMsg{err}
+			}
+			return connectedMsg{conn: conn, hello: hello}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		conn, hello, err := Dial(ctx, opts)
@@ -261,7 +275,7 @@ func insecureHTTPClient() *http.Client {
 }
 
 // Dial 建立连接并完成握手。
-func Dial(ctx context.Context, opts Options) (*websocket.Conn, protocol.HelloPayload, error) {
+func Dial(ctx context.Context, opts Options) (Transport, protocol.HelloPayload, error) {
 	dialOpts := &websocket.DialOptions{
 		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + opts.Token}},
 	}
@@ -300,10 +314,10 @@ func Dial(ctx context.Context, opts Options) (*websocket.Conn, protocol.HelloPay
 	if err == nil {
 		_ = wsjson.Write(ctx, conn, ch)
 	}
-	return conn, hello, nil
+	return newWSTransport(conn), hello, nil
 }
 
-func waitForEnvelope(conn *websocket.Conn) tea.Cmd {
+func waitForEnvelope(conn Transport) tea.Cmd {
 	return func() tea.Msg {
 		if conn == nil {
 			// 断线后 Model.conn 已经清空，但可能还有一帧在途（旧读协程已经
@@ -311,8 +325,8 @@ func waitForEnvelope(conn *websocket.Conn) tea.Cmd {
 			// nil 连接上解引用并把整个 TUI 打崩。
 			return closedMsg{err: errors.New("未连接到服务端")}
 		}
-		var env protocol.Envelope
-		if err := wsjson.Read(context.Background(), conn, &env); err != nil {
+		env, err := conn.Read()
+		if err != nil {
 			return closedMsg{err}
 		}
 		return envelopeMsg{env}
@@ -320,7 +334,7 @@ func waitForEnvelope(conn *websocket.Conn) tea.Cmd {
 }
 
 // sendCmd 在后台写一帧，避免阻塞 Update。
-func sendCmd(conn *websocket.Conn, typ string, payload any) tea.Cmd {
+func sendCmd(conn Transport, typ string, payload any) tea.Cmd {
 	return func() tea.Msg {
 		env, err := protocol.New(typ, payload)
 		if err != nil {
@@ -331,9 +345,7 @@ func sendCmd(conn *websocket.Conn, typ string, payload any) tea.Cmd {
 		if conn == nil {
 			return closedMsg{err: errors.New("未连接到服务端")}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := wsjson.Write(ctx, conn, env); err != nil {
+		if err := conn.Send(env); err != nil {
 			return closedMsg{err}
 		}
 		return nil
@@ -509,6 +521,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 连接已死，留着指针只会让后续 sendCmd 往一条废连接上写。
 		m.conn = nil
 		m.skillFetching = false
+		if m.quitting {
+			// 主动退出时关闭传输会让在途读立刻返回错误：这不是断线，
+			// 不能再往对话里写一行「连接断开」吓人。
+			return m, nil
+		}
 		m.status = "连接已断开（ctrl+r 重连 / ctrl+c 退出）"
 		m.appendLine("连接断开：" + errText(msg.err))
 		return m, nil
@@ -552,10 +569,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.Keystroke()
-	// ctrl+c 永远退出：审批面板也不能把用户困在界面里。
+	// ctrl+c 是退出入口：审批面板也不能把用户困在界面里。但正在跑任务时
+	// 先确认一次——内嵌模式下退出等于关掉整个运行时，不能靠手滑承担。
 	if key == "ctrl+c" {
-		m.close()
-		return m, tea.Quit
+		return m.requestQuit()
 	}
 	// ctrl+f 切全屏：全屏时状态栏才真正钉在终端底行，代价是退出后没有
 	// scrollback。属于显示偏好，任何面板打开时都可以切。
@@ -690,8 +707,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// /exit 与 ctrl+c 等价：断线或没会话时也得能走，所以放在会话检查之前。
 		if text == "/exit" || text == "/quit" {
 			m.input = ""
-			m.close()
-			return m, tea.Quit
+			return m.requestQuit()
 		}
 		if m.sessionID == "" {
 			// 静默丢弃最让人困惑：至少说一句「还没连上」，输入保留方便重试。
@@ -1859,7 +1875,7 @@ func (m *Model) helpRows() [][2]string {
 		{"v", "审批时逐块选择"},
 		{"tab", "审批时切换三个按钮"},
 		{"/exit", "退出（等同 ctrl+c）"},
-		{"ctrl+c", "退出"},
+		{"ctrl+c", "退出（有任务时确认一次）"},
 	}
 }
 
@@ -2419,9 +2435,35 @@ func (m *Model) close() {
 		m.local = nil
 	}
 	if m.conn != nil {
-		_ = m.conn.Close(websocket.StatusNormalClosure, "bye")
+		_ = m.conn.Close()
 		m.conn = nil
 	}
+}
+
+// requestQuit 处理退出：有活儿在跑就先问一次，第二次才真的退。
+//
+// 「有活儿」包括执行中/等待审批的任务、队列里的任务、以及本机 !命令。
+// 内嵌模式下这句确认是唯一的刹车：退出会关掉运行时并取消这些任务。
+func (m *Model) requestQuit() (tea.Model, tea.Cmd) {
+	if m.busy() && !m.quitArmed {
+		m.quitArmed = true
+		m.appendLine("⚠ 还有任务在执行：再按一次 ctrl+c 退出，会取消任务并停止后台进程")
+		return m, nil
+	}
+	m.quitting = true
+	m.close()
+	return m, tea.Quit
+}
+
+func (m *Model) busy() bool {
+	if m.runTaskID != "" || m.local != nil || len(m.queue) > 0 {
+		return true
+	}
+	switch m.taskStatus {
+	case string(domain.TaskRunning), string(domain.TaskWaitingApproval), string(domain.TaskQueued):
+		return true
+	}
+	return false
 }
 
 func (m *Model) appendLine(line string) {

@@ -8,7 +8,7 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）。架构 v3 的契约/传输分层见 `docs/design/architecture-v3.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 
@@ -51,11 +51,13 @@ cd ~/agent/code/some-project
 /Users/kenneth/agent/code/jiaoag/bin/jiaoag        # 裸跑就是 TUI
 ```
 
-TUI 连不上本地服务端时会用自己这个二进制拉起 `serve` 子命令（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。拉起时会给服务端传 `-exit-when-idle=30s`：最后一个客户端断开后 30 秒内没有新连接、也没有排队或运行中的任务，服务端自行优雅退出。所以多开 TUI 时，某一个退出不会踢掉其他人；如果已有服务端在跑则直接复用，也不会误杀。
+默认**不经过网络**：TUI 在自己进程里直接持有运行时（会话、任务、工具执行都在同一个进程），不开端口、不需要令牌、不连 WebSocket。数据目录同一时刻只允许一个运行时——用的是 `<db 所在目录>/runtime.lock` 的文件锁：拿到锁就内嵌，拿不到且发现 `jiaoag serve` 在监听就降级成它的客户端；既拿不到锁、又没人在监听，就报「已有一个 jiaoag 在运行并占用数据目录」并退出。第二个 TUI、或者 TUI 内嵌时再起 `jiaoag serve`，都会撞到这个锁。
+
+需要多客户端、浏览器或远程访问时，先起 `jiaoag serve`（日志写到系统缓存目录下的 `jiaoag/server.log`：macOS 是 `~/Library/Caches/jiaoag/server.log`，Linux 是 `~/.cache/jiaoag/server.log`）。TUI 发现数据目录被它占用后会直接连上去，行为和以前一样。没有任何运行时在跑时开 TUI，才会用自己这个二进制拉起 `serve`（带 `-exit-when-idle=30s`，最后一个客户端断开后自行退出）——这条兜底路径只在 `-url` 指向远端或 `-no-spawn` 时才有意义。
 
 - 不带参数打开时，**本目录的会话会全部恢复成标签**，并接到最近更新的那条上（没有会话才新建）；想另开一条新会话用 `/new`。`-s <id>` 直接指定要接的会话。
 - `-s <id>`：回到指定会话（历史与工具调用会从事件回放）；`-session` 是同一参数的旧写法。
-- `-no-spawn`：不自动拉起，连不上就报错（脚本/CI 用）。
+- `-no-spawn`：不内嵌运行时、也不拉起服务端，只连已有的 `serve`（脚本/CI 用）。
 - `-server-bin`：覆盖拉起服务端用的可执行文件（默认就是自己，按 `<bin> serve` 调用）。
 - `-insecure`：跳过 TLS 证书校验，只用于自签证书（见下）。
 - `-url` 指向远端地址时不会拉起本地进程。
@@ -268,6 +270,7 @@ make demo-mcp
 | v2.43 | 配置子命令：`config path/show/check/set/edit` 与 `policy test`；show 报来源并脱敏，set 只改目标片段、默认 dry-run、写前备份写后校验回滚（ADR-0046） | ✅ |
 | v2.44 | 斜杠命令补全：输入 `/` 列出命令并按前缀过滤，`tab` 补全、打全后 `enter` 才执行，浮层计入全屏高度预算（ADR-0047） | ✅ |
 | v2.45 | 仅手动技能变成斜杠命令：`/技能名 问题` 一步提交，会话建立后拉取 `skill.list` 进补全（ADR-0024 修订） | ✅ |
+| v2.46 | 契约与传输分离：`internal/rpc` 一份契约，TUI 默认进程内直接调用（无端口/令牌/WS），数据目录用 flock 保证单一运行时（ADR-0048） | ✅ |
 
 ## 安全边界
 

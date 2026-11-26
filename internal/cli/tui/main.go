@@ -3,21 +3,27 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/coder/websocket/wsjson"
 
+	"github.com/kennethfan/jiaoag/internal/boot"
 	helppkg "github.com/kennethfan/jiaoag/internal/cli/help"
 	launchpkg "github.com/kennethfan/jiaoag/internal/cli/launch"
 	"github.com/kennethfan/jiaoag/internal/config"
 	"github.com/kennethfan/jiaoag/internal/protocol"
+	"github.com/kennethfan/jiaoag/internal/rpc"
 	tuipkg "github.com/kennethfan/jiaoag/internal/tui"
+	"github.com/kennethfan/jiaoag/internal/version"
 )
 
 func Main() {
@@ -26,7 +32,7 @@ func Main() {
 		url      = flag.String("url", "", "服务端 WS 地址（默认由 server.listen 推导）")
 		check    = flag.Bool("check", false, "只做一次连接与心跳验证后退出（用于自检/脚本）")
 		sesID    string
-		noSpawn  = flag.Bool("no-spawn", false, "连不上时也不自动拉起本地服务端")
+		noSpawn  = flag.Bool("no-spawn", false, "不内嵌运行时、也不拉起服务端：只连已有的 jiaoag serve")
 		srvBin   = flag.String("server-bin", "", "jiaoag serve 路径（默认同目录或 PATH）")
 		insecure = flag.Bool("insecure", false, "跳过 TLS 证书校验（仅用于自签证书）")
 		inline   = flag.Bool("inline", false, "不用全屏：保留终端 scrollback，状态栏跟在内容末尾")
@@ -77,8 +83,41 @@ func Main() {
 		return
 	}
 
-	// 本地没有服务端时自动拉起一个，退出时再收掉；远端地址与 -no-spawn 不碰进程。
-	if !*noSpawn {
+	// 本机且没指定 -url：TUI 直接持有运行时，不经过端口、令牌与 WebSocket。
+	// 但配置的地址上已经有人在监听时，一律当客户端——那可能是新版本的 serve
+	// （它持有运行时锁），也可能是升级前就在跑的旧进程（它不持有锁）。后者
+	// 如果我们照常内嵌，两个运行时就会同时写同一个库。
+	var stack *boot.Stack
+	if *url == "" && !*noSpawn && !serverReachable(target) {
+		st, err := boot.Open(context.Background(), boot.Options{
+			CfgPath: *cfgPath,
+			Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+		switch {
+		case err == nil:
+			stack = st
+			defer stack.Close()
+			opts.Local = func() (tuipkg.Transport, protocol.HelloPayload, error) {
+				return tuipkg.NewLocalTransport(stack.Core, stack.Streams, rpc.Owner()), protocol.HelloPayload{
+					ServerVersion:   version.Version,
+					ProtocolVersion: protocol.Version,
+					StartedAt:       time.Now().UnixMilli(),
+					Listen:          "embedded",
+				}, nil
+			}
+		case errors.Is(err, boot.ErrLocked):
+			// 锁被占着但端口没人监听：说明占用者是一个内嵌 TUI，
+			// 它不提供端口，第二个客户端没有入口。
+			fatal(fmt.Errorf("已有一个 jiaoag 在运行并占用数据目录，但它没有监听 %s。"+
+				"\n先退出那个实例，或用 -url 指定要连接的服务端", target))
+		default:
+			fatal(err)
+		}
+	}
+
+	// 没有内嵌运行时（-url / -no-spawn / 数据目录被占用）时，本地没有 serve
+	// 才拉起一个；退出后它按空闲时间自行退出。
+	if stack == nil && !*noSpawn {
 		cleanup, err := launchpkg.Ensure(context.Background(), cfg, *cfgPath, *srvBin, target)
 		if err != nil {
 			fatal(err)
@@ -100,18 +139,18 @@ func runCheck(opts tuipkg.Options) {
 	if err != nil {
 		fatal(err)
 	}
-	defer conn.CloseNow()
+	defer conn.Close()
 
 	ping, err := protocol.New(protocol.TypePing, nil)
 	if err != nil {
 		fatal(err)
 	}
-	if err := wsjson.Write(ctx, conn, ping); err != nil {
+	if err := conn.Send(ping); err != nil {
 		fatal(fmt.Errorf("发送 ping 失败: %w", err))
 	}
 
-	var env protocol.Envelope
-	if err := wsjson.Read(ctx, conn, &env); err != nil {
+	env, err := conn.Read()
+	if err != nil {
 		fatal(fmt.Errorf("读取回帧失败: %w", err))
 	}
 	if env.Type != protocol.TypePong {
@@ -120,6 +159,29 @@ func runCheck(opts tuipkg.Options) {
 		fatal(fmt.Errorf("期望 pong，收到 %s %s", env.Type, p.Message))
 	}
 	fmt.Printf("ok: 服务端 %s，协议 v%d，双向链路正常\n", hello.ServerVersion, hello.ProtocolVersion)
+}
+
+// serverReachable 只看端口是否有人接：错了协议、错了应用都不影响这个判断，
+// 它只用来区分「别的实例在跑 serve」与「别的实例是内嵌 TUI」。
+func serverReachable(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "wss" {
+			host = net.JoinHostPort(u.Hostname(), "443")
+		} else {
+			host = net.JoinHostPort(u.Hostname(), "80")
+		}
+	}
+	conn, err := net.DialTimeout("tcp", host, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // dialableAddr 把监听地址换成客户端可连的地址：0.0.0.0 与空主机名都落到回环。
@@ -171,13 +233,15 @@ func (r rootList) payloads() ([]protocol.SessionRootPayload, error) {
 // tuiHelp 说明界面入口与「连不上就自己起服务端」的行为。
 func tuiHelp(fs *flag.FlagSet) helppkg.Spec {
 	return helppkg.Spec{
-		Summary: "jiaoag tui 打开终端界面；本机连不上服务端时会自动拉起一个 jiaoag serve。",
-		Usage:   []string{"jiaoag tui [-s <会话 id>] [其他标志]"},
-		Flags:   fs,
+		Summary: "jiaoag tui 打开终端界面。默认在本进程内直接持有运行时（不开端口、不需要令牌）；" +
+			"数据目录已被 jiaoag serve 占用时自动降级为 WS 客户端。",
+		Usage: []string{"jiaoag tui [-s <会话 id>] [其他标志]"},
+		Flags: fs,
 		Examples: []string{
-			"jiaoag tui",
-			"jiaoag tui               # 打开本目录的会话（多条会全部开成标签）",
-			"jiaoag tui -s ses_3f2a19c4",
+			"jiaoag tui                  # 内嵌运行时；已有一条 serve 时连它",
+			"jiaoag tui -s ses_3f2a19c4  # 恢复指定会话",
+			"jiaoag tui -no-spawn        # 只当客户端，不内嵌也不拉起",
+			"jiaoag tui -url ws://host:8788/ws   # 连远程服务端",
 		},
 	}
 }

@@ -1,14 +1,12 @@
 package tui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/coder/websocket/wsjson"
 
 	"github.com/kennethfan/jiaoag/internal/protocol"
 )
@@ -147,14 +145,12 @@ func (m *Model) switchSessionCmd(oldID string, sub protocol.EventSubscribePayloa
 		if conn == nil {
 			return closedMsg{err: errors.New("未连接到服务端")}
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		if oldID != "" {
 			env, err := protocol.New(protocol.TypeEventUnsubscribe, protocol.EventUnsubscribePayload{SessionID: oldID})
 			if err != nil {
 				return connectErrMsg{err: err}
 			}
-			if err := wsjson.Write(ctx, conn, env); err != nil {
+			if err := conn.Send(env); err != nil {
 				return closedMsg{err: err}
 			}
 		}
@@ -162,7 +158,7 @@ func (m *Model) switchSessionCmd(oldID string, sub protocol.EventSubscribePayloa
 		if err != nil {
 			return connectErrMsg{err: err}
 		}
-		if err := wsjson.Write(ctx, conn, env); err != nil {
+		if err := conn.Send(env); err != nil {
 			return closedMsg{err: err}
 		}
 		if catalog != nil {
@@ -170,7 +166,7 @@ func (m *Model) switchSessionCmd(oldID string, sub protocol.EventSubscribePayloa
 			if err != nil {
 				return connectErrMsg{err: err}
 			}
-			if err := wsjson.Write(ctx, conn, env); err != nil {
+			if err := conn.Send(env); err != nil {
 				return closedMsg{err: err}
 			}
 		}

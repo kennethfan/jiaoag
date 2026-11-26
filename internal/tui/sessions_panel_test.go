@@ -356,6 +356,7 @@ func TestSessionHeadlineTracksRename(t *testing.T) {
 
 func TestExitCommandQuits(t *testing.T) {
 	m := newModel(t)
+	m.taskStatus = ""
 	m.input = "/exit"
 
 	_, cmd := m.handleKey(keyMsg("enter"))
@@ -373,6 +374,7 @@ func TestExitCommandQuits(t *testing.T) {
 func TestExitCommandWorksWithoutSession(t *testing.T) {
 	m := newModel(t)
 	m.sessionID = ""
+	m.taskStatus = ""
 	m.input = "/quit"
 
 	_, cmd := m.handleKey(keyMsg("enter"))
@@ -381,5 +383,30 @@ func TestExitCommandWorksWithoutSession(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatalf("/quit 应触发退出，实际 %T", cmd())
+	}
+}
+
+// 有任务在跑时退出要先确认：内嵌模式下退出等于关掉运行时并取消任务。
+func TestExitCommandAsksBeforeQuittingBusySession(t *testing.T) {
+	m := newModel(t)
+	m.sessionID = "ses_1"
+	m.taskStatus = string(domain.TaskRunning)
+	m.input = "/exit"
+
+	_, cmd := m.handleKey(keyMsg("enter"))
+	if cmd != nil {
+		t.Fatalf("忙时第一次 /exit 不该直接退出，cmd=%T", cmd())
+	}
+	if !strings.Contains(strings.Join(m.dialog, "\n"), "再按一次") {
+		t.Fatalf("应提示确认：%v", m.dialog)
+	}
+
+	m.input = "/exit"
+	_, cmd = m.handleKey(keyMsg("enter"))
+	if cmd == nil {
+		t.Fatal("第二次 /exit 应真正退出")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("第二次 /exit 应触发退出，实际 %T", cmd())
 	}
 }
