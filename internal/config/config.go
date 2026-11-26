@@ -171,9 +171,12 @@ type Webhook struct {
 	// 来源；不配也能用，只是接收方无法区分是不是伪造的请求。
 	Secret Secret `yaml:"secret"`
 	// Events 取 approval / completed / failed / canceled，留空表示全部。
-	Events         []string `yaml:"events"`
-	TimeoutSeconds int      `yaml:"timeout_s"`
-	Enabled        *bool    `yaml:"enabled"`
+	Events []string `yaml:"events"`
+	// MinSeverity 取 critical / info（默认 info）。critical 只收需要人动手的
+	// 那部分：审批与失败；完成与取消不再打扰。
+	MinSeverity    string `yaml:"min_severity"`
+	TimeoutSeconds int    `yaml:"timeout_s"`
+	Enabled        *bool  `yaml:"enabled"`
 }
 
 // IsEnabled 报告该端点是否启用（未配置视为启用）。
@@ -832,6 +835,9 @@ func (c *Config) validateNotify() error {
 			if !known[strings.TrimSpace(e)] {
 				return fmt.Errorf("%s.events[%d] 只支持 approval / completed / failed / canceled，当前为 %q", prefix, j, e)
 			}
+		}
+		if v := strings.TrimSpace(w.MinSeverity); v != "" && v != string(notifypkg.SeverityInfo) && v != string(notifypkg.SeverityCritical) {
+			return fmt.Errorf("%s.min_severity 只支持 info / critical，当前为 %q", prefix, w.MinSeverity)
 		}
 		if w.TimeoutSeconds < 1 || w.TimeoutSeconds > 60 {
 			return fmt.Errorf("%s.timeout_s 必须在 1–60 之间，当前为 %d", prefix, w.TimeoutSeconds)

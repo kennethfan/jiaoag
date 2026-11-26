@@ -262,11 +262,12 @@ func notifyHooks(cfg *config.Config, log *slog.Logger) []notifypkg.Hook {
 			events[notifypkg.Kind(strings.TrimSpace(e))] = true
 		}
 		hooks = append(hooks, notifypkg.Hook{
-			Name:    w.Name,
-			URL:     w.URL,
-			Secret:  secret,
-			Events:  events,
-			Timeout: time.Duration(w.TimeoutSeconds) * time.Second,
+			Name:        w.Name,
+			URL:         w.URL,
+			Secret:      secret,
+			Events:      events,
+			MinSeverity: notifypkg.Severity(strings.TrimSpace(w.MinSeverity)),
+			Timeout:     time.Duration(w.TimeoutSeconds) * time.Second,
 		})
 	}
 	return hooks

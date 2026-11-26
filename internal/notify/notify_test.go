@@ -203,3 +203,84 @@ func TestTruncatesLongPrompt(t *testing.T) {
 		t.Fatalf("截断后应有省略号：%q", rec.payloads[0].Prompt)
 	}
 }
+
+func TestMinSeverityFiltersInfoOnly(t *testing.T) {
+	rec := &recorder{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK))
+	defer srv.Close()
+
+	d := notify.New([]notify.Hook{{
+		Name: "phone", URL: srv.URL,
+		MinSeverity: notify.SeverityCritical,
+	}}, quietLogger())
+	d.Observe(mustEvent(t, domain.EventTaskStatus, "ses_1", "tsk_1", domain.TaskStatusPayload{To: domain.TaskCompleted}))
+	d.Observe(mustEvent(t, domain.EventApprovalRequested, "ses_1", "tsk_1", domain.ApprovalRequestedPayload{ApprovalID: "apr_1", Kind: domain.ApprovalDiff}))
+	d.Observe(mustEvent(t, domain.EventTaskStatus, "ses_1", "tsk_2", domain.TaskStatusPayload{To: domain.TaskFailed}))
+	d.Close()
+
+	if got := rec.count(); got != 2 {
+		t.Fatalf("只收 critical 时应有 2 条，实际 %d", got)
+	}
+	if rec.payloads[0].Severity != notify.SeverityCritical || rec.payloads[1].Severity != notify.SeverityCritical {
+		t.Fatalf("收到的都该是 critical：%+v", rec.payloads)
+	}
+}
+
+func TestPayloadCarriesSeverityAndDedupeKey(t *testing.T) {
+	rec := &recorder{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK))
+	defer srv.Close()
+
+	d := notify.New([]notify.Hook{{Name: "ops", URL: srv.URL}}, quietLogger())
+	d.Observe(mustEvent(t, domain.EventApprovalRequested, "ses_1", "tsk_1", domain.ApprovalRequestedPayload{ApprovalID: "apr_9", Kind: domain.ApprovalDiff}))
+	d.Observe(mustEvent(t, domain.EventTaskStatus, "ses_1", "tsk_1", domain.TaskStatusPayload{To: domain.TaskCanceled}))
+	d.Close()
+
+	if got := rec.count(); got != 2 {
+		t.Fatalf("应有 2 条，实际 %d", got)
+	}
+	if rec.payloads[0].DedupeKey != "approval:apr_9" {
+		t.Fatalf("审批去重键不正确：%q", rec.payloads[0].DedupeKey)
+	}
+	if rec.payloads[0].Severity != notify.SeverityCritical {
+		t.Fatalf("审批应为 critical，实际 %q", rec.payloads[0].Severity)
+	}
+	if rec.payloads[1].Severity != notify.SeverityInfo {
+		t.Fatalf("取消应为 info，实际 %q", rec.payloads[1].Severity)
+	}
+	if rec.payloads[1].DedupeKey != "task:tsk_1:canceled" {
+		t.Fatalf("终态去重键不正确：%q", rec.payloads[1].DedupeKey)
+	}
+}
+
+func TestDuplicateApprovalNotifiesOnce(t *testing.T) {
+	rec := &recorder{}
+	srv := httptest.NewServer(rec.handler(http.StatusOK))
+	defer srv.Close()
+
+	p := domain.ApprovalRequestedPayload{ApprovalID: "apr_dup", Kind: domain.ApprovalDiff, Path: "a.txt"}
+	d := notify.New([]notify.Hook{{
+		Name: "ops", URL: srv.URL,
+		// 只留 failed，让这条审批先被端点过滤掉。
+		Events: map[notify.Kind]bool{notify.KindFailed: true},
+	}}, quietLogger())
+	d.Observe(mustEvent(t, domain.EventApprovalRequested, "ses_1", "tsk_1", p))
+	d.Close()
+	if got := rec.count(); got != 0 {
+		t.Fatalf("被过滤掉的通知不该投递，实际 %d", got)
+	}
+
+	// 过滤不占去重名额：换个端点仍能推出同一条审批。
+	rec2 := &recorder{}
+	srv2 := httptest.NewServer(rec2.handler(http.StatusOK))
+	defer srv2.Close()
+	d2 := notify.New([]notify.Hook{{Name: "ops", URL: srv2.URL}}, quietLogger())
+	d2.Observe(mustEvent(t, domain.EventApprovalRequested, "ses_1", "tsk_1", p))
+	d2.Observe(mustEvent(t, domain.EventApprovalRequested, "ses_1", "tsk_1", p))
+	d2.Observe(mustEvent(t, domain.EventApprovalRequested, "ses_1", "tsk_1", domain.ApprovalRequestedPayload{ApprovalID: "apr_other", Kind: domain.ApprovalDiff}))
+	d2.Close()
+
+	if got := rec2.count(); got != 2 {
+		t.Fatalf("同一条审批去重、不同审批照推，应 2 条，实际 %d", got)
+	}
+}

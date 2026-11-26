@@ -40,6 +40,40 @@ func Kinds() []Kind {
 	return []Kind{KindApproval, KindCompleted, KindFailed, KindCanceled}
 }
 
+// Severity 是通知的严重级别，端点可用 min_severity 只收「需要人动手」的那部分。
+//
+// 分级只有两档，因为接收端需要的是一个能直接映射到「响铃 / 静默」的开关：
+// 审批和失败要人动手，完成和取消只是结局通知。
+type Severity string
+
+const (
+	SeverityCritical Severity = "critical"
+	SeverityInfo     Severity = "info"
+)
+
+// Severities 返回全部级别（配置校验与文档共用）。
+func Severities() []Severity {
+	return []Severity{SeverityCritical, SeverityInfo}
+}
+
+// SeverityOf 给出类别对应的级别。
+func SeverityOf(kind Kind) Severity {
+	switch kind {
+	case KindApproval, KindFailed:
+		return SeverityCritical
+	default:
+		return SeverityInfo
+	}
+}
+
+// severityRank 越大越严重；未知级别按 info 处理，宁可多推也不要吞掉。
+func severityRank(s Severity) int {
+	if s == SeverityCritical {
+		return 2
+	}
+	return 1
+}
+
 const (
 	// maxPromptRunes 是载荷里提示词摘要的长度上限。通知要能让人认出是哪个
 	// 任务，但整段提示词不该跟着 webhook 到处跑。
@@ -54,6 +88,13 @@ const (
 
 	// maxTrackedTasks 限制记住提示词的条数，避免长跑进程无限增长。
 	maxTrackedTasks = 512
+
+	// seenTTL 是「这条审批已经推过」的记忆时长。审批 id 本身带随机后缀，
+	// 正常情况下不会重复；这段记忆防的是重投递与多运行时重复观察同一条事件。
+	seenTTL = 6 * time.Hour
+
+	// maxSeen 限制去重表的条数，超出时整体清空（沿用 prompts 的取舍）。
+	maxSeen = 2048
 )
 
 // Hook 是一个 webhook 端点。
@@ -63,21 +104,32 @@ type Hook struct {
 	Secret  string
 	Events  map[Kind]bool
 	Timeout time.Duration
+	// MinSeverity 非空时只推不低于该级别的通知。留空等于 info（全部）。
+	MinSeverity Severity
 }
 
-// Wants 报告该端点是否关心某个类别。Events 为空表示全部。
+// Wants 报告该端点是否关心某个类别：events 是显式白名单，min_severity 是
+// 额外的下限过滤，两者都要满足。
 func (h Hook) Wants(kind Kind) bool {
-	if len(h.Events) == 0 {
-		return true
+	if len(h.Events) > 0 && !h.Events[kind] {
+		return false
 	}
-	return h.Events[kind]
+	min := h.MinSeverity
+	if min == "" {
+		min = SeverityInfo
+	}
+	return severityRank(SeverityOf(kind)) >= severityRank(min)
 }
 
 // Payload 是 POST 的 JSON 体。
 type Payload struct {
-	Event      string `json:"event"`
-	Kind       Kind   `json:"kind"`
-	At         int64  `json:"at"`
+	Event    string   `json:"event"`
+	Kind     Kind     `json:"kind"`
+	Severity Severity `json:"severity"`
+	At       int64    `json:"at"`
+	// DedupeKey 在「同一条通知被投递两次」时保持相同（HTTP 重试、多运行时
+	// 重复观察），接收端可以据此去重。jiaoag 自己只对审批做本地去重。
+	DedupeKey  string `json:"dedupe_key,omitempty"`
 	SessionID  string `json:"session_id,omitempty"`
 	TaskID     string `json:"task_id,omitempty"`
 	Status     string `json:"status,omitempty"`
@@ -104,6 +156,7 @@ type Dispatcher struct {
 
 	mu      sync.Mutex
 	prompts map[string]string
+	seen    map[string]time.Time
 	closed  bool
 }
 
@@ -121,6 +174,7 @@ func New(hooks []Hook, log *slog.Logger) *Dispatcher {
 		client:  &http.Client{Timeout: 30 * time.Second},
 		queue:   make(chan job, queueSize),
 		prompts: make(map[string]string),
+		seen:    make(map[string]time.Time),
 	}
 	d.wg.Add(1)
 	go d.loop()
@@ -144,9 +198,18 @@ func (d *Dispatcher) Observe(ev domain.Event) {
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return
 		}
+		key := "approval:" + string(p.ApprovalID)
+		if d.alreadySent(key) {
+			// 同一条审批只推一次：重复观察（多运行时、重投递）不该让人
+			// 在手机上看到两条一模一样的待办。
+			d.log.Debug("审批通知已推过，跳过", "approval", p.ApprovalID)
+			return
+		}
 		d.enqueue(Payload{
 			Event:      string(ev.Type),
 			Kind:       KindApproval,
+			Severity:   SeverityOf(KindApproval),
+			DedupeKey:  key,
 			At:         ev.At.UnixMilli(),
 			SessionID:  string(ev.SessionID),
 			TaskID:     string(ev.TaskID),
@@ -166,6 +229,8 @@ func (d *Dispatcher) Observe(ev domain.Event) {
 		d.enqueue(Payload{
 			Event:     string(ev.Type),
 			Kind:      kind,
+			Severity:  SeverityOf(kind),
+			DedupeKey: "task:" + string(ev.TaskID) + ":" + string(p.To),
 			At:        ev.At.UnixMilli(),
 			SessionID: string(ev.SessionID),
 			TaskID:    string(ev.TaskID),
@@ -278,6 +343,28 @@ func sign(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// alreadySent 报告某条去重键是否在 seenTTL 内出现过，并顺手登记/清理。
+//
+// 只在「已经决定要推」之后调用：被端点过滤掉的通知不占去重名额，否则
+// 改端点配置后也推不出去了。
+func (d *Dispatcher) alreadySent(key string) bool {
+	if key == "" {
+		return false
+	}
+	now := time.Now()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if at, ok := d.seen[key]; ok && now.Sub(at) < seenTTL {
+		return true
+	}
+	if len(d.seen) >= maxSeen {
+		// 借用 prompts 的取舍：整体清空比维护 LRU 划算。
+		d.seen = make(map[string]time.Time, maxSeen)
+	}
+	d.seen[key] = now
+	return false
 }
 
 func (d *Dispatcher) enqueue(p Payload) {

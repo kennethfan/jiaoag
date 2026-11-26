@@ -202,6 +202,8 @@ notify:
   #   secret: $JIAOAG_HOOK_SECRET
   #   # 可选：只订阅部分事件，留空表示全部。
   #   events: [approval, failed]
+  #   # 可选：只推不低于该级别的通知。critical = 审批与失败，info（默认）= 全部。
+  #   min_severity: critical
   #   # 单次投递超时，默认 10，范围 1-60。
   #   timeout_s: 10
   #   enabled: true

@@ -815,6 +815,7 @@ func TestNotifyValidation(t *testing.T) {
       url: https://example.com/hook
       secret: $HOOK_SECRET
       events: [approval, failed]
+      min_severity: critical
       timeout_s: 5
 `
 	t.Setenv("HOOK_SECRET", "s3cr3t")
@@ -830,6 +831,9 @@ func TestNotifyValidation(t *testing.T) {
 	}
 	if got := cfg.Notify.Webhooks[0].TimeoutSeconds; got != 5 {
 		t.Fatalf("timeout 应为 5，实际 %d", got)
+	}
+	if got := cfg.Notify.Webhooks[0].MinSeverity; got != "critical" {
+		t.Fatalf("min_severity 应为 critical，实际 %q", got)
 	}
 
 	cases := []struct {
@@ -874,6 +878,16 @@ func TestNotifyValidation(t *testing.T) {
       events: [approval, everything]
 `,
 			expect: "只支持 approval / completed / failed / canceled",
+		},
+		{
+			name: "未知级别",
+			body: `notify:
+  webhooks:
+    - name: ops
+      url: https://example.com/hook
+      min_severity: loud
+`,
+			expect: "min_severity",
 		},
 		{
 			name: "超时越界",
