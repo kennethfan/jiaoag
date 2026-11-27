@@ -17,8 +17,11 @@ type ServerStatus struct {
 	Dir     string
 	Trust   bool
 	Timeout time.Duration
-	// Source 是这台的来源：config（全局配置）或 project（工作区的 .jiaoag/mcp.yaml）。
+	// Source 是这台的来源：config（全局配置）、project（主根的 .jiaoag/mcp.yaml）
+	// 或 project:<别名>（某个附加根声明的，ADR-0055）。
 	Source string
+	// Origin 是声明它的附加根别名，主根与全局配置为空。
+	Origin string
 	// Connected 表示该工作区里它的子进程已经连上过。false 可能是还没用到，
 	// 也可能是启动失败被跳过，两者在这里不区分。
 	Connected bool
@@ -35,9 +38,9 @@ func (m *Manager) Status(root string, extra []Server) []ServerStatus {
 	if len(merged) == 0 {
 		return nil
 	}
-	projectNames := make(map[string]bool, len(extra))
+	projectNames := make(map[string]string, len(extra))
 	for _, s := range extra {
-		projectNames[s.Name] = true
+		projectNames[s.Name] = s.Origin
 	}
 
 	m.mu.Lock()
@@ -63,9 +66,13 @@ func (m *Manager) Status(root string, extra []Server) []ServerStatus {
 			Trust:   srv.Trust,
 			Timeout: srv.Timeout,
 			Source:  "config",
+			Origin:  srv.Origin,
 		}
-		if projectNames[srv.Name] {
+		if origin, ok := projectNames[srv.Name]; ok {
 			st.Source = "project"
+			if origin != "" {
+				st.Source = "project:" + origin
+			}
 		}
 		if live, ok := byName[srv.Name]; ok {
 			st.Connected = live.Connected
@@ -116,6 +123,7 @@ func ServersFromProject(list []project.Server) []Server {
 			Trust:   srv.Trust,
 			Include: srv.Include,
 			Exclude: srv.Exclude,
+			Origin:  srv.Origin,
 		})
 	}
 	return out

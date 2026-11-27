@@ -279,6 +279,7 @@ make demo-mcp
 | v2.53 | 通知分级与去重：载荷加 `severity`（审批/失败 critical，完成/取消 info），端点可用 `min_severity` 只看要动手的；同一 `approval_id` 只推一次（修订 ADR-0035） | ✅ |
 | v2.54 | 键盘选择复制：`ctrl+y` 进入，hjkl/方向键移动、`v` 起选、`y` 复制，坐标用内容行号可跨屏（修订 ADR-0054） | ✅ |
 | v2.55 | Web 端 `/ps`：底部「进程」列全部会话的后台进程，可停止 / 终止孤儿 / 删记录，与 TUI 共用同一套 rpc（修订 ADR-0052） | ✅ |
+| v2.56 | 附加根的项目级扩展：`AGENTS.md` / `.jiaoag/` / `MEMORY.md` 与主根一起发现、一次确认；同名技能与 MCP 由主根胜出，`/mcp` 显示 `project:lib`（ADR-0055） | ✅ |
 
 ## 安全边界
 

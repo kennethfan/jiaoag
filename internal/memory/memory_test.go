@@ -58,3 +58,41 @@ func TestFormatEntryCollapsesWhitespace(t *testing.T) {
 		t.Fatalf("FormatEntry = %q，期望 %q", got, want)
 	}
 }
+
+// 只有主根记忆时原样返回：单根工作区的提示词不能因为多根支持而变样。
+func TestCombineSinglePrimaryIsUnchanged(t *testing.T) {
+	got := Combine([]Entry{{Text: "- 2026-01-01: 事实"}}, Budget)
+	if got != "- 2026-01-01: 事实" {
+		t.Fatalf("Combine = %q", got)
+	}
+}
+
+func TestCombineLabelsEachRoot(t *testing.T) {
+	got := Combine([]Entry{
+		{Text: "主根事实"},
+		{Label: "lib", Text: "附加根事实"},
+	}, Budget)
+	if !strings.Contains(got, "### 主根\n主根事实") {
+		t.Fatalf("缺少主根段: %q", got)
+	}
+	if !strings.Contains(got, "### lib\n附加根事实") {
+		t.Fatalf("缺少附加根段: %q", got)
+	}
+	if strings.Index(got, "主根事实") > strings.Index(got, "附加根事实") {
+		t.Fatal("主根应排在前面")
+	}
+}
+
+func TestCombineSkipsEmptyAndNotesDropped(t *testing.T) {
+	got := Combine([]Entry{
+		{Text: "   "},
+		{Text: strings.Repeat("a", 300)},
+		{Label: "lib", Text: "放不下"},
+	}, 320)
+	if strings.Contains(got, "放不下") {
+		t.Fatalf("超预算的根不该出现: %q", got)
+	}
+	if !strings.Contains(got, "还有 1 个根的记忆因总量超过 320 字节未加载") {
+		t.Fatalf("缺少未加载说明: %q", got)
+	}
+}

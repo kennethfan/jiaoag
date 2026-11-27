@@ -92,7 +92,7 @@ func TestUntrustedProjectIsSkipped(t *testing.T) {
 	provider := &captureProvider{}
 	a, sessionID, wsDir := projectApp(t, provider, "ask")
 
-	status, err := a.ProjectStatus(ctx, wsDir, "ask")
+	status, err := a.ProjectStatus(ctx, wsDir, nil, "ask")
 	if err != nil {
 		t.Fatalf("ProjectStatus: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestTrustedProjectIsInjected(t *testing.T) {
 	provider := &captureProvider{}
 	a, sessionID, wsDir := projectApp(t, provider, "ask")
 
-	status, err := a.TrustProject(ctx, wsDir, "ask")
+	status, err := a.TrustProject(ctx, wsDir, nil, "ask")
 	if err != nil {
 		t.Fatalf("TrustProject: %v", err)
 	}
@@ -158,12 +158,12 @@ func TestChangedProjectNeedsReconfirmation(t *testing.T) {
 	provider := &captureProvider{}
 	a, sessionID, wsDir := projectApp(t, provider, "ask")
 
-	if _, err := a.TrustProject(ctx, wsDir, "ask"); err != nil {
+	if _, err := a.TrustProject(ctx, wsDir, nil, "ask"); err != nil {
 		t.Fatalf("TrustProject: %v", err)
 	}
 	writeFile(t, filepath.Join(wsDir, "AGENTS.md"), "项目规则：改成别的。\n")
 
-	status, err := a.ProjectStatus(ctx, wsDir, "ask")
+	status, err := a.ProjectStatus(ctx, wsDir, nil, "ask")
 	if err != nil {
 		t.Fatalf("ProjectStatus: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestAutoModeLoadsWithoutTrust(t *testing.T) {
 	provider := &captureProvider{}
 	a, sessionID, wsDir := projectApp(t, provider, "auto")
 
-	status, err := a.ProjectStatus(ctx, wsDir, "auto")
+	status, err := a.ProjectStatus(ctx, wsDir, nil, "auto")
 	if err != nil {
 		t.Fatalf("ProjectStatus: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestOffModeIgnoresProject(t *testing.T) {
 	provider := &captureProvider{}
 	a, sessionID, wsDir := projectApp(t, provider, "off")
 
-	status, err := a.ProjectStatus(ctx, wsDir, "off")
+	status, err := a.ProjectStatus(ctx, wsDir, nil, "off")
 	if err != nil {
 		t.Fatalf("ProjectStatus: %v", err)
 	}
@@ -234,13 +234,13 @@ func TestRevokeProjectTrustStopsInjection(t *testing.T) {
 	ctx := context.Background()
 	a, _, wsDir := projectApp(t, &captureProvider{}, "ask")
 
-	if _, err := a.TrustProject(ctx, wsDir, "ask"); err != nil {
+	if _, err := a.TrustProject(ctx, wsDir, nil, "ask"); err != nil {
 		t.Fatalf("TrustProject: %v", err)
 	}
 	if err := a.RevokeProjectTrust(ctx, wsDir); err != nil {
 		t.Fatalf("RevokeProjectTrust: %v", err)
 	}
-	status, err := a.ProjectStatus(ctx, wsDir, "ask")
+	status, err := a.ProjectStatus(ctx, wsDir, nil, "ask")
 	if err != nil {
 		t.Fatalf("ProjectStatus: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestTrustProjectNeedsAssets(t *testing.T) {
 	if err := os.MkdirAll(empty, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.TrustProject(ctx, empty, "ask"); err == nil {
+	if _, err := a.TrustProject(ctx, empty, nil, "ask"); err == nil {
 		t.Fatal("空项目确认应报错")
 	}
 }

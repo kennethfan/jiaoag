@@ -83,3 +83,23 @@ func TestServersFromProjectCopiesFields(t *testing.T) {
 		t.Fatalf("字段丢失：%+v", got)
 	}
 }
+
+// 附加根声明的 server 带上别名来源，主根与全局保持原样（ADR-0055）。
+func TestStatusMarksOriginForAdditionalRoots(t *testing.T) {
+	m, _ := managerWith(t)
+	extra := []mcppkg.Server{
+		{Name: "libfs", Argv: []string{"npx", "libfs"}, Origin: "lib", Timeout: time.Second},
+		{Name: "repo", Argv: []string{"echo", "ws"}, Timeout: time.Second},
+	}
+	status := m.Status("/repo", extra)
+	byName := map[string]mcppkg.ServerStatus{}
+	for _, st := range status {
+		byName[st.Name] = st
+	}
+	if got := byName["libfs"]; got.Source != "project:lib" || got.Origin != "lib" {
+		t.Fatalf("附加根来源 = %q / %q", got.Source, got.Origin)
+	}
+	if got := byName["repo"]; got.Source != "project" || got.Origin != "" {
+		t.Fatalf("主根来源 = %q / %q", got.Source, got.Origin)
+	}
+}

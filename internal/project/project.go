@@ -62,6 +62,8 @@ type Server struct {
 	Trust   bool
 	Include []string
 	Exclude []string
+	// Origin 是声明它的附加根别名；主根为空。合并后用于 /mcp 面板区分来源。
+	Origin string
 }
 
 // Project 是一次发现的结果。零值（Empty 为真）表示这个工作区没有项目级扩展。
@@ -129,6 +131,264 @@ func (p *Project) ServerNames() []string {
 	out := make([]string, 0, len(p.Servers))
 	for _, srv := range p.Servers {
 		out = append(out, srv.Name+": "+strings.Join(srv.Argv, " "))
+	}
+	return out
+}
+
+// Site 是一个参与合并的根：主根的 Alias 为空。
+type Site struct {
+	Alias   string
+	Project *Project
+}
+
+// Multi 是主根与附加根的项目级扩展合并视图（ADR-0055）。
+//
+// 两边顺序刻意不同，因为它们的「优先级」语义不一样：
+//   - 提示与记忆是累加的，主根在前——它是这次工作真正的主仓库，也先占预算；
+//   - 技能与 MCP server 是后者覆盖前者，主根在后——同名时主根赢。
+type Multi struct {
+	// Sites 保留全部根（含没有资产的），主根在首位、附加根按别名升序。
+	// 记忆只看这个列表：MEMORY.md 不算项目资产，只有 Site 上的 Root 能读到它。
+	Sites []Site
+	// Digest 覆盖各根的树路径、别名与内容。只有一个根有资产且是主根时，
+	// 与单根的 Digest 完全一致——否则给工作区加一个空的附加根就会让用户
+	// 已经确认过的信任失效。
+	Digest string
+}
+
+// Merge 合并各根。空根保留在 Sites 里（记忆要用），但不参与摘要与资产汇总。
+func Merge(sites []Site) *Multi {
+	out := &Multi{}
+	primary := make([]Site, 0, 1)
+	extra := make([]Site, 0, len(sites))
+	for _, site := range sites {
+		if site.Alias == "" {
+			primary = append(primary, site)
+			continue
+		}
+		extra = append(extra, site)
+	}
+	sort.SliceStable(extra, func(i, j int) bool { return extra[i].Alias < extra[j].Alias })
+	out.Sites = append(primary, extra...)
+
+	var withAssets []Site
+	for _, site := range out.Sites {
+		if site.Project != nil && !site.Project.Empty() {
+			withAssets = append(withAssets, site)
+		}
+	}
+	if len(withAssets) == 0 {
+		return out
+	}
+	if len(withAssets) == 1 && withAssets[0].Alias == "" {
+		out.Digest = withAssets[0].Project.Digest
+		return out
+	}
+	lines := make([]string, 0, len(withAssets))
+	for _, site := range withAssets {
+		lines = append(lines, "root\t"+site.Alias+"\t"+site.Project.Root+"\t"+site.Project.Digest)
+	}
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	out.Digest = hex.EncodeToString(sum[:])
+	return out
+}
+
+// Empty 报告是否所有根都没有项目资产。
+func (m *Multi) Empty() bool { return m == nil || m.Digest == "" }
+
+// extraRoots 返回有资产的附加根数量。
+func (m *Multi) extraRoots() int {
+	if m == nil {
+		return 0
+	}
+	n := 0
+	for _, site := range m.Sites {
+		if site.Alias != "" && site.Project != nil && !site.Project.Empty() {
+			n++
+		}
+	}
+	return n
+}
+
+// Summary 返回一行描述。多根时说明资产来自几个根，避免「提示 2 个」看不出
+// 到底哪来的。
+func (m *Multi) Summary() string {
+	if m.Empty() {
+		return ""
+	}
+	var prompts, skills, servers int
+	for _, site := range m.Sites {
+		if site.Project == nil {
+			continue
+		}
+		prompts += len(site.Project.Prompts)
+		skills += len(site.Project.SkillDirs)
+		servers += len(site.Project.Servers)
+	}
+	var parts []string
+	if prompts > 0 {
+		parts = append(parts, fmt.Sprintf("提示 %d 个", prompts))
+	}
+	if skills > 0 {
+		parts = append(parts, fmt.Sprintf("技能 %d 个", skills))
+	}
+	if servers > 0 {
+		parts = append(parts, fmt.Sprintf("MCP %d 台", servers))
+	}
+	line := strings.Join(parts, "、")
+	if extra := m.extraRoots(); extra > 0 {
+		line += fmt.Sprintf("（主根 + %d 个附加根）", extra)
+	}
+	return line
+}
+
+// label 给附加根的相对路径加上别名前缀；主根保持相对路径。
+func label(alias, path string) string {
+	if alias == "" {
+		return path
+	}
+	return alias + ":" + path
+}
+
+// Prompts 返回要注入的提示片段，主根在前、附加根按别名升序。
+//
+// 总预算 maxPromptBytes 由全部根共享：主根先占，附加根依次拿剩下的额度。
+// 每个根在 Discover 里各自已经截断过，这里再兜一次总量——三个仓库各写
+// 32 KB 提示会把上下文预算吃穿。
+func (m *Multi) Prompts() []Prompt {
+	if m == nil {
+		return nil
+	}
+	var out []Prompt
+	used := 0
+	for _, site := range m.Sites {
+		if site.Project == nil {
+			continue
+		}
+		for _, p := range site.Project.Prompts {
+			room := maxPromptBytes - used
+			if room <= 0 {
+				return out
+			}
+			path := label(site.Alias, p.Path)
+			text := clipBytes(p.Text, min(room, maxPromptFileBytes), path)
+			used += len(text)
+			out = append(out, Prompt{Path: path, Text: text})
+		}
+	}
+	return out
+}
+
+// PromptPaths 返回要展示的提示路径（带别名前缀）。
+func (m *Multi) PromptPaths() []string {
+	prompts := m.Prompts()
+	out := make([]string, 0, len(prompts))
+	for _, p := range prompts {
+		out = append(out, p.Path)
+	}
+	return out
+}
+
+// SkillDirs 返回技能目录：附加根按别名升序在前，主根在最后。
+//
+// skills.Load 是「后出现者赢」：主根必须压过附加根，否则主仓库里同名技能
+// 会被某个子仓库静默替换。
+func (m *Multi) SkillDirs() []string {
+	if m == nil {
+		return nil
+	}
+	var out []string
+	for _, site := range m.Sites {
+		if site.Alias == "" || site.Project == nil {
+			continue
+		}
+		out = append(out, site.Project.SkillDirs...)
+	}
+	for _, site := range m.Sites {
+		if site.Alias != "" || site.Project == nil {
+			continue
+		}
+		out = append(out, site.Project.SkillDirs...)
+	}
+	return out
+}
+
+// SkillNames 返回技能目录名，附加根的带别名前缀，主根在前。
+func (m *Multi) SkillNames() []string {
+	if m == nil {
+		return nil
+	}
+	var out []string
+	add := func(site Site) {
+		if site.Project == nil {
+			return
+		}
+		for _, dir := range site.Project.SkillDirs {
+			name := filepath.Base(dir)
+			if site.Alias != "" {
+				name = site.Alias + ":" + name
+			}
+			out = append(out, name)
+		}
+	}
+	for _, site := range m.Sites {
+		if site.Alias == "" {
+			add(site)
+		}
+	}
+	for _, site := range m.Sites {
+		if site.Alias != "" {
+			add(site)
+		}
+	}
+	return out
+}
+
+// Servers 合并 MCP 声明：附加根按别名升序在前，主根最后（同名时主根覆盖）。
+func (m *Multi) Servers() []Server {
+	if m == nil {
+		return nil
+	}
+	out := make([]Server, 0, 4)
+	index := make(map[string]int, 4)
+	add := func(site Site) {
+		if site.Project == nil {
+			return
+		}
+		for _, srv := range site.Project.Servers {
+			srv.Origin = site.Alias
+			if i, ok := index[srv.Name]; ok {
+				out[i] = srv
+				continue
+			}
+			index[srv.Name] = len(out)
+			out = append(out, srv)
+		}
+	}
+	for _, site := range m.Sites {
+		if site.Alias != "" {
+			add(site)
+		}
+	}
+	for _, site := range m.Sites {
+		if site.Alias == "" {
+			add(site)
+		}
+	}
+	return out
+}
+
+// ServerNames 返回 "别名/name: argv" 形式，信任确认时要让人看清会执行什么。
+func (m *Multi) ServerNames() []string {
+	servers := m.Servers()
+	out := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		name := srv.Name
+		if srv.Origin != "" {
+			name = srv.Origin + "/" + srv.Name
+		}
+		out = append(out, name+": "+strings.Join(srv.Argv, " "))
 	}
 	return out
 }

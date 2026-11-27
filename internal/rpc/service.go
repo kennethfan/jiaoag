@@ -336,7 +336,7 @@ func (c *Core) MCPList(ctx context.Context, p Principal, in protocol.MCPListPayl
 	if err != nil {
 		return protocol.MCPListResultPayload{}, badRequest("%s", err)
 	}
-	status := c.app.MCPServers(sess.Workspace)
+	status := c.app.MCPServers(sess.Workspace, sess.Roots)
 	out := make([]protocol.MCPServerInfo, 0, len(status))
 	for _, st := range status {
 		out = append(out, protocol.MCPServerInfo{
@@ -378,11 +378,11 @@ func (c *Core) projectAction(ctx context.Context, p Principal, in protocol.Proje
 	}
 	var status app.ProjectStatus
 	if trust {
-		status, err = c.app.TrustProject(ctx, sess.Workspace, c.projectMode())
+		status, err = c.app.TrustProject(ctx, sess.Workspace, sess.Roots, c.projectMode())
 	} else {
 		err = c.app.RevokeProjectTrust(ctx, sess.Workspace)
 		if err == nil {
-			status, err = c.app.ProjectStatus(ctx, sess.Workspace, c.projectMode())
+			status, err = c.app.ProjectStatus(ctx, sess.Workspace, sess.Roots, c.projectMode())
 		}
 	}
 	if err != nil {
@@ -442,7 +442,7 @@ func (c *Core) AuditTail(ctx context.Context, p Principal, in protocol.AuditTail
 
 func (c *Core) sessionPayloadWithProject(ctx context.Context, sess domain.Session) protocol.SessionPayload {
 	payload := sessionPayload(sess)
-	status, err := c.app.ProjectStatus(ctx, sess.Workspace, c.projectMode())
+	status, err := c.app.ProjectStatus(ctx, sess.Workspace, sess.Roots, c.projectMode())
 	if err != nil {
 		if c.log != nil {
 			c.log.Warn("读取项目级扩展状态失败", "workspace", sess.Workspace, "error", err)

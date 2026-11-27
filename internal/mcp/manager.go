@@ -56,6 +56,9 @@ type Server struct {
 	// 自己的工具名（不含 mcp__ 前缀），精确匹配。
 	Include []string
 	Exclude []string
+	// Origin 是声明它的附加根别名；主根与全局配置都为空。只用于展示，
+	// 不影响启动参数（ADR-0055）。
+	Origin string
 }
 
 // toolAllowed 判断 server 的某个工具是否进注册表。过滤在连接后、装配前做，
@@ -186,6 +189,7 @@ func serversKey(servers []Server) string {
 			fmt.Sprint(srv.Trust),
 			strings.Join(srv.Include, "\x00"),
 			strings.Join(srv.Exclude, "\x00"),
+			srv.Origin,
 		}, "\x00"))
 	}
 	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))

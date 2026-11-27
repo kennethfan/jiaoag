@@ -177,13 +177,14 @@ SubmitTaskWith
 builtin:core        身份、变量、工作方式、{{tools}}
 user:skills         技能索引（名字 + ≤120 字描述）
 user:skill:<name>   用户点名的技能正文（最多 96 KB）
-project:*           AGENTS.md 与 .jiaoag/prompts/*.md（需一次内容摘要确认）
-workspace:memory    MEMORY.md（≤8 KB）
+project:*           AGENTS.md 与 .jiaoag/prompts/*.md（主根 + 附加根，需一次内容摘要确认）
+workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，分 ### 别名 段）
 ```
 
 - 预算按**估算 token**（字符类别加权 + 每轮 `prompt_tokens` 校准），默认 32000；超 80% 时把较早轮次压成摘要事件，保留最近 2 轮。
 - 消息历史每轮从事件重建，只认 4 类事件：`task.queued` / `assistant.message` / `tool.result` / `context.compacted`。
 - 技能、项目提示、记忆都进 `prompt.Hash`，任务提交时冻结为 `system_prompt_hash`；与工具注册表、规则集、后端名合成 `extensions_digest`。
+- 附加根的项目级扩展与主根一起确认（ADR-0055）：提示与记忆主根在前、共享总预算；技能与 MCP 主根在后（同名胜出）。
 
 ---
 

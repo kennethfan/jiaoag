@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -86,4 +87,86 @@ func Section(text string) string {
 func FormatEntry(text string, at time.Time) string {
 	text = strings.Join(strings.Fields(text), " ")
 	return fmt.Sprintf("- %s: %s", at.Format("2006-01-02"), text)
+}
+
+// Budget 是所有根记忆合计的上限。主根先占，附加根依次取剩余额度。
+//
+// 单根仍然是 MaxLoadBytes；多根时总量必须再兜一次，否则挂三个仓库就是
+// 24 KB 记忆挤在每轮的上下文里。
+const Budget = 16 << 10
+
+// Entry 是一个根的记忆正文。Label 为空表示主根，其余是附加根的别名。
+type Entry struct{ Label, Text string }
+
+// minMemoryRoom 是「还值得再塞一段」的最小剩余额度。只够放个标题加半句
+// 截断说明不如直接略过，并告诉用户有根没加载。
+const minMemoryRoom = 64
+
+// Combine 把多个根的记忆拼成一层正文。
+//
+// 只有一个主根记忆时原样返回，保持单根工作区的提示词一字不差；多个根时每段
+// 前加 "### 别名"（主根叫「主根」）。总长超过 limit 时按顺序截断：主根先占，
+// 附加根吃剩下的额度，完全没额度的根会在末尾留一句说明而不是静默消失。
+func Combine(entries []Entry, limit int) string {
+	kept := make([]Entry, 0, len(entries))
+	for _, e := range entries {
+		text := strings.TrimSpace(e.Text)
+		if text == "" {
+			continue
+		}
+		kept = append(kept, Entry{Label: e.Label, Text: text})
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	if len(kept) == 1 && kept[0].Label == "" {
+		return kept[0].Text
+	}
+	if limit <= 0 {
+		limit = Budget
+	}
+	var (
+		b       strings.Builder
+		used    int
+		dropped int
+	)
+	for i, e := range kept {
+		label := e.Label
+		if label == "" {
+			label = "主根"
+		}
+		head := "### " + label + "\n"
+		room := limit - used - len(head)
+		if room < minMemoryRoom {
+			dropped = len(kept) - i
+			break
+		}
+		body := e.Text
+		if len(body) > room {
+			body = trimToBytes(body, room) + "\n（已截断：所有根的记忆合计超过 " + strconv.Itoa(limit) + " 字节，请精简旧条目）"
+		}
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(head)
+		b.WriteString(body)
+		b.WriteString("\n")
+		used += len(head) + len(body)
+	}
+	if dropped > 0 {
+		fmt.Fprintf(&b, "\n（还有 %d 个根的记忆因总量超过 %d 字节未加载）\n", dropped, limit)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// trimToBytes 按 rune 边界截断，不把汉字劈成半个。
+func trimToBytes(text string, limit int) string {
+	if limit >= len(text) {
+		return text
+	}
+	cut := limit
+	for cut > 0 && (text[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	return text[:cut]
 }

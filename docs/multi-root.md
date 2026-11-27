@@ -62,9 +62,11 @@ jiaoag demo -workspace . -root lib=../shared-lib -prompt "看看 lib:internal/x.
 
 ## 不参与的部分
 
-- **项目级扩展**：`AGENTS.md` / `.jiaoag/` 仍只从主根读一份，附加根里的不会被加载（注入多份提示的优先级还没定）。
+- **项目级扩展**：附加根的 `AGENTS.md` / `.jiaoag/` / `MEMORY.md` **也参与**（ADR-0055），
+  与主根一起按一次内容摘要确认；同名技能与 MCP server 由主根胜出。
 - **git 工具**：`git_status` / `git_diff` / `git_log` 仍只看主根仓库。
-- **`extensions_digest`**：挂载哪些附加根不影响任务指纹。
+- **`extensions_digest`**：挂载的附加根如果带项目级扩展，会通过提示层与 MCP 工具集
+  进入任务指纹；只有读写权限的根（没有任何 `.jiaoag/` 与 `AGENTS.md`）不影响指纹。
 - **TUI 的「当前根」**：没有这个概念，一律显式写 `alias:` / `root`。
 
 ## 观测
