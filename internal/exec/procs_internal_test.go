@@ -106,3 +106,39 @@ func TestStopRequestedByOtherRuntime(t *testing.T) {
 	}
 	t.Fatalf("停止意图未被执行：running=%v mark=%q", proc.Running(), store.marked("call_stop"))
 }
+
+// TestLocalStopStaysStopped 验证本进程主动停止后，轮询不会把 stopped 覆盖成
+// exited：覆盖了就看不出「这条是被谁停的」。
+func TestLocalStopStaysStopped(t *testing.T) {
+	dir := t.TempDir()
+	argv := []string{"sh", "-c", "sleep 5"}
+	proc, err := startBackground(
+		Plan{Argv: argv, Cwd: dir, Env: []string{"PATH=/usr/bin:/bin"}},
+		Spec{LogPath: filepath.Join(dir, "bg.log")},
+		argv,
+	)
+	if err != nil {
+		t.Fatalf("启动后台进程: %v", err)
+	}
+	proc.ID = "call_local"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &fakeProcStore{}
+	table := NewProcTable(4)
+	table.Attach(store, "rt_owner", ctx)
+	if err := table.Add("ses_1", proc); err != nil {
+		t.Fatalf("登记: %v", err)
+	}
+	t.Cleanup(func() { table.CloseAll() })
+
+	found, local, err := table.Stop("ses_1", "call_local")
+	if err != nil || !found || !local {
+		t.Fatalf("本地停止失败：found=%v local=%v err=%v", found, local, err)
+	}
+	// 跨过至少两轮轮询（1s 一次）：第二轮最容易把 stopped 覆盖成 exited。
+	time.Sleep(2500 * time.Millisecond)
+	if got := store.marked("call_local"); got != ProcStopped {
+		t.Fatalf("停止后的状态被改写：want %q got %q", ProcStopped, got)
+	}
+}

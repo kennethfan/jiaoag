@@ -196,7 +196,7 @@ func (t *ProcTable) watchStop(ctx context.Context) {
 					_ = store.MarkProc(callCtx, e.id, ProcStopped)
 					t.markWatched(e.id)
 				}
-			} else if !marked[e.id] {
+			} else if !marked[e.id] && !t.isWatched(e.id) {
 				_ = store.MarkProc(callCtx, e.id, ProcExited)
 				t.markWatched(e.id)
 			}
@@ -347,13 +347,20 @@ func (t *ProcTable) StopSession(sessionID string) {
 	}
 }
 
-func (t *ProcTable) markStopped(id string) {
+func (t *ProcTable) isWatched(id string) bool {
 	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.watched != nil && t.watched[id]
+}
+
+func (t *ProcTable) markStopped(id string) {
 	store := t.store
-	t.mu.Unlock()
 	if store == nil {
 		return
 	}
+	// 先记进 watched：否则 watchStop 的「已退出且未标记」分支会在下一次轮询里
+	// 把 stopped 覆盖成 exited（停止后的状态就成了「自然退出」，看不出是谁停的）。
+	t.markWatched(id)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_ = store.MarkProc(ctx, id, ProcStopped)

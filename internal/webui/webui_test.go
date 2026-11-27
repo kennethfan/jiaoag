@@ -56,7 +56,7 @@ func TestProtocolStringsMatchServer(t *testing.T) {
 		t.Errorf("protocol.js 里的 %q 在服务端找不到对应常量", value)
 	}
 	// 反向抽查：TUI 依赖的关键类型必须在前端有名字，否则页面会漏功能。
-	for _, want := range []string{"session.manage", "approval.resolve", "event.snapshot", "task.submit"} {
+	for _, want := range []string{"session.manage", "approval.resolve", "event.snapshot", "task.submit", "proc.list", "proc.kill"} {
 		if !strings.Contains(js, "'"+want+"'") {
 			t.Errorf("protocol.js 缺少 %q", want)
 		}

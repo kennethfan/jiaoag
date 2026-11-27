@@ -21,6 +21,7 @@ export function initUi(h) {
   $('btn-skills').onclick = () => h.openSkills();
   $('btn-mcp').onclick = () => h.openMcp();
   $('btn-roots').onclick = () => h.openRoots();
+  $('btn-procs').onclick = () => h.openProcs();
   $('btn-send').onclick = () => h.submitPrompt();
   $('btn-cancel').onclick = () => h.cancelTask();
   $('model-chip').onclick = () => h.openModels(false);

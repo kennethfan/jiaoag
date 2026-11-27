@@ -38,6 +38,7 @@ export const state = {
   skills: [],
   mcp: [],
   sessions: [], // 最近一次 session.manage 的结果
+  procs: [], // 最近一次 proc.list 的结果（全部会话）
 
   lastSeq: 0,
   unread: 0,

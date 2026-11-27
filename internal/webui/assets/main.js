@@ -17,7 +17,7 @@ import {
 const TOKEN_KEY = 'jiaoag.token';
 let link = null;
 let restoring = false;
-let pendingModal = null; // 'sessions' | 'models' | 'sessions-all'
+let pendingModal = null; // 'sessions' | 'sessions-all' | 'models' | 'skills' | 'mcp' | 'procs'
 let modelsForTask = false;
 
 // rAF 节流：流式 delta 每秒几十条，直接重绘会卡。
@@ -40,6 +40,7 @@ initUi({
   openSkills,
   openMcp,
   openRoots,
+  openProcs,
   openProject,
   trustProject,
   submitPrompt,
@@ -152,6 +153,23 @@ function handleFrame(env) {
     case T.mcpListResult:
       state.mcp = env.payload?.servers || [];
       renderMcpModal();
+      break;
+    case T.procListResult:
+      state.procs = env.payload?.procs || [];
+      renderProcsModal();
+      break;
+    case T.procActionResult:
+      push({
+        kind: 'note',
+        tone: 'ok',
+        text: env.payload?.message || '已处理后台进程',
+      });
+      // 动作是异步生效的（远程属主最多 1 秒才真正杀掉），拉两次列表：
+      // 只看一次可能还停在 running。
+      if (pendingModal === 'procs') {
+        setTimeout(openProcs, 400);
+        setTimeout(openProcs, 1600);
+      }
       break;
     case T.projectTrusted:
       state.project = env.payload?.project || null;
@@ -571,6 +589,88 @@ function openRoots() {
   openModal('工作区与附加根', body, [modalButton('关闭', '', () => closeModal())]);
 }
 
+// 后台进程：按会话查、列出全部（空 session_id = 全部会话，和 TUI 的 /ps 一致）。
+// 显示范围故意跨会话：孤儿进程的会话可能已经没人开着标签了。
+function openProcs() {
+  pendingModal = 'procs';
+  link.send(T.procList, {});
+}
+
+function renderProcsModal() {
+  if (pendingModal !== 'procs') return;
+  const body = document.createDocumentFragment();
+  const running = state.procs.filter((p) => p.status === 'running').length;
+  const orphaned = state.procs.filter((p) => p.status === 'orphaned').length;
+  body.appendChild(el('p', 'muted small',
+    state.procs.length === 0
+      ? '没有后台进程。'
+      : `${state.procs.length} 条进程：运行中 ${running}，孤儿 ${orphaned}。「停止」发给属主执行；孤儿只能「终止」（会先核对启动时间）或删记录。`));
+
+  for (const p of state.procs) {
+    const row = el('div', 'mcp-row');
+    const head = el('div', 'mcp-head');
+    head.appendChild(el('strong', 'mono', (p.argv && p.argv.length ? p.argv.join(' ') : '未知命令')));
+    head.appendChild(el('span', 'chip ' + procTone(p.status), procStatusLabel(p.status)));
+    if (p.pid) head.appendChild(el('span', 'muted small mono', `pid ${p.pid}`));
+    head.appendChild(el('span', 'muted small mono', (p.session_id || '').slice(0, 12)));
+    if (p.started_at) head.appendChild(el('span', 'muted small', procAge(p.started_at)));
+    if (p.stop_requested) head.appendChild(el('span', 'chip warn', '已请求停止'));
+    row.appendChild(head);
+
+    const foot = el('div', 'session-actions');
+    if (p.status === 'running') {
+      foot.appendChild(modalButton('停止', 'link', () => {
+        link.send(T.procStop, { id: p.id });
+      }));
+    }
+    if (p.status === 'orphaned') {
+      foot.appendChild(modalButton('终止', 'link danger', () => {
+        if (!window.confirm(`终止进程 ${p.pid || '?'}（${(p.argv || []).join(' ') || '未知命令'}）？\n` +
+          '会先核对进程启动时间，与记录不一致就拒绝，避免误杀复用了 pid 的进程。')) return;
+        link.send(T.procKill, { id: p.id });
+      }));
+    }
+    if (p.status !== 'running') {
+      foot.appendChild(modalButton('删记录', 'link danger', () => {
+        if (!window.confirm('只从列表里删掉这条记录，不动日志文件，可撤销不了。继续？')) return;
+        link.send(T.procClean, { id: p.id });
+      }));
+    }
+    if (foot.children.length) row.appendChild(foot);
+    if (p.output_path) row.appendChild(el('div', 'muted small mono', `日志 ${p.output_path}`));
+    body.appendChild(row);
+  }
+
+  openModal('后台进程', body, [
+    modalButton('刷新', '', openProcs),
+    modalButton('关闭', '', () => closeModal()),
+  ]);
+}
+
+function procStatusLabel(status) {
+  switch (status) {
+    case 'running': return '运行中';
+    case 'orphaned': return '孤儿';
+    case 'exited': return '已退出';
+    case 'stopped': return '已停止';
+    default: return status || '未知';
+  }
+}
+
+function procTone(status) {
+  if (status === 'running') return 'ok';
+  if (status === 'orphaned') return 'warn';
+  return 'muted';
+}
+
+function procAge(ms) {
+  const secs = Math.max(0, (Date.now() - ms) / 1000);
+  if (secs < 60) return `${Math.round(secs)} 秒前`;
+  if (secs < 3600) return `${Math.round(secs / 60)} 分钟前`;
+  if (secs < 86400) return `${Math.round(secs / 3600)} 小时前`;
+  return `${Math.round(secs / 86400)} 天前`;
+}
+
 function openProject() {
   const p = state.project;
   const body = document.createDocumentFragment();
@@ -609,6 +709,7 @@ function openHelp() {
     ['技能', '指定下一条任务加载的技能'],
     ['MCP', '查看 server 与工具数（只读）'],
     ['根', '工作区与附加根'],
+    ['进程', '后台进程（含孤儿），可停止 / 终止 / 删记录'],
     ['审批', '批准一次 / 本会话内都批准 / 拒绝；diff 多块时可逐块勾选'],
   ];
   for (const [k, v] of rows) {

@@ -27,6 +27,12 @@ export const T = {
   skillListResult: 'skill.list.result',
   mcpList: 'mcp.list',
   mcpListResult: 'mcp.list.result',
+  procList: 'proc.list',
+  procListResult: 'proc.list.result',
+  procStop: 'proc.stop',
+  procKill: 'proc.kill',
+  procClean: 'proc.clean',
+  procActionResult: 'proc.action.result',
 
   projectTrust: 'project.trust',
   projectRevoke: 'project.revoke',
