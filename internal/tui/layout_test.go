@@ -40,6 +40,12 @@ func keyMsg(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}
 	case "ctrl+w":
 		return tea.KeyPressMsg{Code: 'w', Mod: tea.ModCtrl}
+	case "ctrl+y":
+		return tea.KeyPressMsg{Code: 'y', Mod: tea.ModCtrl}
+	case "left":
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
+	case "right":
+		return tea.KeyPressMsg{Code: tea.KeyRight}
 	}
 	r := []rune(name)[0]
 	return tea.KeyPressMsg{Code: r, Text: name}

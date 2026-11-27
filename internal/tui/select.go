@@ -17,6 +17,9 @@ type viewLine struct {
 	text       string
 	group      int
 	selectable bool
+	// abs 是这一行在完整内容里的行号（只对 selectable 行有效）：键盘选择
+	// 用内容行号做坐标，翻页后仍然成立；固定行填 -1。
+	abs int
 }
 
 // cursor 是屏幕上的一个单元格坐标：row 为屏幕行号（0 起），col 为显示列（0 起）。
@@ -25,12 +28,17 @@ type cursor struct {
 	col int
 }
 
-// selectionState 是鼠标拖选的范围。松开左键后立即清空，不保留历史选区。
+// selectionState 是框选范围。鼠标松开左键后立即清空，不保留历史选区；
+// 键盘选择模式则在按 y/enter 复制或 esc 退出时清空。
+//
+// absolute 区分坐标语义：鼠标用的是屏幕行号（只对当前帧有效），键盘用的是
+// 内容行号（相对整段对话，翻页后仍然成立）。
 type selectionState struct {
-	active bool
-	moved  bool
-	anchor cursor
-	cur    cursor
+	active   bool
+	moved    bool
+	absolute bool
+	anchor   cursor
+	cur      cursor
 }
 
 // ordered 返回按阅读顺序排好的两个端点（起点在前）。
@@ -227,7 +235,8 @@ func (m *Model) mouseSelectable() bool {
 }
 
 func (m *Model) handleMousePress(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
-	if !m.mouseSelectable() || msg.Button != tea.MouseLeft {
+	// 键盘选择模式下鼠标不接管：两套光标同时存在会让人分不清在改哪个。
+	if m.selectMode || !m.mouseSelectable() || msg.Button != tea.MouseLeft {
 		return m, nil
 	}
 	row, ok := m.selectableRow(msg.Y)
@@ -291,4 +300,234 @@ func (m *Model) handleClipboard(msg clipboardMsg) (tea.Model, tea.Cmd) {
 func (m *Model) setNotice(text string, isErr bool) {
 	m.notice = text
 	m.noticeErr = isErr
+}
+
+// ---------------------------------------------------------------------------
+// 键盘选择
+
+// keySelectable 说明能否进入键盘选择模式：与鼠标框选一样只支持全屏——
+// 内联模式没有固定视口，既无法把光标滚回可视区，屏幕行号也和终端
+// scrollback 对不上。
+func (m *Model) keySelectable() bool {
+	return m.fullscreen && !m.quitting
+}
+
+// enterSelectMode 进入键盘选择：光标停在最后一行行首，因为最常复制的是
+// 刚输出的那段。
+func (m *Model) enterSelectMode() (tea.Model, tea.Cmd) {
+	if !m.keySelectable() {
+		m.setNotice("⚠ 内联模式没有固定视口：按 ctrl+f 切全屏后再选", true)
+		return m, nil
+	}
+	if len(m.contentRows) == 0 {
+		m.setNotice("⚠ 现在没有可选内容", true)
+		return m, nil
+	}
+	m.selectMode = true
+	m.sel = selectionState{}
+	m.keyCursor = cursor{row: len(m.contentRows) - 1, col: 0}
+	m.ensureCursorVisible()
+	return m, nil
+}
+
+// exitSelectMode 退出选择模式：光标与半成品选区一起丢掉。
+func (m *Model) exitSelectMode() {
+	m.selectMode = false
+	m.sel = selectionState{}
+}
+
+// handleSelectKey 是选择模式下的按键。它是模态的：除了这里的键，其余
+// 一律不穿透到输入行——否则按 j/k 会往输入框里塞字母。
+func (m *Model) handleSelectKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "esc":
+		m.exitSelectMode()
+		return m, nil
+	case "v":
+		// 第一次 v 起选，第二次取消选区（光标留着，方便重新框）。
+		if m.sel.active {
+			m.sel = selectionState{}
+		} else {
+			m.sel = selectionState{active: true, moved: true, absolute: true, anchor: m.keyCursor, cur: m.keyCursor}
+		}
+		return m, nil
+	case "y", "enter":
+		return m.copyKeySelection()
+	case "up", "k":
+		m.moveKeyCursor(-1, 0)
+	case "down", "j":
+		m.moveKeyCursor(1, 0)
+	case "left", "h":
+		m.moveKeyCursor(0, -1)
+	case "right", "l":
+		m.moveKeyCursor(0, 1)
+	case "pgup":
+		m.moveKeyCursor(-m.selectPage(), 0)
+	case "pgdown":
+		m.moveKeyCursor(m.selectPage(), 0)
+	case "home":
+		m.moveKeyCursor(0, -1<<30)
+	case "end":
+		m.moveKeyCursor(0, 1<<30)
+	default:
+		return m, nil
+	}
+	if m.sel.active {
+		m.sel.cur = m.keyCursor
+	}
+	m.ensureCursorVisible()
+	return m, nil
+}
+
+// selectPage 是一屏能移动多少行，与翻页保持同一口径。
+func (m *Model) selectPage() int {
+	page := m.contentHeight - 1
+	if page < 3 {
+		page = 3
+	}
+	return page
+}
+
+// moveKeyCursor 按行/列移动光标。列移动按字符边界跳，不会停在汉字中间。
+func (m *Model) moveKeyCursor(dRow, dCol int) {
+	n := len(m.contentRows)
+	if n == 0 {
+		return
+	}
+	row := m.keyCursor.row + dRow
+	if row < 0 {
+		row = 0
+	}
+	if row >= n {
+		row = n - 1
+	}
+	line := m.contentRows[row].text
+	width := displayWidth(line)
+	col := m.keyCursor.col
+	if dCol < 0 {
+		if dCol < -1000 {
+			col = 0
+		} else {
+			col = runeStartBefore(line, col)
+		}
+	} else if dCol > 0 {
+		if dCol > 1000 {
+			col = lastRuneStart(line)
+		} else {
+			col = runeStartAfter(line, col)
+		}
+	} else if row != m.keyCursor.row {
+		// 换行时列不变，但要收进新行的宽度。
+		if col > width-1 {
+			col = lastRuneStart(line)
+		}
+	}
+	if col < 0 {
+		col = 0
+	}
+	if width > 0 && col > width-1 {
+		col = width - 1
+	}
+	m.keyCursor = cursor{row: row, col: col}
+}
+
+// runePositions 返回每个字符的起始列（中文占两列，下一个字符从 +2 开始）。
+func runePositions(text string) []int {
+	poss := make([]int, 0, len(text))
+	col := 0
+	for _, r := range text {
+		poss = append(poss, col)
+		col += runeWidth(r)
+	}
+	return poss
+}
+
+// runeStartBefore 返回 col 之前（含当前字符起点）的字符起始列。
+func runeStartBefore(text string, col int) int {
+	best := 0
+	for _, pos := range runePositions(text) {
+		if pos >= col {
+			break
+		}
+		best = pos
+	}
+	return best
+}
+
+// runeStartAfter 返回 col 之后的下一个字符起始列。
+func runeStartAfter(text string, col int) int {
+	for _, pos := range runePositions(text) {
+		if pos > col {
+			return pos
+		}
+	}
+	return lastRuneStart(text)
+}
+
+// lastRuneStart 返回最后一个字符的起始列（空行返回 0）。
+func lastRuneStart(text string) int {
+	poss := runePositions(text)
+	if len(poss) == 0 {
+		return 0
+	}
+	return poss[len(poss)-1]
+}
+
+// ensureCursorVisible 调整滚动位置，让光标留在可视区内。窗口是
+// 「内容末尾往前 avail 行」，所以往下翻是把 scroll 减小。
+func (m *Model) ensureCursorVisible() {
+	n := len(m.contentRows)
+	if n == 0 {
+		m.scroll = 0
+		return
+	}
+	avail := m.contentHeight
+	if avail < 1 {
+		avail = 1
+	}
+	row := m.keyCursor.row
+	end := n - m.scroll
+	start := end - avail
+	if row >= end {
+		m.scroll = n - row - 1
+	} else if row < start {
+		m.scroll = n - row - avail
+	}
+	if m.scroll < 0 {
+		m.scroll = 0
+	}
+	if m.scroll == 0 {
+		m.unseen = 0
+	}
+}
+
+// copyKeySelection 复制当前选区；没有选区时复制光标所在整行——
+// 「挑一行复制」是这个模式最常见的用法，不该逼人先按两次 v。
+func (m *Model) copyKeySelection() (tea.Model, tea.Cmd) {
+	rows := m.contentRows
+	if len(rows) == 0 {
+		m.setNotice("⚠ 现在没有可选内容", true)
+		return m, nil
+	}
+	sel := m.sel
+	if !sel.active {
+		row := m.keyCursor.row
+		if row < 0 || row >= len(rows) {
+			return m, nil
+		}
+		sel = selectionState{
+			active:   true,
+			moved:    true,
+			absolute: true,
+			anchor:   cursor{row: row, col: 0},
+			cur:      cursor{row: row, col: lastRuneStart(rows[row].text)},
+		}
+	}
+	text, lines := extractSelection(rows, sel)
+	if strings.TrimSpace(text) == "" {
+		m.setNotice("⚠ 选区里没有内容", true)
+		return m, nil
+	}
+	m.exitSelectMode()
+	return m, copyCmd(text, lines)
 }

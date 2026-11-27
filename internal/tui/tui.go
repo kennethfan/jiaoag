@@ -159,6 +159,15 @@ type Model struct {
 	viewRows []viewLine
 	// sel 是正在拖拽的选区；松开左键即清空，不保留历史选区。
 	sel selectionState
+	// selectMode 是键盘选择模式（ctrl+y 进入）：光标在内容区移动，
+	// 与鼠标框选共用同一套选区和复制逻辑，区别只是坐标用内容行号。
+	selectMode bool
+	keyCursor  cursor
+	// contentRows 是最近一帧的完整内容行（未按视口裁剪），键盘选择用它
+	// 做坐标空间——翻页时屏幕行号会变，内容行号不会。
+	contentRows []viewLine
+	// contentHeight 是最近一帧内容区能显示的行数，用来把光标滚回可视区。
+	contentHeight int
 	// notice 是状态栏右侧的临时提示（复制结果这类一次性反馈），
 	// 下一次按键或开始新的框选就清掉：它不该占着对话区。
 	notice    string
@@ -604,6 +613,10 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// scrollback。属于显示偏好，任何面板打开时都可以切。
 	if key == "ctrl+f" {
 		m.fullscreen = !m.fullscreen
+		if !m.fullscreen {
+			// 选择模式的坐标依赖固定视口，切回内联就退出。
+			m.exitSelectMode()
+		}
 		return m, nil
 	}
 	// ctrl+x 只终止本机命令：它是用户自己敲的，随时可以叫停，不该被
@@ -636,6 +649,14 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.sessionsPanel != nil {
 		return m.handleSessionsKey(key)
+	}
+	// 键盘选择模式（ctrl+y）：模态。此刻按键语义是「在对话里定位」，
+	// 不该穿透到输入行——否则 j/k 会往输入框里塞字母。
+	if m.selectMode {
+		return m.handleSelectKey(key)
+	}
+	if key == "ctrl+y" {
+		return m.enterSelectMode()
 	}
 	if m.help {
 		// 帮助是覆盖层：除了 ctrl+c / ctrl+f 与关闭键，其余按键都不该穿透。
@@ -1448,6 +1469,7 @@ func (m *Model) View() tea.View {
 				contentMeta = append(contentMeta, viewLine{
 					text:       strings.TrimSuffix(stripANSI(row), "▏"),
 					group:      group,
+					abs:        len(contentMeta),
 					selectable: true,
 				})
 			}
@@ -1476,6 +1498,10 @@ func (m *Model) View() tea.View {
 			appendContent(line)
 		}
 	}
+
+	// 键盘选择的坐标空间是完整内容行：视口裁剪只影响渲染，不影响选区。
+	m.contentRows = append([]viewLine(nil), contentMeta...)
+	m.contentHeight = len(contentMeta)
 
 	// 二、模态区：审批 / 各面板 / ? 帮助。它们占住输入位置，
 	// 因为此刻按键语义已经不属于「输入文本」。
@@ -1563,6 +1589,7 @@ func (m *Model) View() tea.View {
 		if avail < 1 {
 			avail = 1
 		}
+		m.contentHeight = avail
 		// 终端会按显示宽度折行：一行 200 字在实际屏幕上是两三行。只按条目数
 		// 裁剪会低估高度，底部区就被挤出屏幕——内容在上面已经摊成视觉行，
 		// 这里只按视觉行开窗。
@@ -1585,11 +1612,11 @@ func (m *Model) View() tea.View {
 		if start > 0 {
 			rows[0] = m.styler.paint(styleMuted, fmt.Sprintf("… 上方还有 %d 行（pgup/pgdn 翻）", start))
 			// 提示行不是正文，不能被框选。
-			meta[0] = viewLine{group: -1}
+			meta[0] = viewLine{group: -1, abs: -1}
 		}
 		for len(rows) < avail {
 			rows = append(rows, "")
-			meta = append(meta, viewLine{group: -1})
+			meta = append(meta, viewLine{group: -1, abs: -1})
 		}
 		content = rows
 		contentMeta = meta
@@ -1603,7 +1630,7 @@ func (m *Model) View() tea.View {
 	meta := make([]viewLine, 0, cap(out))
 	appendFixed := func(n int) {
 		for i := 0; i < n; i++ {
-			meta = append(meta, viewLine{group: -1})
+			meta = append(meta, viewLine{group: -1, abs: -1})
 		}
 	}
 	out = append(out, top...)
@@ -1638,16 +1665,25 @@ func (m *Model) View() tea.View {
 	}
 
 	// 框选高亮：选区期间内容行改按纯文本渲染，反显才不会被原有配色淹没。
-	if m.sel.active {
+	// 鼠标用屏幕行号、键盘用内容行号（meta[i].abs），两者只是坐标系不同。
+	if m.selectMode || m.sel.active {
 		for i := range out {
 			if !meta[i].selectable {
 				continue
 			}
-			from, to, on := m.sel.span(i, displayWidth(meta[i].text))
+			key := i
+			if m.sel.absolute {
+				key = meta[i].abs
+			}
+			from, to, on := m.sel.span(key, displayWidth(meta[i].text))
 			if on {
 				out[i] = highlightCells(meta[i].text, from, to, m.styler.enabled)
 			} else {
 				out[i] = meta[i].text
+			}
+			// 键盘模式还没起选时，用反显一格标出光标。
+			if m.selectMode && !m.sel.active && meta[i].abs == m.keyCursor.row {
+				out[i] = highlightCells(meta[i].text, m.keyCursor.col, m.keyCursor.col, m.styler.enabled)
 			}
 		}
 	}
@@ -1896,6 +1932,8 @@ func (m *Model) hintParts(width int) []string {
 
 	var parts []string
 	switch {
+	case m.selectMode:
+		parts = []string{k("hjkl/↑↓←→", "移动"), k("v", "起选"), k("y", "复制"), k("esc", "退出")}
 	case m.approval != nil && m.approval.collapsed:
 		parts = []string{k("esc", "展开待审批"), k("y/a/n", "直选"), k("?", "键位")}
 	case m.approval != nil:
@@ -1922,6 +1960,9 @@ func (m *Model) hintParts(width int) []string {
 		parts = []string{k("ctrl+x", "终止本机命令"), k("?", "键位"), k("ctrl+c", "退出")}
 	default:
 		parts = []string{k("enter", "发送"), k("esc", "取消"), k("?", "键位"), k("ctrl+q", "队列")}
+		if width >= 110 {
+			parts = append(parts, k("ctrl+y", "选择复制"))
+		}
 		if width >= 90 {
 			parts = append(parts, k("/models", "会话模型"), k("/model", "单次模型"), k("/skill", "技能"))
 		}
@@ -2001,6 +2042,7 @@ func (m *Model) helpRows() [][2]string {
 		{"v", "审批时逐块选择"},
 		{"tab", "审批时切换三个按钮"},
 		{"拖选", "按住左键拖动框选，松开即复制到剪贴板"},
+		{"ctrl+y", "键盘选择：hjkl/方向键移动，v 起选，y 复制整行或选区"},
 		{"/exit", "退出（等同 ctrl+c）"},
 		{"ctrl+c", "退出（有任务时确认一次）"},
 	}
@@ -2149,6 +2191,10 @@ func (m *Model) resetView() {
 	m.approval = nil
 	// 选区绑定的是上一帧的屏幕行，换会话后必须作废，否则坐标会指向别的文字。
 	m.sel = selectionState{}
+	m.selectMode = false
+	m.keyCursor = cursor{}
+	m.contentRows = nil
+	m.contentHeight = 0
 	m.viewRows = nil
 	m.notice = ""
 }
