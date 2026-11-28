@@ -69,7 +69,11 @@ func runLocal(ctx context.Context, db *store.Store, path string, opts options) e
 	fmt.Fprintf(os.Stderr, "直接读取 %s\n", path)
 	fmt.Fprintf(os.Stderr, "会话 %s，事件从 seq=%d 起，审计从 id=%d 起\n", sessionID, last, cursor)
 
-	out := &printer{format: opts.format}
+	out, err := newPrinter(opts)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
 	for {
 		// 事件：按 seq 分批追到当前末尾。中途写入的会被下一轮 250ms 再拉。
 		for {

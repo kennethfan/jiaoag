@@ -46,7 +46,12 @@ func Main() {
 		noSpawn   = flag.Bool("no-spawn", false, "连不上时不自动拉起本地服务端")
 		serverBin = flag.String("server-bin", "", "拉起服务端用的可执行文件（默认就是自己）")
 		dbPath    = flag.String("db", "", "不走服务端，直接读这个数据库文件（只读）")
+		follow    = flag.Bool("follow", false, "持续跟随：断线自动重连，-output 文件被轮转后自动重开")
+		output    = flag.String("output", "", "写入文件而不是 stdout（-follow 时追加，否则覆盖）")
 	)
+	var actions, types listFlag
+	flag.Var(&actions, "action", "只导出 action 以该前缀开头的审计（可重复，如 -action exec -action write）")
+	flag.Var(&types, "type", "只导出类型以该前缀开头的事件（可重复，如 -type approval -type tool）")
 	flag.StringVar(&sessionID, "s", "", "会话 id（默认取最近活跃的会话）")
 	flag.StringVar(&sessionID, "session", "", "同 -s（保留旧写法）")
 	flag.Usage = func() { helppkg.Write(os.Stdout, eventsHelp(flag.CommandLine)) }
@@ -57,6 +62,10 @@ func Main() {
 	}
 	if *interval < 100*time.Millisecond {
 		*interval = 100 * time.Millisecond
+	}
+	if *follow && *untilNow {
+		fmt.Fprintln(os.Stderr, "jiaoag events: -follow 与 -until-now 互斥（前者一直跟随，后者导到启动时刻就停）")
+		os.Exit(2)
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -87,6 +96,8 @@ func Main() {
 			sessionID: sessionID,
 			from:      *from, auditFrom: *auditFrom,
 			format: *format, untilNow: *untilNow, interval: *interval,
+			follow: *follow, output: *output,
+			actions: []string(actions), types: []string(types),
 		}
 		if err := runLocal(ctx, db, expanded, opts); err != nil {
 			fatal(err)
@@ -126,10 +137,26 @@ func Main() {
 		from: *from, auditFrom: *auditFrom,
 		format: *format, untilNow: *untilNow, interval: *interval,
 		insecure: *insecure,
+		follow:   *follow, output: *output,
+		actions: []string(actions), types: []string(types),
 	}
 	if err := run(ctx, opts); err != nil {
 		fatal(err)
 	}
+}
+
+// listFlag 是可重复的字符串标志（-action exec -action write）。
+type listFlag []string
+
+func (l *listFlag) String() string { return strings.Join(*l, ",") }
+
+func (l *listFlag) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return fmt.Errorf("不能为空")
+	}
+	*l = append(*l, v)
+	return nil
 }
 
 type options struct {
@@ -142,9 +169,55 @@ type options struct {
 	untilNow  bool
 	interval  time.Duration
 	insecure  bool
+	follow    bool
+	output    string
+	actions   []string
+	types     []string
+}
+
+// resume 记录已经导出到哪里。断线重连时从这里续，避免重复行，也让
+// -follow 在服务端重启后不漏掉中间的事件。
+type resume struct {
+	sessionID string
+	lastSeq   int64
+	cursor    int64
+	started   bool
 }
 
 func run(ctx context.Context, opts options) error {
+	out, err := newPrinter(opts)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	rs := &resume{}
+	delay := 500 * time.Millisecond
+	for {
+		err := runWS(ctx, opts, out, rs)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err == nil {
+			return nil
+		}
+		if !opts.follow {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "导出中断，%s 后重连：%v\n", delay, err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+	}
+}
+
+func runWS(ctx context.Context, opts options, out *printer, rs *resume) error {
 	conn, hello, err := dial(ctx, opts)
 	if err != nil {
 		return err
@@ -163,46 +236,58 @@ func run(ctx context.Context, opts options) error {
 		return wsjson.Write(ctx, conn, env)
 	}
 
-	sessionID, err := pickSession(ctx, conn, send, opts.sessionID)
-	if err != nil {
-		return err
+	sessionID := rs.sessionID
+	if sessionID == "" {
+		sessionID, err = pickSession(ctx, conn, send, opts.sessionID)
+		if err != nil {
+			return err
+		}
+		rs.sessionID = sessionID
 	}
 
-	// 两个 head 都要取：-from/-audit-from 为负时用它们做「只看新数据」的起点，
-	// -until-now 时用它们做导出终点（按启动时刻截断，之后产生的不追）。
+	// 两个 head 都要取：首次启动时用它们把「只看新数据」和「-until-now 的
+	// 终点」定下来；重连时改用 rs 里的游标，head 只作为上限兜底。
 	eventTarget, err := askEventHead(ctx, conn, send, sessionID)
 	if err != nil {
 		return err
 	}
-	eventHead := opts.from
-	if eventHead < 0 {
-		eventHead = eventTarget
-	}
-	if eventTarget < eventHead {
-		eventTarget = eventHead
-	}
-
-	// 审计游标会被轮询协程与主循环同时读写，所以用原子量而不是裸 int64。
 	auditTarget, err := askAuditHead(ctx, conn, send)
 	if err != nil {
 		return err
 	}
+
+	eventHead := rs.lastSeq
+	if !rs.started {
+		eventHead = opts.from
+		if eventHead < 0 {
+			eventHead = eventTarget
+		}
+	}
+	if eventTarget < eventHead {
+		eventTarget = eventHead
+	}
+	cursor := rs.cursor
+	if !rs.started {
+		cursor = opts.auditFrom
+		if cursor < 0 {
+			cursor = auditTarget
+		}
+	}
+	if auditTarget < cursor {
+		auditTarget = cursor
+	}
+
+	// 审计游标会被轮询协程与主循环同时读写，所以用原子量而不是裸 int64。
 	var auditCursor atomic.Int64
-	if opts.auditFrom < 0 {
-		auditCursor.Store(auditTarget)
-	} else {
-		auditCursor.Store(opts.auditFrom)
-	}
-	if auditTarget < auditCursor.Load() {
-		auditTarget = auditCursor.Load()
-	}
+	auditCursor.Store(cursor)
+	rs.started = true
 
 	if err := send(protocol.TypeEventSubscribe, protocol.EventSubscribePayload{
 		SessionID: sessionID, FromSeq: eventHead,
 	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "会话 %s，事件从 seq=%d 起，审计从 id=%d 起\n", sessionID, eventHead, auditCursor.Load())
+	fmt.Fprintf(os.Stderr, "会话 %s，事件从 seq=%d 起，审计从 id=%d 起\n", sessionID, eventHead, cursor)
 
 	// 审计没有推送通道：按 id 游标轮询。事件是推送的，所以这里只需要一个
 	// 轻量 ticker，失败一次不致命，下一轮继续。
@@ -224,11 +309,12 @@ func run(ctx context.Context, opts options) error {
 		return err
 	}
 
-	out := &printer{format: opts.format}
 	done := func(lastSeq int64) bool {
 		return opts.untilNow && lastSeq >= eventTarget && auditCursor.Load() >= auditTarget
 	}
 	lastSeq := eventHead
+	rs.lastSeq = eventHead
+	rs.cursor = cursor
 
 	for {
 		var env protocol.Envelope
@@ -247,6 +333,7 @@ func run(ctx context.Context, opts options) error {
 			out.event(env, se)
 			if env.Seq > lastSeq {
 				lastSeq = env.Seq
+				rs.lastSeq = env.Seq
 			}
 		case protocol.TypeAuditTailResult:
 			var p protocol.AuditTailResultPayload
@@ -258,6 +345,7 @@ func run(ctx context.Context, opts options) error {
 			}
 			if p.NextID > auditCursor.Load() {
 				auditCursor.Store(p.NextID)
+				rs.cursor = p.NextID
 			}
 		case protocol.TypeError:
 			var p protocol.ErrorPayload
@@ -412,12 +500,80 @@ func fatal(err error) {
 // 长载荷会被截断，不适合做导出。
 type printer struct {
 	format string
+	sink   sink
+	filter eventFilter
+	mu     sync.Mutex
+}
+
+// newPrinter 打开输出目标。sink 由调用方负责 Close（run 里 defer）。
+func newPrinter(opts options) (*printer, error) {
+	s, err := newSink(opts)
+	if err != nil {
+		return nil, err
+	}
+	return &printer{
+		format: opts.format,
+		sink:   s,
+		filter: eventFilter{actions: opts.actions, types: opts.types},
+	}, nil
+}
+
+func (p *printer) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sink == nil {
+		return nil
+	}
+	return p.sink.Close()
+}
+
+// emit 串行化写入：审计轮询协程与主循环都会写同一个 sink。
+func (p *printer) emit(line string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.sink == nil {
+		// 测试里直接构造 printer 时不给 sink，退回 stdout。
+		fmt.Fprintln(os.Stdout, line)
+		return
+	}
+	if err := p.sink.writeLine([]byte(line)); err != nil {
+		fmt.Fprintf(os.Stderr, "写出失败: %v\n", err)
+	}
+}
+
+// eventFilter 是 -action / -type 的前缀过滤。空表示不过滤。
+type eventFilter struct {
+	actions []string
+	types   []string
+}
+
+func (f eventFilter) allowsAction(action string) bool {
+	return matchPrefix(f.actions, action)
+}
+
+func (f eventFilter) allowsEvent(kind string) bool {
+	return matchPrefix(f.types, kind)
+}
+
+func matchPrefix(prefixes []string, s string) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *printer) event(env protocol.Envelope, se protocol.StreamEventPayload) {
+	if !p.filter.allowsEvent(se.Kind) {
+		return
+	}
 	if p.format == "text" {
-		fmt.Printf("%s %-18s %8d  %s  %s\n",
-			stamp(env.TS), se.Kind, env.Seq, se.TaskID, clip(se.Payload, 240))
+		p.emit(fmt.Sprintf("%s %-18s %8d  %s  %s",
+			stamp(env.TS), se.Kind, env.Seq, se.TaskID, clip(se.Payload, 240)))
 		return
 	}
 	line := struct {
@@ -429,13 +585,16 @@ func (p *printer) event(env protocol.Envelope, se protocol.StreamEventPayload) {
 		Type      string          `json:"type"`
 		Payload   json.RawMessage `json:"payload,omitempty"`
 	}{"event", env.TS, env.SessionID, env.Seq, se.TaskID, se.Kind, se.Payload}
-	writeJSON(line)
+	p.writeJSON(line)
 }
 
 func (p *printer) audit(r protocol.AuditRecordPayload) {
+	if !p.filter.allowsAction(r.Action) {
+		return
+	}
 	if p.format == "text" {
-		fmt.Printf("%s %-18s %8d  %s  %-8s %s  %s\n",
-			stamp(r.At), "audit:"+r.Action, r.ID, r.TaskID, r.Actor, r.ToolCallID, clip(r.Detail, 240))
+		p.emit(fmt.Sprintf("%s %-18s %8d  %s  %-8s %s  %s",
+			stamp(r.At), "audit:"+r.Action, r.ID, r.TaskID, r.Actor, r.ToolCallID, clip(r.Detail, 240)))
 		return
 	}
 	line := struct {
@@ -449,16 +608,16 @@ func (p *printer) audit(r protocol.AuditRecordPayload) {
 		ToolCallID string          `json:"tool_call_id,omitempty"`
 		Detail     json.RawMessage `json:"detail,omitempty"`
 	}{"audit", r.ID, r.At, r.Actor, r.Action, r.TaskID, r.SessionID, r.ToolCallID, r.Detail}
-	writeJSON(line)
+	p.writeJSON(line)
 }
 
-func writeJSON(v any) {
+func (p *printer) writeJSON(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "编码失败: %v\n", err)
 		return
 	}
-	os.Stdout.Write(append(b, '\n'))
+	p.emit(string(b))
 }
 
 func stamp(ms int64) string {
@@ -485,6 +644,9 @@ func eventsHelp(fs *flag.FlagSet) helppkg.Spec {
 		Examples: []string{
 			"jiaoag events -s ses_3f2a19c4 -from 0 --until-now > events.jsonl",
 			"jiaoag events -format text    # 人读的一行一条",
+			"jiaoag events --follow -output ~/var/jiaoag/events.jsonl   # 持续跟随，日志轮转后自动重开",
+			"jiaoag events --follow -action exec -action write          # 只看执行与写入的审计",
+			"jiaoag events --follow -type approval -type tool           # 只看审批与工具事件",
 		},
 	}
 }

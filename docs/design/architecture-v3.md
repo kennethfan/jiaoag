@@ -241,7 +241,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 
 ## 11. 可观测与运维
 
-- `jiaoag events`：默认用 `mode=ro` 直接读库（`-db` 可换路径，250ms 轮询做实时），`--until-now` 做快照；显式 `-url` 时才走 WS。
+- `jiaoag events`：默认用 `mode=ro` 直接读库（`-db` 可换路径，250ms 轮询做实时），`--until-now` 做快照；显式 `-url` 时才走 WS。`--follow` 是常驻采集形态：`-output` 写文件并在轮转后重开，WS 断线按 `seq`/审计 `id` 退避重连续传；`-action`/`-type` 按前缀过滤（ADR-0056）。
 - `jiaoag sessions list`：同样直连只读库；`rename`/`rm` 等写操作仍走 WS 或内嵌运行时。
 - `jiaoag sessions`：列会话、改名、删除（走 WS，不在跑时自动拉起 serve）。
 - `jiaoag config`：`path/show/check/edit/set`，show 标来源并脱敏，set 只改目标片段并备份。

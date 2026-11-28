@@ -28,6 +28,12 @@ jiaoag events -db /backup/jiaoag.db -s ses_xxx --until-now -format text
 # 只看某个会话
 ./bin/jiaoag events -session ses_xxx
 
+# 常驻采集：持续跟随写文件，日志轮转后自动重开，断线自动重连
+./bin/jiaoag events --follow -output ~/var/jiaoag/events.jsonl
+
+# 只关心执行与写入的审计，以及审批与工具事件
+./bin/jiaoag events --follow -action exec -action write -type approval -type tool
+
 # 导出历史：从最开始，导出到启动时刻为止后退出
 ./bin/jiaoag events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
 
@@ -47,9 +53,27 @@ jiaoag events -db /backup/jiaoag.db -s ses_xxx --until-now -format text
 | `-from` | `-1` | 事件起始 seq；`-1` 只看新事件，`0` 导出全部历史 |
 | `-audit-from` | `-1` | 审计起始 id；同上 |
 | `-format` | `json` | `json`（每行一条）\| `text` |
-| `-until-now` | `false` | 追平启动时刻的水位后退出（适合定时导出） |
+| `-until-now` | `false` | 追平启动时刻的水位后退出（适合定时导出），与 `-follow` 互斥 |
+| `-follow` | `false` | 持续跟随：断线退避重连并按游标续传，`-output` 文件被轮转后自动重开 |
+| `-output` | stdout | 写入文件；`-follow` 时追加，否则覆盖 |
+| `-action` | 全部 | 审计 action 前缀过滤，可重复（OR） |
+| `-type` | 全部 | 事件类型前缀过滤，可重复（OR） |
 | `-interval` | `1s` | 审计轮询间隔（最小 100ms） |
 | `-insecure` | `false` | 跳过 TLS 证书校验（仅自签证书） |
+
+### 常驻采集（`--follow`）
+
+`--follow` 是给「跑一整天的采集进程」用的，比不带它多三件事：
+
+- **写文件 + 轮转**：`-output` 指向的文件被 `logrotate`/`newsyslog` 改名后，下一行写入前会检测 inode 变化并重开新文件，不会继续写旧句柄丢掉日志。
+- **断线重连**：WS 模式下服务端重启（或网络抖动）时按 500ms → 1s → 2s → 5s 退避重连，带上已经导出的 `seq` / 审计 `id` 续传，不重复也不漏。
+- **不因 `--until-now` 退出**：两者互斥，`--follow` 只由 Ctrl+C / SIGTERM 结束。
+
+```bash
+jiaoag events --follow -output /var/log/jiaoag/events.jsonl -action exec -action write
+```
+
+直连模式下 `--follow` 同样有效（250ms 轮询库），只是没有「重连」这一步——库不在就报错退出。
 
 ## 输出
 

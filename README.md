@@ -167,14 +167,17 @@ jiaoag sessions rm ses_8d64 -yes     # 不带 -yes 只提醒
 # 跟着最近活跃的会话 tail（Ctrl+C 退出）
 ./bin/jiaoag events -config ~/.config/jiaoag/config.yaml
 
+# 常驻采集：写文件、日志轮转后自动重开、断线自动重连并按游标续传
+./bin/jiaoag events --follow -output ~/var/jiaoag/events.jsonl -action exec -action write
+
 # 导出历史：事件从 seq=0、审计从 id=0 开始，导出到启动时刻为止后退出
-./bin/jiaoag events -session ses_xxx -from 0 -audit-from 0 -until-now > events.jsonl
+./bin/jiaoag events -session ses_xxx -from 0 -audit-from 0 --until-now > events.jsonl
 
 # 给人看
 ./bin/jiaoag events -session ses_xxx -from 0 -format text
 ```
 
-事件行带 `seq`/`type`/`task_id`/`payload`，审计行带 `action`/`actor`/`task_id`/`session_id`/`detail`；审计按 id 游标增量拉取（1 秒一轮，`-interval` 可调）。详见 [`docs/observability.md`](docs/observability.md)。
+事件行带 `seq`/`type`/`task_id`/`payload`，审计行带 `action`/`actor`/`task_id`/`session_id`/`detail`；审计按 id 游标增量拉取（1 秒一轮，`-interval` 可调）。`--follow` 给常驻采集用：退避重连、按 `seq`/`id` 续传、`-output` 文件被轮转后自动重开；`-action`/`-type` 按前缀过滤（可重复）。详见 [`docs/observability.md`](docs/observability.md)。
 
 无终端环境下自检两端是否互通：
 
@@ -284,6 +287,7 @@ make demo-mcp
 | v2.54 | 键盘选择复制：`ctrl+y` 进入，hjkl/方向键移动、`v` 起选、`y` 复制，坐标用内容行号可跨屏（修订 ADR-0054） | ✅ |
 | v2.55 | Web 端 `/ps`：底部「进程」列全部会话的后台进程，可停止 / 终止孤儿 / 删记录，与 TUI 共用同一套 rpc（修订 ADR-0052） | ✅ |
 | v2.56 | 附加根的项目级扩展：`AGENTS.md` / `.jiaoag/` / `MEMORY.md` 与主根一起发现、一次确认；同名技能与 MCP 由主根胜出，`/mcp` 显示 `project:lib`（ADR-0055） | ✅ |
+| v2.57 | `jiaoag events --follow`：常驻采集写文件、轮转后自动重开、断线按游标重连续传；`-action`/`-type` 前缀过滤（ADR-0056） | ✅ |
 
 ## 安全边界
 
