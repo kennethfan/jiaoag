@@ -225,6 +225,8 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 
 连接串固定 `WAL + busy_timeout(5000) + foreign_keys(1) + _txlock=immediate`；写串行、读并发。迁移在 `store.Open` 内执行，遇 `SQLITE_BUSY` 自动重试（最长 30s），并校验 schema 与版本一致。
 
+保留策略的粒度是会话而不是行：`events` 是回放的唯一来源，单独删行会让历史残缺（ADR-0059）。
+
 ---
 
 ## 10. 安全边界
@@ -250,6 +252,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 - `jiaoag config`：`path/show/check/edit/set`，show 标来源并脱敏，set 只改目标片段并备份。
 - `jiaoag policy test -- argv` / `--shell`：解释某条命令为什么被放行或要求审批。
 - Webhook：审批与终态推送，可验签；`docs/notifications.md`。
+- `jiaoag admin prune -older-than 90d`：按会话整块删除过期数据（任务/事件/审计/审批一起），`storage.retention_days` 可让运行时启动时与每 24 小时自动跑（ADR-0059）。
 - 审计动作：`exec.*`、`external.*`、`write.applied/failed`、`write.auto`、`tool.denied`、`context.compact*`。
 
 ---

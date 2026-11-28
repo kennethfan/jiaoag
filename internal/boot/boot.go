@@ -56,10 +56,12 @@ type Stack struct {
 	runtimeID string
 	stopBeat  chan struct{}
 	stopProcs context.CancelFunc
-	notify    *notifypkg.Dispatcher
-	mcp       *mcppkg.Manager
-	plugin    *pluginpkg.Manager
-	closed    bool
+	// stopRetention 停止自动清理循环（storage.retention_days > 0 时才启动）。
+	stopRetention chan struct{}
+	notify        *notifypkg.Dispatcher
+	mcp           *mcppkg.Manager
+	plugin        *pluginpkg.Manager
+	closed        bool
 }
 
 // RuntimeID 是本进程的运行时标识，写进任务占位与 runtimes 表。
@@ -76,6 +78,9 @@ func (s *Stack) Close() {
 	s.closed = true
 	if s.stopProcs != nil {
 		s.stopProcs()
+	}
+	if s.stopRetention != nil {
+		close(s.stopRetention)
 	}
 	if s.notify != nil {
 		s.notify.Close()
@@ -207,7 +212,52 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 
 	stack.Core = rpc.NewCore(application, cfg, log)
 	stack.Streams = rpc.NewStreams(application, log)
+	if days := cfg.Storage.RetentionDays; days > 0 {
+		stack.stopRetention = make(chan struct{})
+		go retentionLoop(application, time.Duration(days)*24*time.Hour, stack.stopRetention, log)
+	}
 	return stack, nil
+}
+
+// retentionLoop 按 storage.retention_days 定期删掉过期会话：启动时先跑一次，
+// 之后每 24 小时一次。多个运行时同时开会各自跑——删除是幂等的，第二个通常
+// 什么也找不到。
+func retentionLoop(a *app.App, olderThan time.Duration, stop <-chan struct{}, log *slog.Logger) {
+	prune := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		cands, err := a.PruneCandidates(ctx, olderThan, time.Now())
+		if err != nil {
+			log.Warn("保留策略：列出过期会话失败", "err", err)
+			return
+		}
+		if len(cands) == 0 {
+			return
+		}
+		ids := make([]string, 0, len(cands))
+		for _, c := range cands {
+			ids = append(ids, c.ID)
+		}
+		deleted, err := a.PruneSessions(ctx, ids)
+		if err != nil {
+			// 某个会话刚好有任务进来就会删不掉，这属于正常情况，不当成故障。
+			log.Info("保留策略：部分过期会话未删除", "deleted", deleted, "candidates", len(ids), "err", err)
+			return
+		}
+		log.Info("保留策略：已删除过期会话", "deleted", deleted, "retention_days", int(olderThan.Hours()/24))
+	}
+
+	prune()
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			prune()
+		}
+	}
 }
 
 // newRuntimeID 生成运行时标识：主机 + pid + 启动时刻，足以区分同机多进程，

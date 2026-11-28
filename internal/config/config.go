@@ -305,6 +305,9 @@ func (c *Config) validateTLS() error {
 type Storage struct {
 	DBPath    string `yaml:"db_path"`
 	OutputDir string `yaml:"output_dir"`
+	// RetentionDays 是会话保留天数：超过这个天数、且所有任务都终态的会话会被
+	// 整块删除。0 表示不自动清理（仍可用 jiaoag admin prune 手动跑）。
+	RetentionDays int `yaml:"retention_days"`
 }
 
 // Agent 是自主循环的执行约束。
@@ -1071,6 +1074,9 @@ func (c *Config) validateCommon() error {
 		return fmt.Errorf("storage.output_dir: %w", err)
 	} else {
 		c.Storage.OutputDir = p
+	}
+	if c.Storage.RetentionDays < 0 {
+		return fmt.Errorf("storage.retention_days 不能为负数（0 表示不自动清理），当前为 %d", c.Storage.RetentionDays)
 	}
 	if c.Agent.MaxRounds != nil && *c.Agent.MaxRounds < 0 {
 		return fmt.Errorf("agent.max_rounds 不能为负数（0 表示不限制），当前为 %d", *c.Agent.MaxRounds)

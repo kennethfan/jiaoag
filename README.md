@@ -8,7 +8,7 @@
 - 实施计划：`docs/plans/v1.md`
 - 真实 provider 端到端验收：`docs/real-provider-e2e.md`
 
-能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）。分层、契约、多运行时与扩展点的完整说明见 `docs/design/architecture-v3.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
+能力和运维各有一份专题文档：`docs/tui.md`（界面与键位）、`docs/tls.md`、`docs/tokens.md`、`docs/observability.md`、`docs/sandbox.md`、`docs/mcp.md`、`docs/plugins.md`、`docs/skills.md`、`docs/project-extensions.md`、`docs/multi-root.md`、`docs/context-compaction.md`、`docs/memory.md`、`docs/restart-resume.md`、`docs/notifications.md`、`docs/policy-feed.md`、`docs/local-shell.md`、`docs/sessions.md`、`docs/web.md`、`docs/write-approval.md`、`docs/commands.md`（命令白名单与后台任务）、`docs/config.md`（配置查看与修改）、`docs/retention.md`（数据保留与清理）。分层、契约、多运行时与扩展点的完整说明见 `docs/design/architecture-v3.md`。还剩哪些工作、哪些明确不做，见 `docs/roadmap.md`。
 
 ## 构建
 
@@ -289,6 +289,7 @@ make demo-mcp
 | v2.56 | 附加根的项目级扩展：`AGENTS.md` / `.jiaoag/` / `MEMORY.md` 与主根一起发现、一次确认；同名技能与 MCP 由主根胜出，`/mcp` 显示 `project:lib`（ADR-0055） | ✅ |
 | v2.57 | `jiaoag events --follow`：常驻采集写文件、轮转后自动重开、断线按游标重连续传；`-action`/`-type` 前缀过滤（ADR-0056） | ✅ |
 | v2.59 | `/metrics`：Prometheus 文本（进程 + 库计数），需令牌，只读令牌也可抓（ADR-0058） | ✅ |
+| v2.60 | 数据保留：`jiaoag admin prune` 按会话整块清理过期数据，`storage.retention_days` 可自动跑（ADR-0059） | ✅ |
 | v2.58 | 上下文估算系数跨任务记忆：按 `provider/model` 落库（`token_ratios`），新任务首轮沿用上次校准（ADR-0057） | ✅ |
 
 ## 安全边界

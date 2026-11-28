@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kennethfan/jiaoag/internal/cli/admin"
 	"github.com/kennethfan/jiaoag/internal/cli/config"
 	"github.com/kennethfan/jiaoag/internal/cli/demo"
 	"github.com/kennethfan/jiaoag/internal/cli/events"
@@ -31,6 +32,7 @@ const usageText = `jiaoag — 单用户编码 agent
   jiaoag events [参数]           订阅并导出事件与审计（JSONL）
   jiaoag policy sync|verify|test 拉取并验签规则 feed，或解释一条命令的判定
   jiaoag config path|show|check  查看与校验配置（set/edit 可修改）
+  jiaoag admin prune             按保留期删除过期会话（运维）
   jiaoag demo [参数]             真实 provider 冒烟（开发用）
   jiaoag plugin-example          参考插件，走 stdio JSON-RPC（开发用）
   jiaoag help                    显示这段说明
@@ -55,7 +57,7 @@ func main() {
 		return
 	}
 	switch args[0] {
-	case "serve", "tui", "events", "sessions", "policy", "config", "demo", "plugin-example":
+	case "serve", "tui", "events", "sessions", "policy", "config", "admin", "demo", "plugin-example":
 		dispatch(args[0], args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "jiaoag: 未知子命令 %q\n\n%s\n", args[0], usageText)
@@ -80,6 +82,8 @@ func dispatch(sub string, rest []string) {
 		policy.Main()
 	case "config":
 		config.Main()
+	case "admin":
+		admin.Main()
 	case "demo":
 		demo.Main()
 	case "plugin-example":

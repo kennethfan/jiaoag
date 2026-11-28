@@ -913,3 +913,56 @@ func TestNotifyValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestStorageRetentionValidation(t *testing.T) {
+	base := func(extra string) string {
+		return `
+server:
+  listen: 127.0.0.1:8787
+  token: t
+storage:
+  db_path: /tmp/x.db
+  output_dir: /tmp/out
+` + extra + `
+providers:
+  - name: p
+    type: openai
+    base_url: http://127.0.0.1:1/v1
+    model: m
+    api_key: k
+`
+	}
+
+	// 不配就是 0：不自动清理。
+	cfg, err := Load(writeTemp(t, base("")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Storage.RetentionDays != 0 {
+		t.Errorf("默认 retention_days 应为 0，实际 %d", cfg.Storage.RetentionDays)
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+
+	// 正数合法。
+	cfg2, err := Load(writeTemp(t, base("  retention_days: 90\n")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg2.Storage.RetentionDays != 90 {
+		t.Errorf("retention_days = %d，期望 90", cfg2.Storage.RetentionDays)
+	}
+	if err := cfg2.ValidateServer(); err != nil {
+		t.Fatalf("ValidateServer: %v", err)
+	}
+
+	// 负数报错。
+	bad, err := Load(writeTemp(t, base("  retention_days: -1\n")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := bad.ValidateServer(); err == nil || !strings.Contains(err.Error(), "retention_days") {
+		t.Fatalf("负数应报 retention_days 错误，实际 %v", err)
+	}
+}

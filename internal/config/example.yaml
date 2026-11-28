@@ -24,6 +24,9 @@ server:
 storage:
   db_path: ~/.local/share/jiaoag/jiaoag.db
   output_dir: ~/.local/share/jiaoag/outputs
+  # 会话保留天数：超过这个天数、且所有任务都已结束的会话会被整块删除（任务/事件/审计
+  # 一起）。0 表示不自动清理，仍可用 jiaoag admin prune 手动跑。见 ADR-0059。
+  retention_days: 0
 
 policy:
   # 规则目录。首次启动会把默认白名单写成 policy.d/default.yaml，之后以该文件为准；
