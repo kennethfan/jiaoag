@@ -55,7 +55,7 @@ func buildWith(history []llm.Message, budget int, est *tokenEstimator) []llm.Mes
 // countTokens 估算一组消息占用的 token；est 为 nil 时用默认估算器。
 func countTokens(msgs []llm.Message, est *tokenEstimator) int {
 	if est == nil {
-		est = newTokenEstimator()
+		est = newTokenEstimator(0)
 	}
 	return est.messages(msgs)
 }

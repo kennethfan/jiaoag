@@ -297,7 +297,8 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 		outputDir = cfg.Storage.OutputDir
 	}
 	return app.RuntimeDeps{
-		Procs: procs,
+		Procs:           procs,
+		DefaultProvider: defaultProviderName(cfg),
 		Provider: func(sess domain.Session) (llm.Provider, string, error) {
 			provider, ok := cfg.Provider(sess.Provider)
 			if sess.Provider == "" {
@@ -377,6 +378,15 @@ func runtimeDeps(cfg *config.Config, log *slog.Logger, backend execpkg.Backend, 
 }
 
 // agentMaxRounds 把配置的轮数翻译成 agent 的约定：0 表示不限制，用 -1 表示。
+// defaultProviderName 给「会话没指定供应商」的情况一个名字，用于估算系数
+// 分键；名字本身不参与构造，配置里的第一个供应商就是默认供应商。
+func defaultProviderName(cfg *config.Config) string {
+	if p, ok := cfg.DefaultProvider(); ok {
+		return p.Name
+	}
+	return ""
+}
+
 func agentMaxRounds(rounds int) int {
 	if rounds == 0 {
 		return -1

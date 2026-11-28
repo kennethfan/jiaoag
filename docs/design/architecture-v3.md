@@ -47,7 +47,7 @@
 | `internal/perm` | 按副作用分级、默认拒绝；命令白名单与高风险子命令；规则只能收紧 |
 | `internal/exec` | 执行后端（direct / sandbox）；进程组/Job Object、超时、限额、日志与后台进程 |
 | `internal/workspace` | 根目录与附加根、路径越界防护、读、`Snapshot`/`Hash`/`Write`（原子 rename、保留权限、拒绝 `.git`） |
-| `internal/store` | SQLite 深模块：11 张业务表 + `schema_migrations`、事务助手、租约/审批/进程的 CAS |
+| `internal/store` | SQLite 深模块：12 张业务表 + `schema_migrations`、事务助手、租约/审批/进程的 CAS |
 | `internal/event` | `Journal`（追加/回放）与 `Hub`（按会话订阅、扇出、seq 分配） |
 | `internal/llm` | `Provider` 端口 + openai/anthropic 适配器 + 重试/超时/限流/多 key 装饰器 |
 | `internal/prompt` | 提示词分层装配、`{{var}}` 白名单、层来源与 hash |
@@ -181,7 +181,7 @@ project:*           AGENTS.md 与 .jiaoag/prompts/*.md（主根 + 附加根，�
 workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，分 ### 别名 段）
 ```
 
-- 预算按**估算 token**（字符类别加权 + 每轮 `prompt_tokens` 校准），默认 32000；超 80% 时把较早轮次压成摘要事件，保留最近 2 轮。
+- 预算按**估算 token**（字符类别加权 + 每轮 `prompt_tokens` 校准），默认 32000；超 80% 时把较早轮次压成摘要事件，保留最近 2 轮。校准系数按 `provider/model` 落 `token_ratios`（ADR-0057），新任务首轮就沿用上次结果。
 - 消息历史每轮从事件重建，只认 4 类事件：`task.queued` / `assistant.message` / `tool.result` / `context.compacted`。
 - 技能、项目提示、记忆都进 `prompt.Hash`，任务提交时冻结为 `system_prompt_hash`；与工具注册表、规则集、后端名合成 `extensions_digest`。
 - 附加根的项目级扩展与主根一起确认（ADR-0055）：提示与记忆主根在前、共享总预算；技能与 MCP 主根在后（同名胜出）。
@@ -206,7 +206,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 
 ## 9. 持久化
 
-11 张业务表 + `schema_migrations`（迁移 0001–0009）：
+12 张业务表 + `schema_migrations`（迁移 0001–0011）：
 
 | 表 | 用途 |
 |---|---|
@@ -221,6 +221,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 | `project_trust` | 项目级扩展的内容摘要信任 |
 | `runtimes` | 运行时心跳与存活判定 |
 | `background_procs` | 后台进程属主、状态与停止请求 |
+| `token_ratios` | 上下文预算估算系数（按 `provider/model`，ADR-0057） |
 
 连接串固定 `WAL + busy_timeout(5000) + foreign_keys(1) + _txlock=immediate`；写串行、读并发。迁移在 `store.Open` 内执行，遇 `SQLITE_BUSY` 自动重试（最长 30s），并校验 schema 与版本一致。
 

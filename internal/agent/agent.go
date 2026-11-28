@@ -95,7 +95,13 @@ type Options struct {
 	Model         string
 	MaxRounds     int
 	ContextBudget int
-	SystemLayers  []prompt.Layer
+	// TokenRatio 是上次任务留下的估算校准系数（按 provider/model 落库）。
+	// 0 表示没有历史，从默认值 1.0 起算。
+	TokenRatio float64
+	// OnTokenRatio 在任务结束时带着本次校准后的系数回调一次；只在真正取到
+	// 样本时调用，避免没有数据的任务覆盖历史值。
+	OnTokenRatio func(ratio float64)
+	SystemLayers []prompt.Layer
 	// Memory 是工作区跨会话记忆（MEMORY.md）的正文；非空时追加为提示层。
 	Memory string
 	// SkillsIndex 是技能索引（名字 + 适用场景）；正文由 skill 工具按需加载。
@@ -193,7 +199,16 @@ func (a *Agent) Run(ctx context.Context, task domain.Task) error {
 
 	var usage domain.TokenUsage
 	budget := a.opts.ContextBudget
-	est := newTokenEstimator()
+	est := newTokenEstimator(a.opts.TokenRatio)
+	if a.opts.OnTokenRatio != nil {
+		// 任务结束时把校准结果交回宿主落库：估算器只在任务内存在，
+		// 跨任务的记忆得由调用方保存。
+		defer func() {
+			if est.calibrated() {
+				a.opts.OnTokenRatio(est.currentRatio())
+			}
+		}()
+	}
 	specs := a.toolSpecs()
 	overflowRetried := false
 	lastCompact := 0

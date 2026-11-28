@@ -288,6 +288,7 @@ make demo-mcp
 | v2.55 | Web 端 `/ps`：底部「进程」列全部会话的后台进程，可停止 / 终止孤儿 / 删记录，与 TUI 共用同一套 rpc（修订 ADR-0052） | ✅ |
 | v2.56 | 附加根的项目级扩展：`AGENTS.md` / `.jiaoag/` / `MEMORY.md` 与主根一起发现、一次确认；同名技能与 MCP 由主根胜出，`/mcp` 显示 `project:lib`（ADR-0055） | ✅ |
 | v2.57 | `jiaoag events --follow`：常驻采集写文件、轮转后自动重开、断线按游标重连续传；`-action`/`-type` 前缀过滤（ADR-0056） | ✅ |
+| v2.58 | 上下文估算系数跨任务记忆：按 `provider/model` 落库（`token_ratios`），新任务首轮沿用上次校准（ADR-0057） | ✅ |
 
 ## 安全边界
 

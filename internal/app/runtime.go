@@ -30,6 +30,9 @@ type RuntimeDeps struct {
 	// RuntimeID 是本运行时的唯一标识（host:pid:start），用于任务占位与租约。
 	RuntimeID string
 	Provider  func(sess domain.Session) (llm.Provider, string, error)
+	// DefaultProvider 是会话没指定供应商时的名字，只用于给上下文估算
+	// 系数分键（provider/model），不参与供应商构造。
+	DefaultProvider string
 	// Tools 按会话工作区构造工具集：工具绑定具体根目录，不能全局复用。
 	// env 携带执行后端、输出目录与 tool_call_id 反查，由 app 统一注入。
 	Tools       func(ws *workspace.Workspace, env tools.RuntimeEnv) (*tools.Registry, error)
@@ -224,6 +227,13 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 	if err != nil {
 		return nil, "", "", err
 	}
+	// 估算系数按 provider/model 跨任务复用：首轮就用得上历史校准，
+	// 中文与代码这类偏差大的内容不再每次都从 1.0 起算。
+	ratioKey := tokenRatioKey(sess.Provider, deps.DefaultProvider, model)
+	initialRatio, err := a.store.TokenRatio(context.Background(), ratioKey)
+	if err != nil {
+		deps.Logger.Warn("读取上下文估算系数失败，按默认值起算", "key", ratioKey, "error", err)
+	}
 	// 记忆是增强不是前提：读不到就当没有，任务照跑。附加根的记忆只在项目级
 	// 扩展被加载时参与，见 loadMemory 的注释。
 	var memoryText string
@@ -248,10 +258,14 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 		MaxRounds:      deps.MaxRounds,
 		WriteApproval:  deps.WriteApproval,
 		ContextBudget:  deps.ContextBudget,
-		Compact:        deps.ContextCompact,
-		Logger:         deps.Logger,
-		Ruleset:        deps.Ruleset,
-		OutputDir:      deps.OutputDir,
+		TokenRatio:     initialRatio,
+		OnTokenRatio: func(r float64) {
+			a.saveTokenRatio(ratioKey, r, deps.Logger)
+		},
+		Compact:   deps.ContextCompact,
+		Logger:    deps.Logger,
+		Ruleset:   deps.Ruleset,
+		OutputDir: deps.OutputDir,
 	})
 	if err != nil {
 		return nil, "", "", err
@@ -270,6 +284,49 @@ func (a *App) newAgent(sess domain.Session, deps *RuntimeDeps, requested []strin
 	}
 	sum := sha256.Sum256([]byte(registry.Digest() + "|" + rulesetHash + "|" + backendName + "|" + system.Hash))
 	return ag, system.Hash, hex.EncodeToString(sum[:]), nil
+}
+
+// tokenRatioKey 把估算系数按 `provider/model` 分键。
+//
+// 为什么不是按 provider：同一供应商下不同模型的分词器差异可能比跨供应商
+// 还大；为什么带 model：换模型后旧系数没有参考价值。缺项用 "-" 占位，
+// 保证键总是非空（store 拒空键）。
+func tokenRatioKey(sessProvider, defaultProvider, model string) string {
+	name := strings.TrimSpace(sessProvider)
+	if name == "" {
+		name = strings.TrimSpace(defaultProvider)
+	}
+	if name == "" {
+		name = "-"
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "-"
+	}
+	return name + "/" + model
+}
+
+// TokenRatio 读取某个 `provider/model` 的历史估算系数；0 表示还没有记录。
+//
+// 暴露成 app 方法主要是给测试与诊断用：生产路径由 newAgent 直接读。
+func (a *App) TokenRatio(ctx context.Context, key string) (float64, error) {
+	return a.store.TokenRatio(ctx, key)
+}
+
+// saveTokenRatio 回写估算系数。失败只记日志：预算精度差一点不该让任务失败。
+func (a *App) saveTokenRatio(key string, ratio float64, log *slog.Logger) {
+	if a.store == nil {
+		return
+	}
+	if err := a.store.SaveTokenRatio(context.Background(), key, ratio); err != nil {
+		if log != nil {
+			log.Warn("保存上下文估算系数失败", "key", key, "error", err)
+		}
+		return
+	}
+	if log != nil {
+		log.Debug("上下文估算系数已保存", "key", key, "ratio", ratio)
+	}
 }
 
 // resolveSkillBodies 把用户点名的技能解析成提示层正文。

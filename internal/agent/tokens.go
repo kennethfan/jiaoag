@@ -33,14 +33,29 @@ const (
 
 // tokenEstimator 估算提示词占用，并用真实用量修正系数。
 //
-// 它不是并发安全的，但也不需要：每个任务在 Run 里创建一个，任务之间不共享。
+// 它不是并发安全的，但也不需要：每个任务在 Run 里创建一个。
+//
+// initial 是上一个任务结束时留下的系数（按 provider/model 落库，见
+// store.TokenRatio）：新任务首轮就能用上历史校准，不必从 1.0 冷启动。
+// 0 或越界视为没有历史，退回默认值。
 type tokenEstimator struct {
-	ratio float64
+	ratio   float64
+	samples int
 }
 
-func newTokenEstimator() *tokenEstimator {
-	return &tokenEstimator{ratio: defaultTokenRatio}
+func newTokenEstimator(initial float64) *tokenEstimator {
+	ratio := initial
+	if ratio < minTokenRatio || ratio > maxTokenRatio {
+		ratio = defaultTokenRatio
+	}
+	return &tokenEstimator{ratio: ratio}
 }
+
+// currentRatio 返回当前系数，供任务结束时回写。
+func (e *tokenEstimator) currentRatio() float64 { return e.ratio }
+
+// calibrated 表示本任务至少取到过一个可用的样本；没有样本时不覆盖历史值。
+func (e *tokenEstimator) calibrated() bool { return e.samples > 0 }
 
 // messages 估算消息历史（含结构开销），结果已按校准系数换算。
 func (e *tokenEstimator) messages(msgs []llm.Message) int {
@@ -81,6 +96,7 @@ func (e *tokenEstimator) observe(estimated, actual int) {
 		next = maxTokenRatio
 	}
 	e.ratio = next
+	e.samples++
 }
 
 func (e *tokenEstimator) scale(raw int) int {

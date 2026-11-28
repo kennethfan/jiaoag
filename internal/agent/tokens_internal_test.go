@@ -27,7 +27,7 @@ func TestEstimateTextWeighsCJKAndASCII(t *testing.T) {
 
 func TestEstimatorCalibratesAgainstRealUsage(t *testing.T) {
 	msgs := []llm.Message{llm.TextMessage(llm.RoleUser, strings.Repeat("a", 4000))}
-	est := newTokenEstimator()
+	est := newTokenEstimator(0)
 	before := est.messages(msgs)
 	if before <= 0 {
 		t.Fatalf("估算值应为正")
@@ -50,7 +50,7 @@ func TestEstimatorCalibratesAgainstRealUsage(t *testing.T) {
 }
 
 func TestEstimatorIgnoresTinyRequests(t *testing.T) {
-	est := newTokenEstimator()
+	est := newTokenEstimator(0)
 	est.observe(10, 500)
 	if est.ratio != defaultTokenRatio {
 		t.Fatalf("小请求不应参与校准，ratio=%.2f", est.ratio)
@@ -62,7 +62,7 @@ func TestEstimatorIgnoresTinyRequests(t *testing.T) {
 }
 
 func TestOverheadCountsSystemAndTools(t *testing.T) {
-	est := newTokenEstimator()
+	est := newTokenEstimator(0)
 	without := est.overhead("短的系统提示", nil)
 	withTools := est.overhead("短的系统提示", []llm.ToolSpec{{
 		Name:        "read_file",
@@ -81,7 +81,7 @@ func TestBuildUsesCalibratedEstimator(t *testing.T) {
 		llm.TextMessage(llm.RoleAssistant, strings.Repeat("b", 400)),
 		llm.TextMessage(llm.RoleUser, strings.Repeat("c", 400)),
 	}
-	est := newTokenEstimator()
+	est := newTokenEstimator(0)
 	budget := est.messages(history) / 2
 
 	kept := buildWith(history, budget, est)
@@ -96,5 +96,45 @@ func TestBuildUsesCalibratedEstimator(t *testing.T) {
 	kept = buildWith(history, budget, est)
 	if len(kept) != 1 {
 		t.Fatalf("校准放大后应只保留最后一条用户消息，实际 %d 条", len(kept))
+	}
+}
+
+func TestEstimatorSeedsFromSavedRatio(t *testing.T) {
+	msgs := []llm.Message{llm.TextMessage(llm.RoleUser, strings.Repeat("a", 4000))}
+	base := newTokenEstimator(0).messages(msgs)
+
+	// 上次任务留下的系数应当直接生效：首轮就用 2.0 估算。
+	seeded := newTokenEstimator(2.0)
+	if seeded.currentRatio() != 2.0 {
+		t.Fatalf("初始系数应被采纳，得到 %.2f", seeded.currentRatio())
+	}
+	if got := seeded.messages(msgs); got < base*2-1 {
+		t.Fatalf("按 2.0 估算应接近默认的两倍：base=%d got=%d", base, got)
+	}
+
+	// 越界值视为没有历史，退回默认。
+	for _, bad := range []float64{0, -1, maxTokenRatio + 1, 100} {
+		if got := newTokenEstimator(bad).currentRatio(); got != defaultTokenRatio {
+			t.Fatalf("非法初始系数 %.1f 应退回默认，得到 %.2f", bad, got)
+		}
+	}
+}
+
+func TestEstimatorOnlyReportsCalibrationWithSamples(t *testing.T) {
+	est := newTokenEstimator(1.5)
+	if est.calibrated() {
+		t.Fatal("没有样本时不该报告已校准（否则会覆盖历史系数）")
+	}
+	// 太小的请求不参与校准。
+	est.observe(50, 500)
+	if est.calibrated() {
+		t.Fatal("低于最小校准量的请求不该算样本")
+	}
+	est.observe(4000, 8000)
+	if !est.calibrated() {
+		t.Fatal("有效样本后应报告已校准")
+	}
+	if est.currentRatio() <= 1.5 {
+		t.Fatalf("真实用量偏大时系数应上移，得到 %.2f", est.currentRatio())
 	}
 }

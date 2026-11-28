@@ -96,6 +96,10 @@ type Store interface {
 	// ResolveApprovalDecision 用 CAS 写入裁决，返回是否由本次调用落定。
 	GetBackgroundProc(ctx context.Context, id string) (store.BackgroundProc, error)
 	MarkBackgroundProc(ctx context.Context, id, status string) error
+
+	// 上下文预算估算系数：按 `provider/model` 跨任务记住上一次的校准结果。
+	TokenRatio(ctx context.Context, key string) (float64, error)
+	SaveTokenRatio(ctx context.Context, key string, ratio float64) error
 	ResolveApprovalDecision(ctx context.Context, id domain.ApprovalID,
 		decision domain.Decision, source domain.ApprovalSource, note string,
 		at time.Time, hunks []int) (bool, error)
