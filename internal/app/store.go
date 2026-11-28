@@ -100,6 +100,9 @@ type Store interface {
 	// 上下文预算估算系数：按 `provider/model` 跨任务记住上一次的校准结果。
 	TokenRatio(ctx context.Context, key string) (float64, error)
 	SaveTokenRatio(ctx context.Context, key string, ratio float64) error
+
+	// Stats 是 /metrics 用的只读聚合（会话/任务/事件/审计/后台进程计数）。
+	Stats(ctx context.Context) (store.Stats, error)
 	ResolveApprovalDecision(ctx context.Context, id domain.ApprovalID,
 		decision domain.Decision, source domain.ApprovalSource, note string,
 		at time.Time, hunks []int) (bool, error)

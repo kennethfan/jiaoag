@@ -85,3 +85,4 @@ curl -s -H "Authorization: Bearer $(cat ~/.config/jiaoag/token)" 127.0.0.1:8787/
 - 只读令牌能看全部会话的事件与审计——它是「观测者」，不是「受限用户」。
 - 与 TLS 独立：明文连接下令牌仍会在网络上裸奔，远程使用必须配 `tls_cert`/`tls_key`（见 [`tls.md`](tls.md)）。
 - `/healthz` 的匿名响应只说明「进程活着」，不代表数据库可用或任务能跑；要判断可用性请走 WS 握手。
+- 只读令牌可以抓 `/metrics`（HTTP 鉴权，不走 WS 的写命令白名单）；监控用只读令牌比用可写令牌安全。

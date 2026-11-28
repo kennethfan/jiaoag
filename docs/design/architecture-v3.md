@@ -232,6 +232,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 | 面 | 措施 |
 |---|---|
 | 传输 | 默认只监听回环；`tls_cert`/`tls_key` 同时配置才启用 wss；反代同样支持 |
+| 观测接口 | `/healthz` 匿名只回 ok；`/api/info`、`/metrics` 需令牌，指标不含内容型数据 |
 | 认证 | 命名令牌 `server.tokens[]`，可标 `read_only`；SIGHUP 热重载；只读令牌在契约层被拦写 |
 | 文件 | 路径越界防护；`.git` 拒写；写入走 diff + CAS；敏感路径（`.env*`、密钥、`AGENTS.md`、`Makefile` 等）始终审批 |
 | 命令 | 默认拒绝；白名单 `policy.d/default.yaml`；高风险子命令（publish/deploy/exec/make install）固定审批；危险 flag 硬拒 |
@@ -243,6 +244,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 ## 11. 可观测与运维
 
 - `jiaoag events`：默认用 `mode=ro` 直接读库（`-db` 可换路径，250ms 轮询做实时），`--until-now` 做快照；显式 `-url` 时才走 WS。`--follow` 是常驻采集形态：`-output` 写文件并在轮转后重开，WS 断线按 `seq`/审计 `id` 退避重连续传；`-action`/`-type` 按前缀过滤（ADR-0056）。
+- `GET /metrics`：Prometheus 文本（进程指标 + 库计数），需令牌（只读令牌亦可），每次抓取实时聚合、失败以 `jiaoag_metrics_error` 表达（ADR-0058）。
 - `jiaoag sessions list`：同样直连只读库；`rename`/`rm` 等写操作仍走 WS 或内嵌运行时。
 - `jiaoag sessions`：列会话、改名、删除（走 WS，不在跑时自动拉起 serve）。
 - `jiaoag config`：`path/show/check/edit/set`，show 标来源并脱敏，set 只改目标片段并备份。

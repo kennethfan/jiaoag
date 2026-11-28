@@ -98,6 +98,51 @@ jiaoag events --follow -output /var/log/jiaoag/events.jsonl -action exec -action
 ./bin/jiaoag events -session ses_x | jq -c 'select(.action? and (.action|startswith("exec.")))'
 ```
 
+## 指标（`/metrics`）
+
+服务端在同端口暴露 Prometheus 文本格式的指标，**需要令牌**（与 `/api/info` 同级；库的行数与连接数属于侦察材料）。手写 exposition，不引 prometheus 客户端库。
+
+```bash
+curl -s -H "Authorization: Bearer $(cat ~/.config/jiaoag/token)" \
+  http://127.0.0.1:8788/metrics | head -20
+```
+
+Prometheus 抓取：
+
+```yaml
+scrape_configs:
+  - job_name: jiaoag
+    scheme: http
+    authorization:
+      credentials_file: /etc/jiaoag/token
+    static_configs:
+      - targets: ["127.0.0.1:8788"]
+```
+
+Vector / 其他采集器同理：`Authorization: Bearer <token>`，路径 `/metrics`。配了 TLS 就把 scheme 换成 `https`。
+
+| 指标 | 类型 | 含义 |
+|---|---|---|
+| `jiaoag_info{version,protocol}` | gauge | 构建版本与协议版本，值恒为 1 |
+| `jiaoag_uptime_seconds` | gauge | 服务端启动至今秒数 |
+| `jiaoag_goroutines` | gauge | 当前 goroutine 数 |
+| `jiaoag_connections` | gauge | 当前 WebSocket 连接数（HTTP 抓取不算） |
+| `jiaoag_subscriptions` | gauge | 活跃事件订阅数，跨连接累加 |
+| `jiaoag_memory_alloc_bytes` / `_sys_bytes` | gauge | 堆在用 / 从系统申请 |
+| `jiaoag_gc_cycles` | gauge | 已完成 GC 次数 |
+| `jiaoag_sessions` | gauge | 会话总数 |
+| `jiaoag_tasks{status}` | gauge | 按状态（queued/running/waiting_approval/completed/failed/canceled）计数 |
+| `jiaoag_events` / `jiaoag_audit_rows` | gauge | 事件行 / 审计行总数 |
+| `jiaoag_background_procs{status}` | gauge | `running` 与 `orphaned` 的后台进程数 |
+| `jiaoag_metrics_error` | gauge | 库聚合失败时为 1（此时进程指标仍然完整） |
+
+几点取舍：
+
+- **每次抓取都查库**：`COUNT(*)` 在几千到几万行上都是毫秒级，配 15 秒一次的常规抓取没有压力；不引入常驻缓存，避免指标与库不一致。
+- **不暴露提示词、路径、任务内容**：指标只回答「有多少」，不回答「是什么」。
+- **库读失败不 500**：返回 200 并把 `jiaoag_metrics_error` 置 1，让 scrape 的 `up` 仍然为真、进程指标不丢。
+- 只读令牌同样能抓（它是 HTTP 鉴权，不走 WS 的写命令白名单）。
+
 ## 语义与边界
 
 - **只读**：没有删除、修订、触发重放的入口；协议侧只有 `event.head`、`event.subscribe`、`audit.tail` 三个读命令。

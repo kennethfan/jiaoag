@@ -106,6 +106,13 @@ func (c *clientConn) endStream(sessionKey string, h *streamHandle) {
 	h.cancel()
 }
 
+// subCount 返回本连接上当前有效的订阅数，供 /metrics 汇总。
+func (c *clientConn) subCount() int {
+	c.subsMu.Lock()
+	defer c.subsMu.Unlock()
+	return len(c.subs)
+}
+
 // cancelStream 停掉某会话的推送协程（会话被删或客户端换会话时）。
 func (c *clientConn) cancelStream(sessionKey string) {
 	c.subsMu.Lock()
@@ -177,6 +184,7 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 	mux.HandleFunc("GET /ws", s.handleWS)
 	// 浏览器端界面：静态资源公开（没有秘密），所有数据都要令牌。
 	mux.HandleFunc("GET /api/info", s.handleWebInfo)
+	mux.HandleFunc("GET /metrics", s.handleMetrics)
 	mux.Handle("GET /", webui.Handler())
 	s.httpSrv = &http.Server{
 		Addr:              cfg.Server.Listen,
