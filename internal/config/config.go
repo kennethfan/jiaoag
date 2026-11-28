@@ -234,6 +234,23 @@ type Server struct {
 	// 避免出现「以为加密了、其实是明文」的部署。
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
+	// TokenRateLimit 是单个令牌的请求速率上限（次/分钟），覆盖 WS 消息与
+	// 需要令牌的 HTTP 抓取。nil 用 DefaultTokenRateLimit，显式 0 表示不限。
+	TokenRateLimit *int `yaml:"token_rate_limit"`
+}
+
+// DefaultTokenRateLimit 是单令牌每分钟允许的请求数。
+//
+// 600 对正常用法（TUI 每条消息、events 每秒一次审计轮询、Prometheus 每 15s
+// 抓一次）足够宽松；它挡的是「一个泄漏的只读令牌把 CPU 打满」这种事故。
+const DefaultTokenRateLimit = 600
+
+// TokenRateLimitValue 返回生效的速率上限；0 表示不限。
+func (s Server) TokenRateLimitValue() int {
+	if s.TokenRateLimit == nil {
+		return DefaultTokenRateLimit
+	}
+	return *s.TokenRateLimit
 }
 
 // ServerToken 是一个命名访问令牌。
@@ -1007,6 +1024,9 @@ func (c *Config) validateCommon() error {
 	}
 	if err := c.validateTLS(); err != nil {
 		return err
+	}
+	if c.Server.TokenRateLimit != nil && *c.Server.TokenRateLimit < 0 {
+		return fmt.Errorf("server.token_rate_limit 不能为负数（0 表示不限），当前为 %d", *c.Server.TokenRateLimit)
 	}
 	if c.Agent.ContextBudgetTokens > 0 && c.Agent.ContextBudgetTokens < 1000 {
 		return fmt.Errorf("agent.context_budget_tokens 必须为 0 或大于 1000，当前为 %d", c.Agent.ContextBudgetTokens)

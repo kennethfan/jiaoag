@@ -5,7 +5,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,6 +60,9 @@ type Server struct {
 	// 与 Handler() 的测试路径无关。
 	tlsCert string
 	tlsKey  string
+
+	// limiter 按令牌名限速（ADR-0060）：一个泄漏的令牌不该能把 CPU 打满。
+	limiter *tokenLimiter
 }
 
 // clientConn 包一层写锁：websocket 的连接允许并发读，但写必须串行。
@@ -141,15 +146,24 @@ func (c *clientConn) sendError(ctx context.Context, code, msg string) {
 	_ = c.send(ctx, env)
 }
 
-// Token 是一个已解析的访问令牌。
+// Token 是一个已解析的访问令牌。库里只存哈希，内存里也只保留哈希：
+// 认证时把客户端给的明文哈希一次再比较，任何一处都不留明文。
 type Token struct {
 	Name     string
-	Value    string
+	Hash     string
 	ReadOnly bool
 }
 
+// HashToken 是令牌明文的落库形式：sha256 hex。
+func HashToken(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
 // TokensFromConfig 把配置里的 token / tokens 解析成可用令牌集合。
-// 启动与 SIGHUP 重载共用这一条路径，避免两处规则漂移。
+//
+// 只在「库还是空的」首次启动、以及没注入 App 的测试里用；正常运行时令牌
+// 以数据库为准（ADR-0060），配置的那份只是种子。
 func TokensFromConfig(cfg *config.Config) ([]Token, error) {
 	var out []Token
 	for _, t := range cfg.Server.AllTokens() {
@@ -157,7 +171,7 @@ func TokensFromConfig(cfg *config.Config) ([]Token, error) {
 		if err != nil {
 			return nil, fmt.Errorf("令牌 %q: %w", t.Name, err)
 		}
-		out = append(out, Token{Name: t.Name, Value: value, ReadOnly: t.ReadOnly})
+		out = append(out, Token{Name: t.Name, Hash: HashToken(value), ReadOnly: t.ReadOnly})
 	}
 	if len(out) == 0 {
 		return nil, errors.New("没有可用的访问令牌")
@@ -178,6 +192,7 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 		tokens:    tokens,
 		startedAt: time.Now(),
 		conns:     make(map[*clientConn]struct{}),
+		limiter:   newTokenLimiter(cfg.Server.TokenRateLimitValue()),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
@@ -203,6 +218,11 @@ func (s *Server) WithApp(a *app.App) *Server {
 	s.app = a
 	s.core = rpc.NewCore(a, s.cfg, s.log)
 	s.streams = rpc.NewStreams(a, s.log)
+	// 令牌以库为准（ADR-0060）。读不到就保留配置那份，但绝不静默清空：
+	// 「库里全吊销」是明确的拒绝服务，和「库刚好读失败」必须分开。
+	if err := s.ReloadTokens(context.Background()); err != nil {
+		s.log.Error("从数据库加载访问令牌失败，暂时沿用配置里的令牌", "err", err)
+	}
 	return s
 }
 
@@ -348,7 +368,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			s.log.Debug("连接结束", "remote", c.remote, "err", err)
 			return
 		}
-		// 只读令牌在这里统一拦住，比在每个 handler 里各判一次更不容易漏。
+		// 限速与只读都在这里统一判，比在每个 handler 里各判一次更不容易漏。
+		if !s.limiter.allow(c.tokenName) {
+			c.sendError(ctx, protocol.CodeRateLimited, fmt.Sprintf(
+				"令牌 %s 超出请求速率上限（%d 次/分钟），稍后再试", c.tokenName, s.limiter.limit))
+			continue
+		}
 		if c.readOnly && isWriteCommand(env.Type) {
 			c.sendError(ctx, protocol.CodeForbidden, "只读令牌不能执行 "+env.Type)
 			continue
@@ -489,10 +514,11 @@ func (s *Server) authorized(r *http.Request) (Token, bool) {
 
 	s.tokensMu.RLock()
 	defer s.tokensMu.RUnlock()
+	want := HashToken(got)
 	var hit Token
 	found := false
 	for i := range s.tokens {
-		if subtle.ConstantTimeCompare([]byte(got), []byte(s.tokens[i].Value)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(want), []byte(s.tokens[i].Hash)) == 1 {
 			hit = s.tokens[i]
 			found = true
 		}
@@ -503,16 +529,17 @@ func (s *Server) authorized(r *http.Request) (Token, bool) {
 	return hit, true
 }
 
-// SetTokens 原子替换令牌集合。SIGHUP 重载调用它；空集合会被拒绝，
+// SetTokens 原子替换令牌集合。重载调用它；空集合会被拒绝，
 // 否则一次手滑的配置就能让服务端变成谁都连不上。
+// 「库里一条未吊销的都没有」走 clearTokens，那是明确的拒绝服务，不是手滑。
 func (s *Server) SetTokens(tokens []Token) error {
 	if len(tokens) == 0 {
 		return errors.New("令牌集合不能为空")
 	}
 	seen := make(map[string]bool, len(tokens))
 	for _, t := range tokens {
-		if strings.TrimSpace(t.Name) == "" || t.Value == "" {
-			return errors.New("令牌名与取值都不能为空")
+		if strings.TrimSpace(t.Name) == "" || t.Hash == "" {
+			return errors.New("令牌名与哈希都不能为空")
 		}
 		if seen[t.Name] {
 			return fmt.Errorf("令牌名重复：%s", t.Name)
@@ -524,6 +551,14 @@ func (s *Server) SetTokens(tokens []Token) error {
 	s.tokens = cp
 	s.tokensMu.Unlock()
 	return nil
+}
+
+// clearTokens 把令牌集合清空。只在「数据库里没有任何未吊销令牌」时用：
+// 那时正确答案是拒绝一切连接，而不是退回配置里的旧值。
+func (s *Server) clearTokens() {
+	s.tokensMu.Lock()
+	s.tokens = nil
+	s.tokensMu.Unlock()
 }
 
 // TokenNames 返回当前令牌的名字与只读标记，供启动日志与测试使用。
@@ -635,9 +670,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // 这一步必须带令牌：工作区路径本身是信息（暴露目录结构），而页面文件
 // 是公开的——两者分开，页面可以先加载再要求输入令牌。
 func (s *Server) handleWebInfo(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorized(r); !ok {
+	tok, ok := s.authorized(r)
+	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": protocol.CodeUnauthorized})
+		return
+	}
+	if !s.limiter.allow(tok.Name) {
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error":   protocol.CodeRateLimited,
+			"message": "该令牌超出请求速率上限，稍后再试",
+		})
 		return
 	}
 	wd, err := os.Getwd()

@@ -21,9 +21,15 @@ const metricsTimeout = 2 * time.Second
 // （见 ADR-0030 与 docs/tokens.md）。手写 exposition 而不引 prometheus 客户端
 // 库：指标只有十几个，标准格式就四行语法。
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorized(r); !ok {
+	tok, ok := s.authorized(r)
+	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="jiaoag metrics"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !s.limiter.allow(tok.Name) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, protocol.CodeRateLimited, http.StatusTooManyRequests)
 		return
 	}
 

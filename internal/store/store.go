@@ -364,6 +364,10 @@ func (s *Store) verifySchema(ctx context.Context, version int) error {
 	if version >= 11 {
 		probes = append(probes, `SELECT key, ratio FROM token_ratios LIMIT 1`)
 	}
+	if version >= 12 {
+		probes = append(probes, `SELECT name, hash, read_only, revoked_at FROM server_tokens LIMIT 1`,
+			`SELECT version FROM server_token_meta LIMIT 1`)
+	}
 	for _, query := range probes {
 		rows, err := s.db.QueryContext(ctx, query)
 		if err != nil {

@@ -966,3 +966,32 @@ providers:
 		t.Fatalf("负数应报 retention_days 错误，实际 %v", err)
 	}
 }
+
+func TestTokenRateLimitDefaultsAndValidation(t *testing.T) {
+	cfg := withProvider(validConfig())
+	if got := cfg.Server.TokenRateLimitValue(); got != DefaultTokenRateLimit {
+		t.Fatalf("未配置时应取默认值 %d，实际 %d", DefaultTokenRateLimit, got)
+	}
+
+	unlimited := 0
+	cfg.Server.TokenRateLimit = &unlimited
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("显式 0（不限）应合法: %v", err)
+	}
+	if cfg.Server.TokenRateLimitValue() != 0 {
+		t.Fatalf("显式 0 应原样返回")
+	}
+
+	strict := 120
+	cfg.Server.TokenRateLimit = &strict
+	if err := cfg.ValidateServer(); err != nil {
+		t.Fatalf("正数应合法: %v", err)
+	}
+
+	bad := withProvider(validConfig())
+	negative := -1
+	bad.Server.TokenRateLimit = &negative
+	if err := bad.ValidateServer(); err == nil || !strings.Contains(err.Error(), "token_rate_limit") {
+		t.Fatalf("负数应报 token_rate_limit 错误，实际 %v", err)
+	}
+}

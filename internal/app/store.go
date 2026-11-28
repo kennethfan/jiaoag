@@ -103,6 +103,10 @@ type Store interface {
 
 	// Stats 是 /metrics 用的只读聚合（会话/任务/事件/审计/后台进程计数）。
 	Stats(ctx context.Context) (store.Stats, error)
+
+	// 访问令牌落库：服务端与 admin CLI 共用这一份真相。
+	ServerTokens(ctx context.Context) ([]store.ServerToken, error)
+	ServerTokenVersion(ctx context.Context) (int64, error)
 	ResolveApprovalDecision(ctx context.Context, id domain.ApprovalID,
 		decision domain.Decision, source domain.ApprovalSource, note string,
 		at time.Time, hunks []int) (bool, error)

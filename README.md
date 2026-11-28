@@ -85,7 +85,16 @@ server:
       read_only: true
 ```
 
-改完 `kill -HUP <server pid>` 即热重载，连接不断；删掉一条再 HUP 就是吊销。权限矩阵与排障见 [`docs/tokens.md`](docs/tokens.md)。
+v2.61 起令牌**以数据库为准**（配置只是首次启动的种子），用 `jiaoag admin token` 管理，改完 ≤2 秒自动生效、不用重启（Windows 同样）：
+
+```bash
+jiaoag admin token list                      # 名字 / 权限 / 哈希前缀 / 状态
+jiaoag admin token create viewer -read-only  # 明文只显示一次
+jiaoag admin token rotate default            # 换明文，旧值立刻失效
+jiaoag admin token revoke viewer -yes        # 吊销
+```
+
+库里只存 sha256；`kill -HUP <server pid>` 仍然有效，作用是「别等轮询，立刻重读」。另有 `server.token_rate_limit`（次/分钟，默认 600，0 不限）给单令牌兜底。权限矩阵、限速语义与排障见 [`docs/tokens.md`](docs/tokens.md)。
 
 也可以手工分开跑（手工启动默认常驻，不会空闲退出）：
 
@@ -290,6 +299,7 @@ make demo-mcp
 | v2.57 | `jiaoag events --follow`：常驻采集写文件、轮转后自动重开、断线按游标重连续传；`-action`/`-type` 前缀过滤（ADR-0056） | ✅ |
 | v2.59 | `/metrics`：Prometheus 文本（进程 + 库计数），需令牌，只读令牌也可抓（ADR-0058） | ✅ |
 | v2.60 | 数据保留：`jiaoag admin prune` 按会话整块清理过期数据，`storage.retention_days` 可自动跑（ADR-0059） | ✅ |
+| v2.61 | 访问令牌落库：`jiaoag admin token list/create/rotate/revoke`，版本号轮询热更新（Windows 也可），库里只存哈希，`server.token_rate_limit` 按令牌限速（ADR-0060） | ✅ |
 | v2.58 | 上下文估算系数跨任务记忆：按 `provider/model` 落库（`token_ratios`），新任务首轮沿用上次校准（ADR-0057） | ✅ |
 
 ## 安全边界

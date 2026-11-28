@@ -77,7 +77,10 @@ func run(cfgPath, listen string, idleExit time.Duration) error {
 		srv.SetTLS(cfg.Server.TLSCert, cfg.Server.TLSKey)
 	}
 	logTokenNames(log, srv)
-	go watchSIGHUP(ctx, cfgPath, srv, log)
+	// 令牌热更新靠库里的版本号轮询（Windows 没有 SIGHUP）；SIGHUP 只是
+	// 「别等那两秒，现在就重读一次」。
+	go srv.WatchTokens(ctx)
+	go watchSIGHUP(ctx, srv, log)
 
 	return srv.ListenAndServe(ctx)
 }
@@ -101,12 +104,12 @@ func logTokenNames(log *slog.Logger, srv *server.Server) {
 		"names", strings.Join(parts, ","))
 }
 
-// watchSIGHUP 收到 SIGHUP 就重读配置文件里的令牌，整体替换。
+// watchSIGHUP 收到 SIGHUP 就立刻从库里重读令牌，不等到下一次轮询。
 //
 // 只重载令牌：监听地址、TLS 证书、并发上限这些都要重启才生效，混在一起会让
-// 「发个信号」变成不可预期的大动作。重载失败保留旧令牌，否则一次手滑的配置
+// 「发个信号」变成不可预期的大动作。重载失败保留旧令牌，否则一次读库抖动
 // 会把所有人挡在门外。
-func watchSIGHUP(ctx context.Context, cfgPath string, srv *server.Server, log *slog.Logger) {
+func watchSIGHUP(ctx context.Context, srv *server.Server, log *slog.Logger) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGHUP)
 	defer signal.Stop(ch)
@@ -115,15 +118,7 @@ func watchSIGHUP(ctx context.Context, cfgPath string, srv *server.Server, log *s
 		case <-ctx.Done():
 			return
 		case <-ch:
-			cfg, err := config.Load(cfgPath)
-			if err == nil {
-				var tokens []server.Token
-				tokens, err = server.TokensFromConfig(cfg)
-				if err == nil {
-					err = srv.SetTokens(tokens)
-				}
-			}
-			if err != nil {
+			if err := srv.ReloadTokens(ctx); err != nil {
 				log.Error("令牌重载失败，继续使用旧令牌", "err", err)
 				continue
 			}

@@ -33,6 +33,7 @@ const usageText = `jiaoag — 单用户编码 agent
   jiaoag policy sync|verify|test 拉取并验签规则 feed，或解释一条命令的判定
   jiaoag config path|show|check  查看与校验配置（set/edit 可修改）
   jiaoag admin prune             按保留期删除过期会话（运维）
+  jiaoag admin token             管理访问令牌：list / create / rotate / revoke
   jiaoag demo [参数]             真实 provider 冒烟（开发用）
   jiaoag plugin-example          参考插件，走 stdio JSON-RPC（开发用）
   jiaoag help                    显示这段说明

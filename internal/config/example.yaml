@@ -6,9 +6,13 @@ server:
   listen: 127.0.0.1:8787
   # 单用户 token，支持三种写法：明文 / $ENV_NAME / file:/abs/path
   # 多令牌与只读权限用下面的 tokens；两者可同时存在，token 等价于名为 default 的可写令牌。
+  # 注意：这份配置只是「库为空时」的种子，之后令牌以数据库为准。轮换与吊销用
+  #   jiaoag admin token list|create|rotate|revoke
+  # 改完 2 秒内生效（kill -HUP 可让它立刻重读），Windows 同样不需要重启。
   token: $JIAOAG_TOKEN
-  # 命名令牌：改完 kill -HUP <server pid> 即热重载，连接不中断；删掉一条再 HUP 就是吊销。
-  # read_only 只能订阅事件、拉审计、列会话、看模型与 MCP 状态，
+  # 单令牌请求速率上限（次/分钟）：覆盖 WS 消息与 /api/info、/metrics 抓取；0 表示不限。
+  # token_rate_limit: 600
+  # 命名令牌种子：read_only 只能订阅事件、拉审计、列会话、看模型与 MCP 状态，
   # 不能提交任务、裁决审批、改会话或信任项目（见 docs/tokens.md）。
   # tokens:
   #   - name: ops

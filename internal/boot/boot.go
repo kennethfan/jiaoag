@@ -27,6 +27,7 @@ import (
 	"github.com/kennethfan/jiaoag/internal/perm"
 	pluginpkg "github.com/kennethfan/jiaoag/internal/plugin"
 	"github.com/kennethfan/jiaoag/internal/rpc"
+	serverpkg "github.com/kennethfan/jiaoag/internal/server"
 	"github.com/kennethfan/jiaoag/internal/store"
 	"github.com/kennethfan/jiaoag/internal/tools"
 	"github.com/kennethfan/jiaoag/internal/version"
@@ -153,6 +154,11 @@ func Open(ctx context.Context, opts Options) (*Stack, error) {
 		return fail(err)
 	}
 	stack.db = db
+	// 访问令牌以库为准（ADR-0060）：库为空时才把配置里的那份导入，
+	// 之后改配置不再影响认证——否则「轮换过的令牌」会在重启后复活。
+	if err := seedServerTokens(ctx, db, cfg, log); err != nil {
+		return fail(err)
+	}
 	// 运行时注册与心跳：多进程共用一个数据目录时，靠它判断谁还活着。
 	stack.runtimeID = newRuntimeID()
 	kind := opts.Kind
@@ -576,4 +582,35 @@ func (p procStore) StopRequested(ctx context.Context, id string) (bool, error) {
 
 func (p procStore) DeleteProc(ctx context.Context, id string) error {
 	return p.db.DeleteBackgroundProc(ctx, id)
+}
+
+// seedServerTokens 在库还是空的时候把配置里的 token / tokens 导入库。
+//
+// 只播种一次：之后令牌的真相在 server_tokens 表。这样 `admin token rotate`
+// 改的是库，重启也不会被配置文件里的旧值覆盖回来。
+func seedServerTokens(ctx context.Context, db *store.Store, cfg *config.Config, log *slog.Logger) error {
+	existing, err := db.ServerTokens(ctx)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	src := cfg.Server.AllTokens()
+	if len(src) == 0 {
+		return errors.New("没有可用的访问令牌：在 server.token(s) 里配一个，或运行 jiaoag admin token create")
+	}
+	names := make([]string, 0, len(src))
+	for _, t := range src {
+		value, err := t.Value.Resolve()
+		if err != nil {
+			return fmt.Errorf("令牌 %q: %w", t.Name, err)
+		}
+		if err := db.CreateServerToken(ctx, t.Name, serverpkg.HashToken(value), t.ReadOnly); err != nil {
+			return err
+		}
+		names = append(names, t.Name)
+	}
+	log.Info("已把配置里的访问令牌导入数据库（之后以库为准）", "count", len(names), "names", strings.Join(names, ","))
+	return nil
 }

@@ -1,5 +1,5 @@
-// Command jiaoag admin 是运维子命令的入口：目前只有 prune（按保留期删除
-// 过期会话）。
+// Command jiaoag admin 是运维子命令的入口：prune（按保留期删除过期会话）
+// 与 token（访问令牌的增删改）。
 //
 // 为什么不做成服务端命令：清理是低频动作，不需要 WS 协议、令牌或一个正在
 // 跑的服务端；直接打开数据库就够了。多运行时同时写是支持的（WAL），删除
@@ -41,6 +41,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "prune":
 		return runPrune(args[1:], stdout, stderr)
+	case "token":
+		return runToken(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "jiaoag admin: 未知子命令 %q\n\n", args[0])
 		writeHelp(stderr)
@@ -56,6 +58,7 @@ func writeHelp(w io.Writer) {
 		},
 		Commands: []helppkg.Command{
 			{Name: "prune", Desc: "删除超过保留期、且所有任务都已结束的会话（连同任务/事件/审计）"},
+			{Name: "token", Desc: "管理访问令牌：list / create / rotate / revoke（改完 2 秒内生效）"},
 		},
 		Examples: []string{
 			"jiaoag admin prune -older-than 90d -dry-run   # 先看会删哪些",
@@ -108,7 +111,14 @@ func runPrune(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := store.Open(ctx, cfg.Storage.DBPath)
+	// 这里不走 ValidateServer，所以 ~ 要自己展开：否则会在当前目录下
+	// 建一个字面量名为 "~" 的目录（踩过一次）。
+	dbPath, err := config.ExpandHome(cfg.Storage.DBPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "jiaoag admin prune: %v\n", err)
+		return 1
+	}
+	db, err := store.Open(ctx, dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "jiaoag admin prune: %v\n", err)
 		return 1

@@ -140,7 +140,7 @@ func TestSetTokensHotReload(t *testing.T) {
 	ts, srv := newTokenServer(t, cfg)
 	url := wsURL(ts)
 
-	if err := srv.SetTokens([]Token{{Name: "new", Value: "new-token"}}); err != nil {
+	if err := srv.SetTokens([]Token{{Name: "new", Hash: HashToken("new-token")}}); err != nil {
 		t.Fatalf("SetTokens: %v", err)
 	}
 	if err := dialErr(url, "old-token"); err == nil {
@@ -165,9 +165,9 @@ func TestSetTokensRejectsInvalid(t *testing.T) {
 	_, srv := newTokenServer(t, cfg)
 
 	cases := [][]Token{
-		{{Name: "", Value: "x"}},
-		{{Name: "a", Value: ""}},
-		{{Name: "a", Value: "1"}, {Name: "a", Value: "2"}},
+		{{Name: "", Hash: "x"}},
+		{{Name: "a", Hash: ""}},
+		{{Name: "a", Hash: "1"}, {Name: "a", Hash: "2"}},
 	}
 	for i, tokens := range cases {
 		if err := srv.SetTokens(tokens); err == nil {

@@ -47,7 +47,7 @@
 | `internal/perm` | 按副作用分级、默认拒绝；命令白名单与高风险子命令；规则只能收紧 |
 | `internal/exec` | 执行后端（direct / sandbox）；进程组/Job Object、超时、限额、日志与后台进程 |
 | `internal/workspace` | 根目录与附加根、路径越界防护、读、`Snapshot`/`Hash`/`Write`（原子 rename、保留权限、拒绝 `.git`） |
-| `internal/store` | SQLite 深模块：12 张业务表 + `schema_migrations`、事务助手、租约/审批/进程的 CAS |
+| `internal/store` | SQLite 深模块：13 张业务表 + `schema_migrations`、事务助手、租约/审批/进程的 CAS |
 | `internal/event` | `Journal`（追加/回放）与 `Hub`（按会话订阅、扇出、seq 分配） |
 | `internal/llm` | `Provider` 端口 + openai/anthropic 适配器 + 重试/超时/限流/多 key 装饰器 |
 | `internal/prompt` | 提示词分层装配、`{{var}}` 白名单、层来源与 hash |
@@ -206,7 +206,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 
 ## 9. 持久化
 
-12 张业务表 + `schema_migrations`（迁移 0001–0011）：
+13 张业务表 + `schema_migrations`（迁移 0001–0012）：
 
 | 表 | 用途 |
 |---|---|
@@ -222,6 +222,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 | `runtimes` | 运行时心跳与存活判定 |
 | `background_procs` | 后台进程属主、状态与停止请求 |
 | `token_ratios` | 上下文预算估算系数（按 `provider/model`，ADR-0057） |
+| `server_tokens` | 访问令牌（只存 sha256、只读标记、轮换/吊销时间）与 `server_token_meta.version`（ADR-0060） |
 
 连接串固定 `WAL + busy_timeout(5000) + foreign_keys(1) + _txlock=immediate`；写串行、读并发。迁移在 `store.Open` 内执行，遇 `SQLITE_BUSY` 自动重试（最长 30s），并校验 schema 与版本一致。
 
@@ -235,6 +236,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 |---|---|
 | 传输 | 默认只监听回环；`tls_cert`/`tls_key` 同时配置才启用 wss；反代同样支持 |
 | 观测接口 | `/healthz` 匿名只回 ok；`/api/info`、`/metrics` 需令牌，指标不含内容型数据 |
+| 访问令牌 | 库里的 sha256 为唯一真相（配置只在库空时播种）；每令牌 `server.token_rate_limit` 次/分钟；轮换/吊销靠版本号轮询，≤2s 生效 |
 | 认证 | 命名令牌 `server.tokens[]`，可标 `read_only`；SIGHUP 热重载；只读令牌在契约层被拦写 |
 | 文件 | 路径越界防护；`.git` 拒写；写入走 diff + CAS；敏感路径（`.env*`、密钥、`AGENTS.md`、`Makefile` 等）始终审批 |
 | 命令 | 默认拒绝；白名单 `policy.d/default.yaml`；高风险子命令（publish/deploy/exec/make install）固定审批；危险 flag 硬拒 |
@@ -253,6 +255,7 @@ workspace:memory    MEMORY.md（主根 ≤8 KB；挂附加根时最多 16 KB，�
 - `jiaoag policy test -- argv` / `--shell`：解释某条命令为什么被放行或要求审批。
 - Webhook：审批与终态推送，可验签；`docs/notifications.md`。
 - `jiaoag admin prune -older-than 90d`：按会话整块删除过期数据（任务/事件/审计/审批一起），`storage.retention_days` 可让运行时启动时与每 24 小时自动跑（ADR-0059）。
+- `jiaoag admin token list|create|rotate|revoke`：直接改库管理访问令牌，服务端 2 秒内热更新（Windows 同样）；明文只显示一次，库里只存 sha256（ADR-0060）。
 - 审计动作：`exec.*`、`external.*`、`write.applied/failed`、`write.auto`、`tool.denied`、`context.compact*`。
 
 ---

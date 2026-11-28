@@ -85,7 +85,9 @@ const (
 	CodeSessionBusy      = "session_busy"
 	// CodeQueueFull 表示单会话排队任务已满，客户端稍后重试即可。
 	CodeQueueFull = "queue_full"
-	CodeInternal  = "internal"
+	// CodeRateLimited 表示该令牌超出每分钱请求上限（server.token_rate_limit）。
+	CodeRateLimited = "rate_limited"
+	CodeInternal    = "internal"
 )
 
 // Envelope 是所有帧的统一信封；Payload 的具体类型由 Type 决定。
