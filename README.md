@@ -189,7 +189,11 @@ curl -s 127.0.0.1:8787/healthz
 make demo
 ```
 
-一条命令起真实 server，在临时小项目上跑完整一轮「读代码 → 定位 bug → diff 审批 → 落盘 → 跑测试」，最后独立核验磁盘内容、重跑测试并打印审计。审批由脚本按 `allow_once` 裁决，等价于 TUI 里按 `y`。
+一条命令起真实 server，在临时工作区上跑三轮，最后独立核验磁盘内容、重跑测试并打印审计。审批由脚本按 `allow_once` 裁决，等价于 TUI 里按 `y`。
+
+1. **读 → 改 → 测**：修 `stats.Sum` 漏加最后一个元素的 bug，出 diff 审批、落盘、跑 `go test ./...`。
+2. **插件工具**：调用 `plugin__notes__echo`（示例插件，同二进制 `jiaoag plugin-example`），核验结果回填。
+3. **附加根读写**：`-root lib=…` 挂附加根，读 `lib:lib-notes.txt` 再写 `lib:lib-out.txt`，核验主工作区未被污染。
 
 需要三个环境变量（也可写进 `~/.config/jiaoag/demo.env`，该文件不进仓库）：
 
@@ -200,7 +204,7 @@ export JIAOAG_DEMO_API_KEY_FILE=~/.config/agnes/key
 make demo
 ```
 
-可选：`JIAOAG_DEMO_PROVIDER_TYPE`（`openai` 默认 / `anthropic`）、`JIAOAG_DEMO_PORT`（默认 18787）、`JIAOAG_DEMO_EXEC_BACKEND`（`direct` 默认 / `sandbox`）、`JIAOAG_DEMO_KEEP=1`（成功也保留临时目录）。失败时现场自动保留并打印 `server.log` 尾部。
+可选：`JIAOAG_DEMO_PROVIDER_TYPE`（`openai` 默认 / `anthropic`）、`JIAOAG_DEMO_PORT`（默认 18787）、`JIAOAG_DEMO_EXEC_BACKEND`（`direct` 默认 / `sandbox`）、`JIAOAG_DEMO_FULL=0`（只跑第 1 轮）、`JIAOAG_DEMO_KEEP=1`（成功也保留临时目录）。失败时现场自动保留并打印 `server.log` 尾部。
 
 MCP 另有一条冒烟入口：
 

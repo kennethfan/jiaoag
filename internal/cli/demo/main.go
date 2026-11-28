@@ -34,7 +34,7 @@ func Main() {
 		model        = flag.String("model", "", "会话模型 id（空表示用供应商配置里的 model）")
 		taskProvider = flag.String("task-provider", "", "只覆盖本次任务的供应商（空表示跟随会话）")
 		taskModel    = flag.String("task-model", "", "只覆盖本次任务的模型（空表示跟随会话）")
-		rootFlag     = flag.String("root", "", "只读附加根 alias=path（可选，ADR-0036）")
+		rootFlag     = flag.String("root", "", "附加根 alias=path（可选，ADR-0036/0037）")
 		decision     = flag.String("approve", "allow_once", "审批策略：allow_once | allow_session | deny")
 		timeout      = flag.Duration("timeout", 5*time.Minute, "整轮超时")
 	)
